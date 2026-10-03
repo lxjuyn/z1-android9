@@ -1,0 +1,18 @@
+{
+  "result": "STATIC_STOCK_BOOT_PASS",
+  "device_boot_verified": false,
+  "kernel_version": "3.4.67 (factory/A7 exact payload)",
+  "kernel_sha256": "f9afaa2a38d64e5a6d6877ccb73ede2250b7efe6389fa60e66ee500cb885cc07",
+  "boot_bytes": 5320704,
+  "boot_sha256": "20e0667b5483f5e6fb9bc7b8d5943578a024617e9df68e38fe5a5d5389493e01",
+  "ramdisk_sha256": "b9c6e1fc8010c762ce6c080b369ee1245c28d9fbdb0e0122d3a483703c547bb4",
+  "policy_version": 26,
+  "policy_sha256": "c3ffbe20a780f61713b79cb00269a1b5dd8c6cb7ec8ceae6b142e913ba5613ca",
+  "helper_sha256": "618e9e1bb1edacffa4038b4c916603fde5fdc2cc195541f5c4893d05f07ab52c",
+  "unchanged_ramdisk_files": 55,
+  "risks": [
+    "experimental native HIDL passthrough; Java HIDL services unavailable",
+    "policy26 permissive domains and allow_unknown; diagnostic build",
+    "software graphics; A7 Mali binary ABI not yet adapted"
+  ]
+}

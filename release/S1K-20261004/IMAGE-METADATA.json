@@ -1,0 +1,37 @@
+{
+  "candidate": "S1K-20261004",
+  "device": "Jiabo Z1 / MT6572",
+  "android": "9 (LineageOS 16.0 based)",
+  "kernel": {
+    "version": "3.4.67 factory kernel",
+    "sha256": "f9afaa2a38d64e5a6d6877ccb73ede2250b7efe6389fa60e66ee500cb885cc07"
+  },
+  "source_commit": "c93533b",
+  "device_runtime_verified": false,
+  "boot": {
+    "file": "boot.img",
+    "bytes": 5320704,
+    "partition_bytes": 6291456,
+    "sha256": "20e0667b5483f5e6fb9bc7b8d5943578a024617e9df68e38fe5a5d5389493e01"
+  },
+  "system": {
+    "file": "system.img.xz (decompress before flashing)",
+    "raw_format": "ext4",
+    "raw_bytes": 943718400,
+    "partition_bytes": 943718400,
+    "raw_sha256": "491a6e1b3b7482c8dadd2a871335cf40436dee5df9056f2b5d65c2e8fc318bd8",
+    "compressed_sha256": "574944a287e6c3bce8be8392a0edacce8f0c6193b49254fe6870da34bda7f223"
+  },
+  "validation": {
+    "android_systemimage_build": "pass",
+    "ext4_read_only_check": "pass",
+    "init_and_elf_closure": "STATIC_INIT_CLOSURE_PASS",
+    "keylayout": "90 Android 9 labels validated against Pie InputEventLabels"
+  },
+  "security": {
+    "selinux_policy_version": 26,
+    "permissive_domains": true,
+    "allow_unknown": true,
+    "daily_use_ready": false
+  }
+}

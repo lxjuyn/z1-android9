@@ -1,0 +1,48 @@
+{
+  "status": "STATIC_VALIDATION_PASS",
+  "device_runtime_verified": false,
+  "build": {
+    "target": "systemimage",
+    "variant": "stock kernel",
+    "result": "success"
+  },
+  "system": {
+    "raw_ext4_bytes": 943718400,
+    "e2fsck_read_only": "clean",
+    "filesystem_files": 2454,
+    "filesystem_used_blocks": 190081
+  },
+  "init_closure": {
+    "status": "STATIC_INIT_CLOSURE_PASS",
+    "services": 50,
+    "elf_roots": 50,
+    "audio_hal_in_closure": true,
+    "optional_recovery_installer_absent": true
+  },
+  "input": {
+    "factory_key_mappings_retained": 90,
+    "all_labels_exist_in_android_9": true,
+    "key_139": "APP_SWITCH",
+    "physical_event_runtime_verified": false
+  },
+  "privacy_scan": {
+    "credential_tokens": 0,
+    "private_key_payloads": 0,
+    "wifi_network_or_psk_configs": 0,
+    "nvram_or_calibration_data_packaged": false
+  },
+  "hardware_status": {
+    "display": "fbdev software composition with SwiftShader; not runtime verified",
+    "gpu": "Mali acceleration not integrated",
+    "touch": "not runtime verified; factory probe failure requires device diagnosis",
+    "audio": "factory MT6572 HAL selected; playback and capture not runtime verified",
+    "wifi": "WMT loader/firmware staged; Android 9 framework HAL incomplete",
+    "bluetooth": "Android 9 HCI/HAL bridge incomplete"
+  },
+  "security": {
+    "selinux_policy_version": 26,
+    "permissive_domains": true,
+    "allow_unknown": true,
+    "diagnostic_only": true
+  }
+}
