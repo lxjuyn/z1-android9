@@ -8,6 +8,16 @@ S1I fixes the observed AlarmManager `CLOCK_BOOTTIME` timerfd abort while retaini
 
 ## Source and builds
 
+A clean checkout uses this repository as the Repo manifest and syncs the pinned Android/LineageOS projects plus the Z1 device tree:
+
+```sh
+repo init -u https://github.com/lxjuyn/z1-android9.git -b main -m default.xml
+repo sync -j4
+python3 device/jiabo/z1/scripts/apply_stock_patches.py --source "$PWD"
+```
+
+Use `scripts/sync_sources.sh /path/to/workspace` to run those steps.
+
 `manifests/lineage16-pinned.xml` pins the exact upstream project revisions used by the workspace before device patch application. `stock_patches/manifest.json` records each patch's base and result SHA-256. Apply with `python3 scripts/apply_stock_patches.py --source /path/to/los16`.
 
 Set `LOS_ROOT` and `HOST_TOOLS`, then run `scripts/build_z1.sh systemimage`. The stock profile keeps the original Z1 3.4.67 kernel.
