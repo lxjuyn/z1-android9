@@ -1,0 +1,13 @@
+{
+  "release": "S1I-20261004",
+  "device": "Jiabo Z1 / MT6572",
+  "android": "Android 9 / LineageOS 16.0",
+  "kernel": "original Z1 3.4.67; boot.img unchanged from S1F",
+  "flash_scope": "system.img only; preserve userdata and current boot.img",
+  "system_image_sha256": "ac5ba6831ea26771594dff9a7fb1bf28f845bdd66f90866558f9559cc1834c05",
+  "system_archive_sha256": "90d1fed413b4444561020da03f93831d08abb668e820d67c63df08036578e938",
+  "boot_image_sha256": "e9b4e4128364762a41f4cdef145431b96c1e659ce7da4049ddee50a0670f1526",
+  "runtime_boot_verified": false,
+  "contains_userdata": false,
+  "contains_serial_logs": false
+}

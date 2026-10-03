@@ -1,0 +1,25 @@
+--- a/frameworks/base/services/core/jni/com_android_server_AlarmManagerService.cpp
++++ b/frameworks/base/services/core/jni/com_android_server_AlarmManagerService.cpp
+@@ -337,9 +337,20 @@
+     }
+ 
+     for (size_t i = 0; i < fds.size(); i++) {
+-        fds[i] = timerfd_create(android_alarm_to_clockid[i], 0);
++        const clockid_t clockid = android_alarm_to_clockid[i];
++        clockid_t failed_clockid = clockid;
++        fds[i] = timerfd_create(clockid, 0);
++        // Linux 3.4.67's timerfd rejects CLOCK_BOOTTIME even though it has
++        // CLOCK_BOOTTIME_ALARM. Preserve boottime accounting by using its
++        // wakeup-capable form; CLOCK_MONOTONIC would lose suspend time.
++        if (fds[i] < 0 && clockid == CLOCK_BOOTTIME && errno == EINVAL) {
++            ALOGW("timerfd CLOCK_BOOTTIME unavailable; using CLOCK_BOOTTIME_ALARM "
++                    "fallback (may wake for non-wakeup alarms)");
++            failed_clockid = CLOCK_BOOTTIME_ALARM;
++            fds[i] = timerfd_create(CLOCK_BOOTTIME_ALARM, 0);
++        }
+         if (fds[i] < 0) {
+-            log_timerfd_create_error(android_alarm_to_clockid[i]);
++            log_timerfd_create_error(failed_clockid);
+             close(epollfd);
+             for (size_t j = 0; j < i; j++) {
+                 close(fds[j]);

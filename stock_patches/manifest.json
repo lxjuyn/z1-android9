@@ -140,5 +140,11 @@
     "patch": "system__connectivity__wificond__scanning__offload__offload_scan_manager.cpp.patch",
     "base_sha256": "f6ee554a3970a7b7d01ed9b9c7d36d896c63b204b329d3a4580491612927e350",
     "result_sha256": "cff6084fc408cb69b8471dbae774added2a40ca6f255cb75a394629190927bcc"
+  },
+  {
+    "file": "frameworks/base/services/core/jni/com_android_server_AlarmManagerService.cpp",
+    "patch": "frameworks__base__services__core__jni__com_android_server_AlarmManagerService.cpp.patch",
+    "base_sha256": "48d7ac7f78b9a61511d59a3e319a0bd6372450a029921f7725ab7571cad41f8b",
+    "result_sha256": "dc0dc3aff3a6eafef98e56d2b5f045334132278e798a5d23159d3b8a5a7bfad1"
   }
 ]

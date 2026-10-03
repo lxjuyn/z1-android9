@@ -1,0 +1,125 @@
+{
+  "status": "PASS",
+  "checks": [
+    {
+      "file": "system/core/init/init.cpp",
+      "exit": 0,
+      "error": ""
+    },
+    {
+      "file": "system/core/init/selinux.cpp",
+      "exit": 0,
+      "error": ""
+    },
+    {
+      "file": "system/netd/server/main.cpp",
+      "exit": 0,
+      "error": ""
+    },
+    {
+      "file": "external/minijail/syscall_filter.c",
+      "exit": 0,
+      "error": ""
+    },
+    {
+      "file": "system/libhidl/transport/HidlTransportSupport.cpp",
+      "exit": 0,
+      "error": ""
+    },
+    {
+      "file": "frameworks/base/core/jni/android_os_HwBinder.cpp",
+      "exit": 0,
+      "error": ""
+    },
+    {
+      "file": "hardware/interfaces/configstore/1.1/default/Android.mk",
+      "exit": 0,
+      "error": ""
+    },
+    {
+      "file": "system/libhidl/transport/ServiceManagement.cpp",
+      "exit": 0,
+      "error": ""
+    },
+    {
+      "file": "frameworks/native/services/surfaceflinger/main_surfaceflinger.cpp",
+      "exit": 0,
+      "error": ""
+    },
+    {
+      "file": "frameworks/av/services/mediacodec/main_codecservice.cpp",
+      "exit": 0,
+      "error": ""
+    },
+    {
+      "file": "frameworks/base/services/core/jni/com_android_server_SystemServer.cpp",
+      "exit": 0,
+      "error": ""
+    },
+    {
+      "file": "system/security/keystore/keystore_main.cpp",
+      "exit": 0,
+      "error": ""
+    },
+    {
+      "file": "system/security/keystore/KeyStore.cpp",
+      "exit": 0,
+      "error": ""
+    },
+    {
+      "file": "hardware/interfaces/keymaster/4.0/support/Keymaster.cpp",
+      "exit": 0,
+      "error": ""
+    },
+    {
+      "file": "development/samples/Home/src/com/example/android/home/Home.java",
+      "exit": 0,
+      "error": ""
+    },
+    {
+      "file": "hardware/interfaces/configstore/1.1/default/stock_factory.cpp",
+      "exit": 0,
+      "error": ""
+    },
+    {
+      "file": "frameworks/base/services/core/java/com/android/server/Z1StockBatteryMonitor.java",
+      "exit": 0,
+      "error": ""
+    },
+    {
+      "file": "frameworks/base/services/core/java/com/android/server/BatteryService.java",
+      "exit": 0,
+      "error": ""
+    },
+    {
+      "file": "system/core/init/log.cpp",
+      "exit": 0,
+      "error": ""
+    },
+    {
+      "file": "system/core/init/security.cpp",
+      "exit": 0,
+      "error": ""
+    },
+    {
+      "file": "frameworks/native/services/surfaceflinger/RenderEngine/RenderEngine.cpp",
+      "exit": 0,
+      "error": ""
+    },
+    {
+      "file": "hardware/interfaces/configstore/1.1/default/stock_factory_v1_0.cpp",
+      "exit": 0,
+      "error": ""
+    },
+    {
+      "file": "system/connectivity/wificond/main.cpp",
+      "exit": 0,
+      "error": ""
+    },
+    {
+      "file": "system/connectivity/wificond/scanning/offload/offload_scan_manager.cpp",
+      "exit": 0,
+      "error": ""
+    }
+  ]
+}
