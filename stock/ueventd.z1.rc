@@ -2,6 +2,7 @@
 /dev/fb0 0660 system graphics
 /dev/ion 0660 system graphics
 /dev/mali 0660 system graphics
+/dev/mali0 0660 system graphics
 /dev/ashmem 0666 root root
 /dev/binder 0666 root root
 /dev/ttyGS0 0600 root root
