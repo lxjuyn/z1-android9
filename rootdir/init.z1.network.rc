@@ -1,0 +1,44 @@
+# Generated from rebuilt module dependencies; load after /system mounts.
+# netd starts later in class main. Keep this paired with its kernel.
+on post-fs
+    insmod /system/lib/modules/z1-network/fuse.ko
+    insmod /system/lib/modules/z1-network/x_tables.ko
+    insmod /system/lib/modules/z1-network/ip6_tables.ko
+    insmod /system/lib/modules/z1-network/ipv6.ko
+    insmod /system/lib/modules/z1-network/nf_reject_ipv6.ko
+    insmod /system/lib/modules/z1-network/ip6t_REJECT.ko
+    insmod /system/lib/modules/z1-network/ip6t_rpfilter.ko
+    insmod /system/lib/modules/z1-network/ip6table_filter.ko
+    insmod /system/lib/modules/z1-network/ip6table_mangle.ko
+    insmod /system/lib/modules/z1-network/ip6table_raw.ko
+    insmod /system/lib/modules/z1-network/ip_tables.ko
+    insmod /system/lib/modules/z1-network/nf_reject_ipv4.ko
+    insmod /system/lib/modules/z1-network/ipt_REJECT.ko
+    insmod /system/lib/modules/z1-network/iptable_filter.ko
+    insmod /system/lib/modules/z1-network/iptable_mangle.ko
+    insmod /system/lib/modules/z1-network/nf_defrag_ipv4.ko
+    insmod /system/lib/modules/z1-network/nf_defrag_ipv6.ko
+    insmod /system/lib/modules/z1-network/nf_conntrack.ko
+    insmod /system/lib/modules/z1-network/nf_nat.ko
+    insmod /system/lib/modules/z1-network/iptable_nat.ko
+    insmod /system/lib/modules/z1-network/iptable_raw.ko
+    insmod /system/lib/modules/z1-network/nf_conntrack_ftp.ko
+    insmod /system/lib/modules/z1-network/nf_nat_ftp.ko
+    insmod /system/lib/modules/z1-network/nfnetlink.ko
+    insmod /system/lib/modules/z1-network/nfnetlink_log.ko
+    insmod /system/lib/modules/z1-network/xfrm_algo.ko
+    insmod /system/lib/modules/z1-network/xfrm_user.ko
+    insmod /system/lib/modules/z1-network/xt_CT.ko
+    insmod /system/lib/modules/z1-network/xt_IDLETIMER.ko
+    insmod /system/lib/modules/z1-network/xt_MASQUERADE.ko
+    insmod /system/lib/modules/z1-network/xt_NFLOG.ko
+    insmod /system/lib/modules/z1-network/xt_TCPMSS.ko
+    insmod /system/lib/modules/z1-network/xt_connmark.ko
+    insmod /system/lib/modules/z1-network/xt_mark.ko
+    insmod /system/lib/modules/z1-network/xt_nat.ko
+    insmod /system/lib/modules/z1-network/xt_owner.ko
+    insmod /system/lib/modules/z1-network/xt_policy.ko
+    insmod /system/lib/modules/z1-network/xt_quota2.ko
+    insmod /system/lib/modules/z1-network/xt_state.ko
+    insmod /system/lib/modules/z1-network/xt_tcpudp.ko
+    insmod /system/lib/modules/z1-network/xt_u32.ko

@@ -1,0 +1,167 @@
+--- a/system/core/init/init.cpp
++++ b/system/core/init/init.cpp
+@@ -17,8 +17,10 @@
+ #include "init.h"
+ 
+ #include <dirent.h>
++#include <errno.h>
+ #include <fcntl.h>
+ #include <paths.h>
++#include <poll.h>
+ #include <pthread.h>
+ #include <seccomp_policy.h>
+ #include <signal.h>
+@@ -29,6 +31,7 @@
+ #include <sys/signalfd.h>
+ #include <sys/sysmacros.h>
+ #include <sys/types.h>
++#include <time.h>
+ #include <unistd.h>
+ 
+ #include <android-base/chrono_utils.h>
+@@ -74,6 +77,11 @@
+ namespace init {
+ 
+ static int property_triggers_enabled = 0;
++
++// Cache before installing fatal handlers; the signal handler reads only the
++// sig_atomic_t copy and never performs filesystem marker checks itself.
++static bool stock_debug_kernel = false;
++static volatile sig_atomic_t stock_fatal_capture = 0;
+ 
+ static char qemu[32];
+ 
+@@ -387,6 +395,13 @@
+     };
+     for (size_t i = 0; i < arraysize(prop_map); i++) {
+         std::string value = GetProperty(prop_map[i].src_prop, "");
++        // The stock ATAG/LK boot path does not supply androidboot.hardware.
++        // Override only its empty fallback, never an explicit boot property.
++        if (stock_debug_kernel && value.empty() &&
++            !strcmp(prop_map[i].src_prop, "ro.boot.hardware")) {
++            value = "z1";
++            LOG(INFO) << "[Z1STOCK-DIAG] ro.boot.hardware absent; using ro.hardware=z1";
++        }
+         property_set(prop_map[i].dst_prop, (!value.empty()) ? value : prop_map[i].default_value);
+     }
+ }
+@@ -472,6 +487,42 @@
+         // want them to trigger reboot, so we directly call _exit() for children processes here.
+         if (getpid() != 1) {
+             _exit(signal);
++        }
++
++        if (stock_fatal_capture) {
++            // Keep the independent ACM logger alive long enough to replay the
++            // fatal message. No C++ logging, allocation or formatted I/O here.
++            int fd = open("/dev/kmsg", O_WRONLY | O_NONBLOCK | O_CLOEXEC);
++            static const char notice[] =
++                "<2>[Z1STOCK-DIAG] PID1 fatal signal; 15s capture window; send R on ACM before bootloader reboot\n";
++            if (fd >= 0) {
++                ssize_t ignored = write(fd, notice, sizeof(notice) - 1);
++                (void)ignored;
++                close(fd);
++            }
++            struct timespec now, deadline;
++            if (clock_gettime(CLOCK_MONOTONIC, &now) == 0) {
++                deadline = now;
++                deadline.tv_sec += 15;
++                for (;;) {
++                    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) break;
++                    if (now.tv_sec > deadline.tv_sec ||
++                        (now.tv_sec == deadline.tv_sec && now.tv_nsec >= deadline.tv_nsec)) break;
++                    struct timespec remaining;
++                    remaining.tv_sec = deadline.tv_sec - now.tv_sec;
++                    remaining.tv_nsec = deadline.tv_nsec - now.tv_nsec;
++                    if (remaining.tv_nsec < 0) {
++                        --remaining.tv_sec;
++                        remaining.tv_nsec += 1000000000L;
++                    }
++                    // poll with no descriptors is an async-signal-safe wait.
++                    // Recompute from the absolute deadline after EINTR; never
++                    // restart a full 15-second relative wait.
++                    int wait_ms = static_cast<int>(remaining.tv_sec * 1000 +
++                                                   (remaining.tv_nsec + 999999) / 1000000);
++                    if (poll(nullptr, 0, wait_ms) >= 0 || errno != EINTR) break;
++                }
++            }
+         }
+ 
+         // Calling DoReboot() or LOG(FATAL) is not a good option as this is a signal handler.
+@@ -558,6 +609,8 @@
+         return SubcontextMain(argc, argv, &function_map);
+     }
+ 
++    stock_debug_kernel = access("/z1_stock_kernel", F_OK) == 0;
++    stock_fatal_capture = stock_debug_kernel ? 1 : 0;
+     if (REBOOT_BOOTLOADER_ON_PANIC) {
+         InstallRebootSignalHandlers();
+     }
+@@ -613,22 +666,45 @@
+ 
+         LOG(INFO) << "init first stage started!";
+ 
+-        if (!DoFirstStageMount()) {
++        // Start diagnostic USB before loading policy, so policy failures are
++        // observable with the original kernel's legacy android_usb gadget.
++        if (access("/z1_stock_kernel", F_OK) == 0) {
++            pid_t logger_pid = fork();
++            if (logger_pid == 0) {
++                execl("/z1_bootdiag", "z1_bootdiag", "--acm-stock", nullptr);
++                _exit(127);
++            }
++            if (logger_pid < 0) PLOG(ERROR) << "Cannot fork stock diagnostic logger";
++        }
++
++        if (stock_debug_kernel) LOG(INFO) << "[Z1STOCK-DIAG] DoFirstStageMount BEGIN";
++        bool first_stage_mounted = DoFirstStageMount();
++        if (stock_debug_kernel) LOG(INFO) << "[Z1STOCK-DIAG] DoFirstStageMount END success=" << first_stage_mounted;
++        if (!first_stage_mounted) {
+             LOG(FATAL) << "Failed to mount required partitions early ...";
+         }
+ 
+         SetInitAvbVersionInRecovery();
+ 
+         // Enable seccomp if global boot option was passed (otherwise it is enabled in zygote).
++        if (stock_debug_kernel) LOG(INFO) << "[Z1STOCK-DIAG] global_seccomp BEGIN";
+         global_seccomp();
++        if (stock_debug_kernel) LOG(INFO) << "[Z1STOCK-DIAG] global_seccomp END";
+ 
+         // Set up SELinux, loading the SELinux policy.
+         SelinuxSetupKernelLogging();
++        if (stock_debug_kernel) LOG(INFO) << "[Z1STOCK-DIAG] SelinuxInitialize BEGIN";
+         SelinuxInitialize();
++        if (stock_debug_kernel) LOG(INFO) << "[Z1STOCK-DIAG] SelinuxInitialize END";
+ 
+         // We're in the kernel domain, so re-exec init to transition to the init domain now
+         // that the SELinux policy has been loaded.
+-        if (selinux_android_restorecon("/init", 0) == -1) {
++        if (stock_debug_kernel) LOG(INFO) << "[Z1STOCK-DIAG] restorecon /init BEGIN";
++        int restorecon_result = selinux_android_restorecon("/init", 0);
++        int restorecon_errno = errno;
++        if (stock_debug_kernel) LOG(INFO) << "[Z1STOCK-DIAG] restorecon /init END result=" << restorecon_result;
++        if (restorecon_result == -1) {
++            errno = restorecon_errno;
+             PLOG(FATAL) << "restorecon failed of /init failed";
+         }
+ 
+@@ -640,7 +716,11 @@
+ 
+         char* path = argv[0];
+         char* args[] = { path, nullptr };
++        if (stock_debug_kernel) LOG(INFO) << "[Z1STOCK-DIAG] reexec BEGIN";
+         execv(path, args);
++        int exec_errno = errno;
++        if (stock_debug_kernel) LOG(INFO) << "[Z1STOCK-DIAG] reexec END failure errno=" << exec_errno;
++        errno = exec_errno;
+ 
+         // execv() only returns if an error happened, in which case we
+         // panic and never fall through this conditional.
+@@ -650,6 +730,7 @@
+     // At this point we're in the second stage of init.
+     InitKernelLogging(argv);
+     LOG(INFO) << "init second stage started!";
++    if (stock_debug_kernel) LOG(INFO) << "[Z1STOCK-DIAG] reexec END second_stage";
+ 
+     // Set up a session keyring that all processes will have access to. It
+     // will hold things like FBE encryption keys. No process should override

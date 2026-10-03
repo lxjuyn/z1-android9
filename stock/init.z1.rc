@@ -1,0 +1,24 @@
+# Exact factory 3.4.67: legacy USB, built-in drivers; no mainline modules.
+on fs
+    exec u:r:init:s0 root root -- /z1_bootdiag --stock-partitions
+    mount_all /fstab.z1
+
+on init
+    setprop sys.usb.configfs 0
+    setprop sys.usb.config acm
+    setprop sys.usb.state acm
+
+on post-fs
+    exec_background u:r:init:s0 root root -- /z1_bootdiag
+
+on post-fs-data
+    swapon_all /fstab.z1
+    start z1_logcat_relay
+    exec u:r:init:s0 root root -- /z1_bootdiag --graphics-mode
+
+service z1_logcat_relay /z1_bootdiag --logcat
+    class core
+    user root
+    group log
+    disabled
+    seclabel u:r:init:s0

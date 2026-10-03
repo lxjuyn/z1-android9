@@ -1,0 +1,8 @@
+# Resolve factory partition names from live dumchar_info and sysfs; no format/encryption.
+/dev/block/z1-stock-system /system ext4 ro,noatime wait
+/dev/block/z1-stock-cache /cache ext4 noatime,nosuid,nodev wait
+/dev/block/z1-stock-data /data ext4 noatime,nosuid,nodev wait
+
+# A7 initializes a 384MiB RAM-only zram device. No eMMC swap file.
+# Optional: lack of the device produces a logged swapon failure, no format.
+/dev/block/zram0 none swap defaults zramsize=402653184,swapprio=32758,max_comp_streams=-1

@@ -1,0 +1,30 @@
+--- a/hardware/interfaces/keymaster/4.0/support/Keymaster.cpp
++++ b/hardware/interfaces/keymaster/4.0/support/Keymaster.cpp
+@@ -19,6 +19,7 @@
+ #include <iomanip>
+ 
+ #include <android-base/logging.h>
++#include <android-base/properties.h>
+ #include <android/hidl/manager/1.0/IServiceManager.h>
+ #include <keymasterV4_0/Keymaster3.h>
+ #include <keymasterV4_0/Keymaster4.h>
+@@ -107,6 +108,19 @@
+ }
+ 
+ Keymaster::KeymasterSet Keymaster::enumerateAvailableDevices() {
++    if (::android::base::GetBoolProperty("ro.z1.stock_kernel", false)) {
++        KeymasterSet result;
++        // Local KM3 implementation can wrap legacy hardware or its existing
++        // software backend.  Never manufacture a TEE security level here.
++        auto device = Keymaster3::WrappedIKeymasterDevice::getService("default");
++        if (device) {
++            result.emplace_back(new Keymaster3(device, "default"));
++            LOG(WARNING) << "stock kernel: using local Keymaster3: " << *result.front();
++        } else {
++            LOG(ERROR) << "stock kernel: local Keymaster3 unavailable; no usable Keymaster device";
++        }
++        return result;
++    }
+     auto serviceManager = IServiceManager::getService();
+     CHECK(serviceManager) << "Could not retrieve ServiceManager";
+ 

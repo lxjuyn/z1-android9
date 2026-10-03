@@ -1,0 +1,28 @@
+{
+  "url": "https://android.googlesource.com/platform/system/core/+/android-8.1.0_r81/sdcard/?format=JSON",
+  "tag": "android-8.1.0_r81",
+  "tree": "a4475d388f53898f8e0c728385e43aac2335e83f",
+  "files": [
+    {
+      "mode": 33188,
+      "type": "blob",
+      "id": "95559d7ff29f344b4dd46ccf6ee66e1781ce5af0",
+      "name": "fuse.cpp",
+      "sha256": "dcd74827a7ccd84af77ce7bb768c50554bfa5fdd425226dd74366261a09f0c16"
+    },
+    {
+      "mode": 33188,
+      "type": "blob",
+      "id": "9ccd21dc4819530748aa7613f41d6666bafb4c46",
+      "name": "fuse.h",
+      "sha256": "8f7d1dda0cdd4d28452b7ed20cb50dd15526922f1261ed0242b4563aaf41eefa"
+    },
+    {
+      "mode": 33188,
+      "type": "blob",
+      "id": "2bbb9060ff427fbdbf0c48d4de096a2f3c0bd1fd",
+      "name": "sdcard.cpp",
+      "sha256": "1e8518abf9a32c49ba722337497eaa2abf109ca9caba9ce948303553b3f526ad"
+    }
+  ]
+}

@@ -1,0 +1,383 @@
+{
+  "kernel_release": "7.0.0-rc7-z1+",
+  "modules": [
+    {
+      "name": "fuse",
+      "file": "fuse.ko",
+      "source": "fs/fuse/fuse.ko",
+      "depends": [],
+      "sha256": "6f582be162b022c5b4e732fbb56a02b8d012ab7f7ce542294d2830eb4b45ecf6"
+    },
+    {
+      "name": "x_tables",
+      "file": "x_tables.ko",
+      "source": "net/netfilter/x_tables.ko",
+      "depends": [],
+      "sha256": "37a82f89a8c1afce4d212e21622d341e8f7c175c72ffe454e57571906415f894"
+    },
+    {
+      "name": "ip6_tables",
+      "file": "ip6_tables.ko",
+      "source": "net/ipv6/netfilter/ip6_tables.ko",
+      "depends": [
+        "x_tables"
+      ],
+      "sha256": "c709ae467ec3662b9626df7d4a7853e294e39cae246019d8e2b073f27d5a46bb"
+    },
+    {
+      "name": "ipv6",
+      "file": "ipv6.ko",
+      "source": "net/ipv6/ipv6.ko",
+      "depends": [],
+      "sha256": "40ea05c256fb09c14d15d75f6235ae6bd7734034e978c418a5046c137742171b"
+    },
+    {
+      "name": "nf_reject_ipv6",
+      "file": "nf_reject_ipv6.ko",
+      "source": "net/ipv6/netfilter/nf_reject_ipv6.ko",
+      "depends": [
+        "ipv6"
+      ],
+      "sha256": "42d8250588bba15e756fc4ce9c974d5ea15b6200d2b116cde90430ec80369e5c"
+    },
+    {
+      "name": "ip6t_REJECT",
+      "file": "ip6t_REJECT.ko",
+      "source": "net/ipv6/netfilter/ip6t_REJECT.ko",
+      "depends": [
+        "nf_reject_ipv6",
+        "x_tables"
+      ],
+      "sha256": "7f60a9a203b9a8ebfa703263735e507f50d4eb45e7d06931ef6d8a9aece0c651"
+    },
+    {
+      "name": "ip6t_rpfilter",
+      "file": "ip6t_rpfilter.ko",
+      "source": "net/ipv6/netfilter/ip6t_rpfilter.ko",
+      "depends": [
+        "ipv6",
+        "x_tables"
+      ],
+      "sha256": "560d99be16717decb3760a1e26044330d6c6c62ed3c3e527cbc744965d83d2a2"
+    },
+    {
+      "name": "ip6table_filter",
+      "file": "ip6table_filter.ko",
+      "source": "net/ipv6/netfilter/ip6table_filter.ko",
+      "depends": [
+        "ip6_tables",
+        "x_tables"
+      ],
+      "sha256": "452eaa6a4ae74ab89a21a7a1b8574f8e6b18f51824f21ebc9110c19db0c1d049"
+    },
+    {
+      "name": "ip6table_mangle",
+      "file": "ip6table_mangle.ko",
+      "source": "net/ipv6/netfilter/ip6table_mangle.ko",
+      "depends": [
+        "ip6_tables",
+        "ipv6",
+        "x_tables"
+      ],
+      "sha256": "571d52b3b9991839ec43f9c7121ecd8b4f25664e0986f7848f1b0829a6617a26"
+    },
+    {
+      "name": "ip6table_raw",
+      "file": "ip6table_raw.ko",
+      "source": "net/ipv6/netfilter/ip6table_raw.ko",
+      "depends": [
+        "ip6_tables",
+        "x_tables"
+      ],
+      "sha256": "0ac12902731b340614c641b5a9544af6faa7d12bbc6327722192d9e3d7d6f6a1"
+    },
+    {
+      "name": "ip_tables",
+      "file": "ip_tables.ko",
+      "source": "net/ipv4/netfilter/ip_tables.ko",
+      "depends": [
+        "x_tables"
+      ],
+      "sha256": "177f0f9177038bfa8aecca3354abda9a56332d3c8637efcc52cd1daf32dc83cf"
+    },
+    {
+      "name": "nf_reject_ipv4",
+      "file": "nf_reject_ipv4.ko",
+      "source": "net/ipv4/netfilter/nf_reject_ipv4.ko",
+      "depends": [],
+      "sha256": "80e3d5996a1a44a8793fe5eb4219666334fcb80489368832c4207d939772d002"
+    },
+    {
+      "name": "ipt_REJECT",
+      "file": "ipt_REJECT.ko",
+      "source": "net/ipv4/netfilter/ipt_REJECT.ko",
+      "depends": [
+        "nf_reject_ipv4",
+        "x_tables"
+      ],
+      "sha256": "c19a90f179a9f454155be4d6e70ace41d0e244cdd9d6c411d29da13f9c44670e"
+    },
+    {
+      "name": "iptable_filter",
+      "file": "iptable_filter.ko",
+      "source": "net/ipv4/netfilter/iptable_filter.ko",
+      "depends": [
+        "ip_tables",
+        "x_tables"
+      ],
+      "sha256": "f253532ba57df478ae129bf225be4ad756bbf6598021a301de3a3a356b9b74e3"
+    },
+    {
+      "name": "iptable_mangle",
+      "file": "iptable_mangle.ko",
+      "source": "net/ipv4/netfilter/iptable_mangle.ko",
+      "depends": [
+        "ip_tables",
+        "x_tables"
+      ],
+      "sha256": "aaf1b6b7b7dc72677a4477c35105642e0ca6cb32934c21f356ea5255442ea1db"
+    },
+    {
+      "name": "nf_defrag_ipv4",
+      "file": "nf_defrag_ipv4.ko",
+      "source": "net/ipv4/netfilter/nf_defrag_ipv4.ko",
+      "depends": [],
+      "sha256": "369dd66531021c439be3cc6540923757868667e5bd5a79764e5a429705036bb6"
+    },
+    {
+      "name": "nf_defrag_ipv6",
+      "file": "nf_defrag_ipv6.ko",
+      "source": "net/ipv6/netfilter/nf_defrag_ipv6.ko",
+      "depends": [],
+      "sha256": "10507faa91eb6f37733ba0ba7eaa1329c263b9a49214062aead1c85779257180"
+    },
+    {
+      "name": "nf_conntrack",
+      "file": "nf_conntrack.ko",
+      "source": "net/netfilter/nf_conntrack.ko",
+      "depends": [
+        "nf_defrag_ipv4",
+        "nf_defrag_ipv6"
+      ],
+      "sha256": "55030d120a4e0e20f24da8a7e725a1b89ddcd9376cd854fd849b0190b548a956"
+    },
+    {
+      "name": "nf_nat",
+      "file": "nf_nat.ko",
+      "source": "net/netfilter/nf_nat.ko",
+      "depends": [
+        "nf_conntrack"
+      ],
+      "sha256": "feaa5227521b293eac0986c665a7312b9f54ed45952cd31d6b1ff8ff1686b686"
+    },
+    {
+      "name": "iptable_nat",
+      "file": "iptable_nat.ko",
+      "source": "net/ipv4/netfilter/iptable_nat.ko",
+      "depends": [
+        "ip_tables",
+        "nf_nat",
+        "x_tables"
+      ],
+      "sha256": "77dcde2d7d409c8cc0d77ca5feae3ef5a5fd85940478d2fe46c2c9c93ca09e8b"
+    },
+    {
+      "name": "iptable_raw",
+      "file": "iptable_raw.ko",
+      "source": "net/ipv4/netfilter/iptable_raw.ko",
+      "depends": [
+        "ip_tables",
+        "x_tables"
+      ],
+      "sha256": "acd781654874e08a39d591d66ad4f002dbd1d865de7ed5fefed8ef8a4e8dd0e4"
+    },
+    {
+      "name": "nf_conntrack_ftp",
+      "file": "nf_conntrack_ftp.ko",
+      "source": "net/netfilter/nf_conntrack_ftp.ko",
+      "depends": [
+        "nf_conntrack"
+      ],
+      "sha256": "f69056cff069d6b5c1a3ac4c5039f8c5f9fead0193a27081c8551292dee38993"
+    },
+    {
+      "name": "nf_nat_ftp",
+      "file": "nf_nat_ftp.ko",
+      "source": "net/netfilter/nf_nat_ftp.ko",
+      "depends": [
+        "nf_conntrack",
+        "nf_conntrack_ftp",
+        "nf_nat"
+      ],
+      "sha256": "c4443d5e450ace6d894b9e4490b281bb7f15994db9d16d4255919ea09c1b28f1"
+    },
+    {
+      "name": "nfnetlink",
+      "file": "nfnetlink.ko",
+      "source": "net/netfilter/nfnetlink.ko",
+      "depends": [],
+      "sha256": "d285dfbc72b6cfddbc39ec2260f480e87b6f9157ca349fd75f54645d793799a8"
+    },
+    {
+      "name": "nfnetlink_log",
+      "file": "nfnetlink_log.ko",
+      "source": "net/netfilter/nfnetlink_log.ko",
+      "depends": [
+        "nfnetlink"
+      ],
+      "sha256": "5ee3363cb71b1d5fa97517457222c0ae6038372414aa278b6bb24076e732f912"
+    },
+    {
+      "name": "xfrm_algo",
+      "file": "xfrm_algo.ko",
+      "source": "net/xfrm/xfrm_algo.ko",
+      "depends": [],
+      "sha256": "c0a953840a897bd7583592209d7ecd899e87392aff1dc00ee6e9585030b1b419"
+    },
+    {
+      "name": "xfrm_user",
+      "file": "xfrm_user.ko",
+      "source": "net/xfrm/xfrm_user.ko",
+      "depends": [
+        "xfrm_algo"
+      ],
+      "sha256": "10952bb18eaea330b0d66a3e120379984a8ada8f9529ab3ad04ed0b8761adb74"
+    },
+    {
+      "name": "xt_CT",
+      "file": "xt_CT.ko",
+      "source": "net/netfilter/xt_CT.ko",
+      "depends": [
+        "nf_conntrack",
+        "x_tables"
+      ],
+      "sha256": "d996af4451a54ed1acb2ac74b86e165f3ca9c0743df474662637cce9e7676779"
+    },
+    {
+      "name": "xt_IDLETIMER",
+      "file": "xt_IDLETIMER.ko",
+      "source": "net/netfilter/xt_IDLETIMER.ko",
+      "depends": [
+        "x_tables"
+      ],
+      "sha256": "1887b5dd34994466e3b9a81a364e739ab12d98f673832226953e67bead36bc13"
+    },
+    {
+      "name": "xt_MASQUERADE",
+      "file": "xt_MASQUERADE.ko",
+      "source": "net/netfilter/xt_MASQUERADE.ko",
+      "depends": [
+        "nf_conntrack",
+        "nf_nat",
+        "x_tables"
+      ],
+      "sha256": "da73e58be585a8ed97cfdab69dc2ffb9e488147c59b4e17724ab1083484f1d15"
+    },
+    {
+      "name": "xt_NFLOG",
+      "file": "xt_NFLOG.ko",
+      "source": "net/netfilter/xt_NFLOG.ko",
+      "depends": [
+        "x_tables"
+      ],
+      "sha256": "e8733cc50eb968c483c29e6ae4fab040ab81ec5af599e6b590aadc64cdb1c978"
+    },
+    {
+      "name": "xt_TCPMSS",
+      "file": "xt_TCPMSS.ko",
+      "source": "net/netfilter/xt_TCPMSS.ko",
+      "depends": [
+        "x_tables"
+      ],
+      "sha256": "3765c9653075f3381faac84c5ba6b2614df0a93ae5b67df25b68f62aa9e8fc67"
+    },
+    {
+      "name": "xt_connmark",
+      "file": "xt_connmark.ko",
+      "source": "net/netfilter/xt_connmark.ko",
+      "depends": [
+        "nf_conntrack",
+        "x_tables"
+      ],
+      "sha256": "305f8cdba293901ae17ab479f826dc46823f8f9d1b539d9980ca0243b46cd981"
+    },
+    {
+      "name": "xt_mark",
+      "file": "xt_mark.ko",
+      "source": "net/netfilter/xt_mark.ko",
+      "depends": [
+        "x_tables"
+      ],
+      "sha256": "4d754eccc99bbea83a49701100947a271c78326bcf4c3447675d24da1988ec98"
+    },
+    {
+      "name": "xt_nat",
+      "file": "xt_nat.ko",
+      "source": "net/netfilter/xt_nat.ko",
+      "depends": [
+        "nf_conntrack",
+        "nf_nat",
+        "x_tables"
+      ],
+      "sha256": "33f51afbeaa8685fbb59af9dc3c748361b0a0587388dd8ef1783393bb644c3a8"
+    },
+    {
+      "name": "xt_owner",
+      "file": "xt_owner.ko",
+      "source": "net/netfilter/xt_owner.ko",
+      "depends": [
+        "x_tables"
+      ],
+      "sha256": "c130a9e133932f13c5cafb88bcf7516a0d933083cb2d31e5a98f52296225957f"
+    },
+    {
+      "name": "xt_policy",
+      "file": "xt_policy.ko",
+      "source": "net/netfilter/xt_policy.ko",
+      "depends": [
+        "x_tables"
+      ],
+      "sha256": "f322913a5e17f23206e0f777a5aee73db48b8cd9fffdf752831c431052cbbbff"
+    },
+    {
+      "name": "xt_quota2",
+      "file": "xt_quota2.ko",
+      "source": "net/netfilter/xt_quota2.ko",
+      "depends": [
+        "x_tables"
+      ],
+      "sha256": "c6ac4c1af881e8f73bdc9a4dec59a14bade2bd18469ce1123f5f74b2583c1ed9"
+    },
+    {
+      "name": "xt_state",
+      "file": "xt_state.ko",
+      "source": "net/netfilter/xt_state.ko",
+      "depends": [
+        "nf_conntrack",
+        "x_tables"
+      ],
+      "sha256": "93be5117158c7c5d3328e53d04f30c04bff11d0ef8fa440294d367456bf51988"
+    },
+    {
+      "name": "xt_tcpudp",
+      "file": "xt_tcpudp.ko",
+      "source": "net/netfilter/xt_tcpudp.ko",
+      "depends": [
+        "x_tables"
+      ],
+      "sha256": "3c2d2a119ed58f78c3cdcef09ecf20d81d1c191071a56d9999383d2713b96828"
+    },
+    {
+      "name": "xt_u32",
+      "file": "xt_u32.ko",
+      "source": "net/netfilter/xt_u32.ko",
+      "depends": [
+        "x_tables"
+      ],
+      "sha256": "2476c874227bb80231fe56f13ba31247a7993a35afd45bb030f52cb90b9609ab"
+    }
+  ],
+  "known_missing": [
+    "Android qtaguid UID/tag accounting and inbound owner semantics"
+  ]
+}

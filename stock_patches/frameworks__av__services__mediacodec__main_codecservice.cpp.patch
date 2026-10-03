@@ -1,0 +1,22 @@
+--- a/frameworks/av/services/mediacodec/main_codecservice.cpp
++++ b/frameworks/av/services/mediacodec/main_codecservice.cpp
+@@ -16,6 +16,7 @@
+ */
+ 
+ #include <android-base/logging.h>
++#include <cutils/properties.h>
+ 
+ // from LOCAL_C_INCLUDES
+ #include "minijail.h"
+@@ -41,6 +42,11 @@
+     strcpy(argv[0], "media.codec");
+     LOG(INFO) << "mediacodecservice starting";
+     signal(SIGPIPE, SIG_IGN);
++    if (property_get_bool("ro.z1.stock_kernel", false)) {
++        LOG(ERROR) << "stock kernel: standalone OMX HIDL service unavailable "
++                   << "without hwbinder/vndbinder; disable media.codec in stock init";
++        return 1;
++    }
+     SetUpMinijail(kSystemSeccompPolicyPath, kVendorSeccompPolicyPath);
+ 
+     android::ProcessState::initWithDriver("/dev/vndbinder");

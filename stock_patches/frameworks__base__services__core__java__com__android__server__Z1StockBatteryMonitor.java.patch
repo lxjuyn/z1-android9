@@ -1,0 +1,222 @@
+--- /dev/null
++++ b/frameworks/base/services/core/java/com/android/server/Z1StockBatteryMonitor.java
+@@ -0,0 +1,219 @@
++/*
++ * Copyright (C) 2026 The Android Open Source Project
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ * http://www.apache.org/licenses/LICENSE-2.0
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ */
++package com.android.server;
++
++import android.hardware.health.V2_0.HealthInfo;
++import android.hardware.health.V2_0.Result;
++import android.os.BatteryManager;
++import android.os.BatteryProperty;
++import android.os.Handler;
++import android.os.HandlerThread;
++import android.util.Slog;
++
++import java.io.File;
++import java.io.FileReader;
++import java.io.IOException;
++import java.io.PrintWriter;
++import java.util.Arrays;
++import java.util.function.Consumer;
++
++/** Experimental Z1 stock-kernel transport, selected only by ro.z1.stock_kernel. */
++final class Z1StockBatteryMonitor {
++    private static final String TAG = "Z1StockBattery";
++    private static final long POLL_MS = 5000;
++    private final File mRoot;
++    private final Consumer<HealthInfo> mCallback;
++    private final HandlerThread mThread = new HandlerThread("Z1StockBattery");
++    private Handler mHandler;
++    private volatile Sample mSample = new Sample();
++    private final Runnable mPoll = this::poll;
++
++    private void poll() {
++        Sample sample = readSample(mRoot);
++        mSample = sample;
++        mCallback.accept(sample.info);
++        mHandler.removeCallbacks(mPoll);
++        mHandler.postDelayed(mPoll, POLL_MS);
++    }
++
++    Z1StockBatteryMonitor(Consumer<HealthInfo> callback) {
++        this(new File("/sys/class/power_supply"), callback);
++    }
++
++    Z1StockBatteryMonitor(File root, Consumer<HealthInfo> callback) {
++        mRoot = root;
++        mCallback = callback;
++    }
++
++    void start() {
++        // Initial UNKNOWN state is explicit, so a missing provider cannot block
++        // SystemServer startup or be interpreted as a measured empty battery.
++        mCallback.accept(mSample.info);
++        mThread.start();
++        mHandler = new Handler(mThread.getLooper());
++        mHandler.post(mPoll);
++        Slog.i(TAG, "Polling stock sysfs; absent measurements remain unavailable");
++    }
++
++    void scheduleUpdate() {
++        mHandler.removeCallbacks(mPoll);
++        mHandler.post(mPoll);
++    }
++
++    int getProperty(int id, BatteryProperty property) {
++        Sample sample = mSample;
++        Long value;
++        switch (id) {
++            case BatteryManager.BATTERY_PROPERTY_CAPACITY: value = sample.capacity; break;
++            case BatteryManager.BATTERY_PROPERTY_CHARGE_COUNTER: value = sample.charge; break;
++            case BatteryManager.BATTERY_PROPERTY_CURRENT_NOW: value = sample.current; break;
++            case BatteryManager.BATTERY_PROPERTY_CURRENT_AVERAGE: value = sample.average; break;
++            case BatteryManager.BATTERY_PROPERTY_ENERGY_COUNTER: value = sample.energy; break;
++            case BatteryManager.BATTERY_PROPERTY_STATUS:
++                value = (long) sample.info.legacy.batteryStatus;
++                break;
++            default: return Result.NOT_SUPPORTED;
++        }
++        if (value == null) return Result.NOT_SUPPORTED;
++        property.setLong(value);
++        return Result.SUCCESS;
++    }
++
++    void dump(PrintWriter writer) {
++        Sample sample = mSample;
++        writer.println("  health transport: Z1 stock sysfs (experimental)");
++        writer.println("  measured capacity available: " + (sample.capacity != null));
++        writer.println("  measured temperature available: " + sample.temperatureAvailable);
++        writer.println("  measured voltage available: " + sample.voltageAvailable);
++        writer.println("  Unavailable numeric defaults are not measurements.");
++    }
++
++    static final class Sample {
++        final HealthInfo info = new HealthInfo();
++        Long capacity, charge, current, average, energy;
++        boolean temperatureAvailable, voltageAvailable;
++
++        Sample() {
++            info.legacy.batteryStatus = BatteryManager.BATTERY_STATUS_UNKNOWN;
++            info.legacy.batteryHealth = BatteryManager.BATTERY_HEALTH_UNKNOWN;
++        }
++    }
++
++    static Sample readSample(File root) {
++        Sample sample = new Sample();
++        File[] supplies = root.listFiles();
++        if (supplies == null) return sample;
++        Arrays.sort(supplies);
++        boolean foundBattery = false;
++        for (int i = 0; i < supplies.length && i < 16; i++) {
++            File supply = supplies[i];
++            String type = read(supply, "type");
++            boolean online = Long.valueOf(1).equals(number(supply, "online"));
++            if ("Mains".equals(type)) sample.info.legacy.chargerAcOnline |= online;
++            else if (type != null && type.startsWith("USB")) {
++                sample.info.legacy.chargerUsbOnline |= online;
++            } else if ("Wireless".equals(type)) {
++                sample.info.legacy.chargerWirelessOnline |= online;
++            }
++            if (foundBattery || !("Battery".equals(type)
++                    || (type == null && "battery".equalsIgnoreCase(supply.getName())))) continue;
++            foundBattery = true;
++            android.hardware.health.V1_0.HealthInfo info = sample.info.legacy;
++            Long capacity = number(supply, "capacity");
++            if (capacity != null && capacity >= 0 && capacity <= 100) {
++                sample.capacity = capacity;
++                info.batteryLevel = capacity.intValue();
++                info.batteryStatus = status(read(supply, "status"));
++            }
++            // UNKNOWN makes BatteryService's existing isPoweredLocked return true
++            // when capacity is absent, avoiding a false 0%-battery shutdown.
++            // It does not change shutdownIfOverTempLocked or its threshold.
++            Long present = number(supply, "present");
++            info.batteryPresent = Long.valueOf(1).equals(present);
++            info.batteryHealth = health(read(supply, "health"));
++            String technology = read(supply, "technology");
++            if (technology != null) info.batteryTechnology = technology;
++            Integer temperature = integer(supply, "temp");
++            if (temperature == null) temperature = integer(supply, "batt_temp");
++            if (temperature != null) {
++                // Both standard temp and MTK batt_temp are tenths Celsius.
++                info.batteryTemperature = temperature;
++                sample.temperatureAvailable = true;
++            }
++            Long voltage = number(supply, "voltage_now");
++            if (voltage != null) voltage /= 1000; // uV -> HealthInfo mV
++            else voltage = number(supply, "batt_vol"); // stock MTK already mV
++            if (voltage != null && voltage >= 0 && voltage <= Integer.MAX_VALUE) {
++                info.batteryVoltage = voltage.intValue();
++                sample.voltageAvailable = true;
++            }
++            sample.current = number(supply, "current_now");
++            sample.average = number(supply, "current_avg");
++            sample.charge = number(supply, "charge_counter");
++            sample.energy = number(supply, "energy_now");
++            // energy_now is uWh while BatteryManager expects nWh.
++            if (sample.energy != null) {
++                try { sample.energy = Math.multiplyExact(sample.energy, 1000L); }
++                catch (ArithmeticException e) { sample.energy = null; }
++            }
++            Integer current = integer(supply, "current_now");
++            if (current != null) info.batteryCurrent = current;
++            Integer charge = integer(supply, "charge_counter");
++            if (charge != null) info.batteryChargeCounter = charge;
++            Integer full = integer(supply, "charge_full");
++            if (full != null) info.batteryFullCharge = full;
++            Integer average = integer(supply, "current_avg");
++            if (average != null) sample.info.batteryCurrentAverage = average;
++        }
++        return sample;
++    }
++
++    private static String read(File supply, String field) {
++        // Only fixed power_supply attributes; never arbitrary paths or commands.
++        try (FileReader reader = new FileReader(new File(supply, field))) {
++            char[] value = new char[128];
++            int size = reader.read(value);
++            if (size < 0 || size == value.length) return null;
++            return new String(value, 0, size).trim();
++        } catch (IOException | SecurityException e) { return null; }
++    }
++
++    private static Long number(File supply, String field) {
++        String value = read(supply, field);
++        if (value == null) return null;
++        try { return Long.valueOf(value); }
++        catch (NumberFormatException e) { return null; }
++    }
++
++    private static Integer integer(File supply, String field) {
++        Long value = number(supply, field);
++        return value != null && value >= Integer.MIN_VALUE && value <= Integer.MAX_VALUE
++                ? value.intValue() : null;
++    }
++
++    private static int status(String value) {
++        if ("Charging".equals(value)) return BatteryManager.BATTERY_STATUS_CHARGING;
++        if ("Discharging".equals(value)) return BatteryManager.BATTERY_STATUS_DISCHARGING;
++        if ("Not charging".equals(value)) return BatteryManager.BATTERY_STATUS_NOT_CHARGING;
++        if ("Full".equals(value)) return BatteryManager.BATTERY_STATUS_FULL;
++        return BatteryManager.BATTERY_STATUS_UNKNOWN;
++    }
++
++    private static int health(String value) {
++        if ("Good".equals(value)) return BatteryManager.BATTERY_HEALTH_GOOD;
++        if ("Overheat".equals(value)) return BatteryManager.BATTERY_HEALTH_OVERHEAT;
++        if ("Dead".equals(value)) return BatteryManager.BATTERY_HEALTH_DEAD;
++        if ("Over voltage".equals(value)) return BatteryManager.BATTERY_HEALTH_OVER_VOLTAGE;
++        if ("Unspecified failure".equals(value)) return BatteryManager.BATTERY_HEALTH_UNSPECIFIED_FAILURE;
++        if ("Cold".equals(value)) return BatteryManager.BATTERY_HEALTH_COLD;
++        return BatteryManager.BATTERY_HEALTH_UNKNOWN;
++    }
++}

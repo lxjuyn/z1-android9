@@ -1,0 +1,14 @@
+--- a/frameworks/base/services/core/jni/com_android_server_SystemServer.cpp
++++ b/frameworks/base/services/core/jni/com_android_server_SystemServer.cpp
+@@ -40,6 +40,11 @@
+ }
+ 
+ static void android_server_SystemServer_startHidlServices(JNIEnv* env, jobject /* clazz */) {
++    if (property_get_bool("ro.z1.stock_kernel", false)) {
++        ALOGW("stock kernel: sensor/scheduling HIDL publication unavailable; "
++              "native SensorService remains active");
++        return;
++    }
+     using ::android::frameworks::schedulerservice::V1_0::ISchedulingPolicyService;
+     using ::android::frameworks::schedulerservice::V1_0::implementation::SchedulingPolicyService;
+     using ::android::frameworks::sensorservice::V1_0::ISensorManager;

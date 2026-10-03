@@ -1,0 +1,20 @@
+--- a/system/core/init/security.cpp
++++ b/system/core/init/security.cpp
+@@ -163,6 +163,17 @@
+         return Success();
+     }
+ #elif defined(__arm__) || defined(__i386__)
++#if defined(__arm__)
++    // The unchanged stock ARM32 kernel predates the configurable mmap ASLR
++    // sysctl. Missing support is distinct from failure of an existing sysctl.
++    if (access("/z1_stock_kernel", F_OK) == 0 &&
++        access(MMAP_RND_PATH, F_OK) == -1 && errno == ENOENT) {
++        LOG(WARNING) << "[Z1STOCK-DIAG] Stock ARM32 kernel lacks " << MMAP_RND_PATH
++                     << "; preserving existing kernel ASLR behavior; "
++                     << "16-bit mmap entropy is not verified";
++        return Success();
++    }
++#endif
+     // check to see if we're running on 64-bit kernel
+     bool h64 = !access(MMAP_RND_COMPAT_PATH, F_OK);
+     // supported 32-bit architecture must have 16 bits set

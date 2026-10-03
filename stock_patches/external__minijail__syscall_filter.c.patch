@@ -1,0 +1,36 @@
+--- a/external/minijail/syscall_filter.c
++++ b/external/minijail/syscall_filter.c
+@@ -7,6 +7,11 @@
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
++#if defined(__ANDROID__)
++#include <sys/system_properties.h>
++#include <fcntl.h>
++#include <unistd.h>
++#endif
+ 
+ #include "syscall_filter.h"
+ 
+@@ -28,6 +33,21 @@
+ 
+ int seccomp_can_softfail(void)
+ {
++#if defined(__ANDROID__)
++    char variant[PROP_VALUE_MAX];
++    char enforcing = '1';
++    if (__system_property_get("ro.z1.stock_kernel", variant) > 0 &&
++        !strcmp(variant, "true")) {
++        int fd = open("/sys/fs/selinux/enforce", O_RDONLY | O_CLOEXEC);
++        if (fd >= 0) {
++            ssize_t n = read(fd, &enforcing, 1);
++            close(fd);
++            // Only soften an actually unsupported syscall in the existing
++            // capability checks, and only for explicit permissive stock boot.
++            if (n == 1 && enforcing == '0') return 1;
++        }
++    }
++#endif
+ #if defined(USE_SECCOMP_SOFTFAIL)
+ 	return 1;
+ #endif

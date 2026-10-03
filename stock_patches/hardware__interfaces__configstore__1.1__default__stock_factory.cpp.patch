@@ -1,0 +1,8 @@
+--- /dev/null
++++ b/hardware/interfaces/configstore/1.1/default/stock_factory.cpp
+@@ -0,0 +1,5 @@
++#include "SurfaceFlingerConfigs.h"
++extern "C" android::hardware::configstore::V1_1::ISurfaceFlingerConfigs*
++HIDL_FETCH_ISurfaceFlingerConfigs(const char*) {
++    return new android::hardware::configstore::V1_1::implementation::SurfaceFlingerConfigs;
++}

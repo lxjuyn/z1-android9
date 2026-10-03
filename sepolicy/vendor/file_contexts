@@ -1,0 +1,1 @@
+/(vendor|system/vendor)/bin/hw/android\.hardware\.health@2\.0-service\.z1    u:object_r:hal_health_default_exec:s0

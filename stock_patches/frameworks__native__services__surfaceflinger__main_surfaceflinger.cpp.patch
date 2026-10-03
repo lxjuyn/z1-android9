@@ -1,0 +1,34 @@
+--- a/frameworks/native/services/surfaceflinger/main_surfaceflinger.cpp
++++ b/frameworks/native/services/surfaceflinger/main_surfaceflinger.cpp
+@@ -22,6 +22,7 @@
+ #include <android/hardware/configstore/1.0/ISurfaceFlingerConfigs.h>
+ #include <android/hardware/graphics/allocator/2.0/IAllocator.h>
+ #include <cutils/sched_policy.h>
++#include <cutils/properties.h>
+ #include <binder/IServiceManager.h>
+ #include <binder/IPCThreadState.h>
+ #include <binder/ProcessState.h>
+@@ -75,7 +76,8 @@
+     hardware::configureRpcThreadpool(1 /* maxThreads */,
+             false /* callerWillJoin */);
+ 
+-    startGraphicsAllocatorService();
++    const bool stock = property_get_bool("ro.z1.stock_kernel", false);
++    if (!stock) startGraphicsAllocatorService();
+ 
+     // When SF is launched in its own process, limit the number of
+     // binder threads to 4.
+@@ -109,7 +111,12 @@
+     sp<GpuService> gpuservice = new GpuService();
+     sm->addService(String16(GpuService::SERVICE_NAME), gpuservice, false);
+ 
+-    startDisplayService(); // dependency on SF getting registered above
++    if (!stock) {
++        startDisplayService(); // dependency on SF getting registered above
++    } else {
++        ALOGW("stock kernel: framework HIDL display publication unavailable; "
++              "SurfaceFlinger and GPU native Binder services remain active");
++    }
+ 
+     struct sched_param param = {0};
+     param.sched_priority = 2;

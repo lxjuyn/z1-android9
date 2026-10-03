@@ -1,0 +1,49 @@
+--- a/development/samples/Home/src/com/example/android/home/Home.java
++++ b/development/samples/Home/src/com/example/android/home/Home.java
+@@ -237,15 +237,21 @@
+      */
+     private void setDefaultWallpaper() {
+         if (!mWallpaperChecked) {
+-            Drawable wallpaper = peekWallpaper();
+-            if (wallpaper == null) {
+-                try {
+-                    clearWallpaper();
+-                } catch (IOException e) {
+-                    Log.e(LOG_TAG, "Failed to clear wallpaper " + e);
++            try {
++                Drawable wallpaper = peekWallpaper();
++                if (wallpaper == null) {
++                    try {
++                        clearWallpaper();
++                    } catch (IOException e) {
++                        Log.e(LOG_TAG, "Failed to clear wallpaper " + e);
++                    }
++                } else {
++                    getWindow().setBackgroundDrawable(new ClippedDrawable(wallpaper));
+                 }
+-            } else {
+-                getWindow().setBackgroundDrawable(new ClippedDrawable(wallpaper));
++            } catch (SecurityException e) {
++                // Pie requires a granted storage permission to read wallpaper.
++                // Keep the current background when that optional access is denied.
++                Log.w(LOG_TAG, "Wallpaper access denied; keeping current background", e);
+             }
+             mWallpaperChecked = true;
+         }
+@@ -584,7 +590,15 @@
+     private class WallpaperIntentReceiver extends BroadcastReceiver {
+         @Override
+         public void onReceive(Context context, Intent intent) {
+-            getWindow().setBackgroundDrawable(new ClippedDrawable(getWallpaper()));
++            try {
++                Drawable wallpaper = getWallpaper();
++                if (wallpaper != null) {
++                    getWindow().setBackgroundDrawable(new ClippedDrawable(wallpaper));
++                }
++            } catch (SecurityException e) {
++                // A wallpaper change does not grant permission to read its pixels.
++                Log.w(LOG_TAG, "Wallpaper access denied; keeping current background", e);
++            }
+         }
+     }
+ 

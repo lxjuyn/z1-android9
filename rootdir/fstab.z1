@@ -1,0 +1,11 @@
+# src                 mount-point  type  mount options                 fs_mgr flags
+# MBR/EBR: p4=system (900 MiB), p5=cache (226 MiB), p6=data (EOD-truncated).
+# No format/encryption/check flags until p6's actual geometry and existing
+# filesystem/encryption state are verified on-device.
+/dev/block/mmcblk0p4  /system      ext4  ro,noatime                    wait
+/dev/block/mmcblk0p5  /cache       ext4  noatime,nosuid,nodev         wait
+/dev/block/mmcblk0p6  /data        ext4  noatime,nosuid,nodev         wait
+
+# Compressed RAM only; this never formats an eMMC partition.
+# -1 skips Pie fs_mgr's removed max_comp_streams sysfs interface.
+/dev/block/zram0     none         swap  defaults                       wait,zramsize=268435456,swapprio=32758,max_comp_streams=-1

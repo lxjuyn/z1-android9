@@ -1,0 +1,55 @@
+# Imported by Pie init when DT bootargs sets androidboot.hardware=z1.
+# No vendor services are started until their HALs and kernel interfaces pass.
+
+import /init.z1.network.rc
+
+on fs
+    mount_all /fstab.z1
+
+# The LK leaves MT6572's hardware watchdog enabled. Start feeding it as soon
+# as ueventd can create /dev/watchdog, before the full boot class starts.
+on init
+    start watchdogd
+
+# Generic init.rc mounts /config before this imported action. Generic
+# init.usb.configfs.rc links ffs.adb and binds after sys.usb.ffs.ready=1.
+on init
+    mkdir /config/usb_gadget/g1 0755 root root
+    write /config/usb_gadget/g1/idVendor 0x18d1
+    write /config/usb_gadget/g1/idProduct 0x4ee7
+    write /config/usb_gadget/g1/bcdUSB 0x0200
+    write /config/usb_gadget/g1/bcdDevice 0x0100
+    mkdir /config/usb_gadget/g1/strings/0x409 0755 root root
+    write /config/usb_gadget/g1/strings/0x409/serialnumber Z1MT65720001
+    write /config/usb_gadget/g1/strings/0x409/manufacturer Z1
+    write /config/usb_gadget/g1/strings/0x409/product "Z1 ADB"
+    mkdir /config/usb_gadget/g1/configs/b.1 0755 root root
+    mkdir /config/usb_gadget/g1/configs/b.1/strings/0x409 0755 root root
+    write /config/usb_gadget/g1/configs/b.1/MaxPower 120
+    mkdir /config/usb_gadget/g1/functions/ffs.adb 0755 root root
+    mkdir /dev/usb-ffs 0755 root root
+    mkdir /dev/usb-ffs/adb 0770 shell shell
+    mount functionfs adb /dev/usb-ffs/adb uid=2000,gid=2000,rmode=0770,fmode=0660
+
+# Override init.usb.rc's earlier boot defaults without blocking init on UDC.
+on boot
+    start z1_usb_setup
+
+service z1_usb_setup /system/bin/sh /system/bin/z1_usb_setup.sh
+    class core
+    user root
+    group root
+    disabled
+    oneshot
+    # Permissive bringup context; audit before enforcing SELinux.
+    seclabel u:r:init:s0
+
+service watchdogd /sbin/watchdogd 5 10
+    class core
+    user root
+    group root
+    seclabel u:r:watchdogd:s0
+
+# Pie fs_mgr configures zram0 and invokes the built-in mkswap/swapon tools.
+on post-fs-data
+    swapon_all /fstab.z1

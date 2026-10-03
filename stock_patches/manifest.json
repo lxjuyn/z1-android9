@@ -1,0 +1,144 @@
+[
+  {
+    "file": "system/core/init/init.cpp",
+    "patch": "system__core__init__init.cpp.patch",
+    "base_sha256": "a691373d65be4318705255874c11818036080efa7e0c51e8ccfb4e03108ec279",
+    "result_sha256": "34c01edbed07f998e840c254c2ff3fe3134378866b5a4f1c59e2b98ac797b20e"
+  },
+  {
+    "file": "system/core/init/selinux.cpp",
+    "patch": "system__core__init__selinux.cpp.patch",
+    "base_sha256": "b2bb7d74d8cb8863d04b2172eedc22d0074129cab16c3335285fc9c2f9e69fa1",
+    "result_sha256": "9bc917d4fca836a346e0fb7eaf259a8495904685c947db8c6ae1f4fe51df273c"
+  },
+  {
+    "file": "system/netd/server/main.cpp",
+    "patch": "system__netd__server__main.cpp.patch",
+    "base_sha256": "d164e2e53290a00a6a2b6d789eff9120dc77a75633933c4d8ed16b876b96901e",
+    "result_sha256": "00c6b82b9e1632ede71dc5a5def148fc60d8ac4e725ddbdee8e34a62b2db60fb"
+  },
+  {
+    "file": "external/minijail/syscall_filter.c",
+    "patch": "external__minijail__syscall_filter.c.patch",
+    "base_sha256": "4dd80d32281f353cd34488542f9e91e964ab5e22f488ccc9a5abe77c62073b4a",
+    "result_sha256": "c588fce97ad11e9537154f58b7a7f1e681288db275e3a04d660cfb958a38d89b"
+  },
+  {
+    "file": "system/libhidl/transport/HidlTransportSupport.cpp",
+    "patch": "system__libhidl__transport__HidlTransportSupport.cpp.patch",
+    "base_sha256": "771dc09fdaae2684a95bf528c7e078008d22c5eb0875ba075c2578505e4333e5",
+    "result_sha256": "284bed5600de5d957cdcb7ab48219887aec69a3944fa1c0d081e4bf0385eca9e"
+  },
+  {
+    "file": "frameworks/base/core/jni/android_os_HwBinder.cpp",
+    "patch": "frameworks__base__core__jni__android_os_HwBinder.cpp.patch",
+    "base_sha256": "ddb0eeed59fb89adf3eaa90a18a4f369f9294e785b72fc3d48ad420c94ba9904",
+    "result_sha256": "90f5760c2cd57fcad91834c505b4d47b1d678290b920cb0a54f3c780890d736a"
+  },
+  {
+    "file": "hardware/interfaces/configstore/1.1/default/Android.mk",
+    "patch": "hardware__interfaces__configstore__1.1__default__Android.mk.patch",
+    "base_sha256": "f243a0f93df8664d324a1170088698307463004dbfa709b0cce1875a339f87a4",
+    "result_sha256": "1361ca4bb1e33f08977c0e31a3d885b54d780b33ca12e62274edf9bb586e83ae"
+  },
+  {
+    "file": "system/libhidl/transport/ServiceManagement.cpp",
+    "patch": "system__libhidl__transport__ServiceManagement.cpp.patch",
+    "base_sha256": "0e59f2b641a741d622350db0fb247d20d49e0cebd467e30627d123095ad058bd",
+    "result_sha256": "3d5f2b533ea7220c66525e498d40dde26264d57223272d74542a4f6175da6528"
+  },
+  {
+    "file": "frameworks/native/services/surfaceflinger/main_surfaceflinger.cpp",
+    "patch": "frameworks__native__services__surfaceflinger__main_surfaceflinger.cpp.patch",
+    "base_sha256": "62b1857b13247fb5730196fb14b3345d5687c4e83aa37c51be5d284ecbed6a1b",
+    "result_sha256": "57234b54278b6c71ca33ce155b9ec0b16d0ea01e340d25af57d296dae020a191"
+  },
+  {
+    "file": "frameworks/av/services/mediacodec/main_codecservice.cpp",
+    "patch": "frameworks__av__services__mediacodec__main_codecservice.cpp.patch",
+    "base_sha256": "b8716edc14d550519a453fbc96b012f4fa5508adedb2372f127b4ad07433c0db",
+    "result_sha256": "1c4ac12b74319a9f4fc585ac5e195eb2baf7ea3778541c902597fd7387a638ec"
+  },
+  {
+    "file": "frameworks/base/services/core/jni/com_android_server_SystemServer.cpp",
+    "patch": "frameworks__base__services__core__jni__com_android_server_SystemServer.cpp.patch",
+    "base_sha256": "73f4326ef1cd142d4e434c18d82d7f26c39d926f0c5633f23311d06e37519d2c",
+    "result_sha256": "b5d53080b08bc6c17067879aa80e7a340a5513c2a77a076f11daa3b0637f003c"
+  },
+  {
+    "file": "system/security/keystore/keystore_main.cpp",
+    "patch": "system__security__keystore__keystore_main.cpp.patch",
+    "base_sha256": "67479d97a9f5a291fa3ee4870c149ad06942073899f2086aeca95a9fd072da4c",
+    "result_sha256": "d6344192494a32835409e4517f50efdf647effd0e6fa5afeaf3fe135624b0256"
+  },
+  {
+    "file": "system/security/keystore/KeyStore.cpp",
+    "patch": "system__security__keystore__KeyStore.cpp.patch",
+    "base_sha256": "7ad0c877689b6a311d27099fa7df415b80064b069ec8450f2d8bed213f9021fc",
+    "result_sha256": "123d476476eb1555c115b8510ad3282c9d5e0bc978626c87434c4d50a8a01aa6"
+  },
+  {
+    "file": "hardware/interfaces/keymaster/4.0/support/Keymaster.cpp",
+    "patch": "hardware__interfaces__keymaster__4.0__support__Keymaster.cpp.patch",
+    "base_sha256": "860542e2a8b9d8d31a21eaf17138284b7aa2039e01713733f99e254027fdce23",
+    "result_sha256": "d87fe37f7eac81183a7ceb49e83d88b36b9099812102ad39f9cffc87e5414323"
+  },
+  {
+    "file": "development/samples/Home/src/com/example/android/home/Home.java",
+    "patch": "development__samples__Home__src__com__example__android__home__Home.java.patch",
+    "base_sha256": "1eaf91ef850bba45a5e9a9ec25356822b20a75bf9d1674bb38c44b768b57aa7f",
+    "result_sha256": "fe2f8f5ec8d589e4398c1d712f016f3db5b74419a725fdb198491a20bf7aea30"
+  },
+  {
+    "file": "hardware/interfaces/configstore/1.1/default/stock_factory.cpp",
+    "patch": "hardware__interfaces__configstore__1.1__default__stock_factory.cpp.patch",
+    "result_sha256": "14bddc186e0529c185f945139f3fc2c1032f800a054acaa93ba1fbdc7e4ae99d"
+  },
+  {
+    "file": "frameworks/base/services/core/java/com/android/server/Z1StockBatteryMonitor.java",
+    "patch": "frameworks__base__services__core__java__com__android__server__Z1StockBatteryMonitor.java.patch",
+    "result_sha256": "b2fe2a768953519d56e3b04ef610283192d1d996f2a25622fec62747d6900bfa"
+  },
+  {
+    "file": "frameworks/base/services/core/java/com/android/server/BatteryService.java",
+    "patch": "frameworks__base__services__core__java__com__android__server__BatteryService.java.patch",
+    "base_sha256": "86609213e6e8e923ce9389e84ce864a521d02cce73f1cb8732e1c8eac81112ab",
+    "result_sha256": "1686583f482e03dbe37e7a2c9f84d3a3eb2812c0df00406b99daea7d0904fc76"
+  },
+  {
+    "file": "system/core/init/log.cpp",
+    "patch": "system__core__init__log.cpp.patch",
+    "base_sha256": "5d499d8ae39490bbfeb24b4218706c0ebc663a6e97a9f97733a5f0d8dadf79d1",
+    "result_sha256": "702cb5a0a080d6b6f9c08608b58aab766b67294b8df6d2cfb3346e06ecb5cfb4"
+  },
+  {
+    "file": "system/core/init/security.cpp",
+    "patch": "system__core__init__security.cpp.patch",
+    "base_sha256": "c7cea4b7dadcccb726473181bfb1e43ce968c461828c0d480f772ca09c901d53",
+    "result_sha256": "4381ccb6cc50660552f8d4054071c79718a35afbd6387621f249b2cc273edafd"
+  },
+  {
+    "file": "frameworks/native/services/surfaceflinger/RenderEngine/RenderEngine.cpp",
+    "patch": "frameworks__native__services__surfaceflinger__RenderEngine__RenderEngine.cpp.patch",
+    "base_sha256": "31b31969b8703e779657b9cd2fb8c38023f471822add0139c368769aa5352b20",
+    "result_sha256": "cfa4e1cfe28c60c71736089bec7269d4197f908364fc5a064d05532eb1229448"
+  },
+  {
+    "file": "hardware/interfaces/configstore/1.1/default/stock_factory_v1_0.cpp",
+    "patch": "hardware__interfaces__configstore__1.1__default__stock_factory_v1_0.cpp.patch",
+    "base_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "result_sha256": "ab7c4ba7b82f51db16b095d3fc7d1a2906a5f09e946fea15dabcfe9e6aac3472"
+  },
+  {
+    "file": "system/connectivity/wificond/main.cpp",
+    "patch": "system__connectivity__wificond__main.cpp.patch",
+    "base_sha256": "a76cce84037b1398bb7bb453d27324a5bda68c6c4a738092cfa0ca5d4997e1a7",
+    "result_sha256": "17b2bd8834130cbcb673d8e56a355501065febeda625b1aa62558168441c911b"
+  },
+  {
+    "file": "system/connectivity/wificond/scanning/offload/offload_scan_manager.cpp",
+    "patch": "system__connectivity__wificond__scanning__offload__offload_scan_manager.cpp.patch",
+    "base_sha256": "f6ee554a3970a7b7d01ed9b9c7d36d896c63b204b329d3a4580491612927e350",
+    "result_sha256": "cff6084fc408cb69b8471dbae774added2a40ca6f255cb75a394629190927bcc"
+  }
+]

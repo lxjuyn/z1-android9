@@ -1,0 +1,24 @@
+--- a/system/connectivity/wificond/main.cpp
++++ b/system/connectivity/wificond/main.cpp
+@@ -130,10 +130,17 @@
+       android::wificond::EventLoop::kModeInput,
+       &OnBinderReadReady)) << "Failed to watch binder FD";
+ 
+-  int hw_binder_fd = SetupHwBinderOrCrash();
+-  CHECK(event_dispatcher->WatchFileDescriptor(
+-      hw_binder_fd, android::wificond::EventLoop::kModeInput,
+-      &OnHwBinderReadReady)) << "Failed to watch Hw Binder FD";
++  if (property_get_bool("ro.z1.stock_kernel", false)) {
++    // The unchanged stock kernel exposes native Binder, not HIDL transport.
++    // Keep the native service and netlink loop; this does not supply Wi-Fi HALs.
++    LOG(WARNING) << "Stock kernel: HIDL transport unavailable; keeping native "
++                 << "Binder service only; Wi-Fi hardware support is not provided";
++  } else {
++    int hw_binder_fd = SetupHwBinderOrCrash();
++    CHECK(event_dispatcher->WatchFileDescriptor(
++        hw_binder_fd, android::wificond::EventLoop::kModeInput,
++        &OnHwBinderReadReady)) << "Failed to watch Hw Binder FD";
++  }
+ 
+   android::wificond::NetlinkManager netlink_manager(event_dispatcher.get());
+   if (!netlink_manager.Start()) {

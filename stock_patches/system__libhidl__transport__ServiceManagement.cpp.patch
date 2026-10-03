@@ -1,0 +1,66 @@
+--- a/system/libhidl/transport/ServiceManagement.cpp
++++ b/system/libhidl/transport/ServiceManagement.cpp
+@@ -67,6 +67,13 @@
+ 
+ static const char* kHwServicemanagerReadyProperty = "hwservicemanager.ready";
+ 
++// The original Z1 kernel has Binder protocol 7, without HIDL scatter/gather
++// transactions or an independent hardware Binder context. Stock diagnostics
++// use process-local HAL implementations; a missing implementation is an error.
++static bool useStockKernelPassthrough() {
++    return android::base::GetBoolProperty("ro.z1.stock_kernel", false);
++}
++
+ void waitForHwServiceManager() {
+     using std::literals::chrono_literals::operator""s;
+ 
+@@ -166,6 +173,11 @@
+     return defaultServiceManager1_1();
+ }
+ sp<IServiceManager1_1> defaultServiceManager1_1() {
++    if (useStockKernelPassthrough()) {
++        // There is no hardware service registry in this product. In
++        // particular, do not wait forever for hwservicemanager.ready.
++        return nullptr;
++    }
+     {
+         AutoMutex _l(details::gDefaultServiceManagerLock);
+         if (details::gDefaultServiceManager != nullptr) {
+@@ -226,6 +238,11 @@
+ }
+ 
+ static void registerReference(const hidl_string &interfaceName, const hidl_string &instanceName) {
++    if (useStockKernelPassthrough()) {
++        // Passthrough objects remain owned by their clients. This is registry
++        // bookkeeping, not object ownership; the stock product has no registry.
++        return;
++    }
+     sp<IServiceManager1_0> binderizedManager = defaultServiceManager();
+     if (binderizedManager == nullptr) {
+         LOG(WARNING) << "Could not registerReference for "
+@@ -669,6 +686,25 @@
+     using ::android::hidl::manager::V1_0::IServiceManager;
+     sp<Waiter> waiter;
+ 
++    if (useStockKernelPassthrough()) {
++        const sp<IServiceManager> pm = getPassthroughServiceManager();
++        if (pm == nullptr) return nullptr;
++        sp<IBase> base = pm->get(descriptor, instance).withDefault(nullptr);
++        if (base == nullptr) {
++            ALOGE("stock kernel: no passthrough implementation for %s/%s",
++                  descriptor.c_str(), instance.c_str());
++            return nullptr;
++        }
++        bool wrap = !getStub;
++#if !defined(ENFORCE_VINTF_MANIFEST) || defined(LIBHIDL_TARGET_DEBUGGABLE)
++        const char* env = std::getenv("TREBLE_TESTING_OVERRIDE");
++        wrap = wrap || (env && !strcmp(env, "true"));
++#endif
++        // Keep Bs wrappers, instrumentation and local oneway task lifetime.
++        // No Bp proxy or SG transaction is created by this lookup path.
++        return wrap ? wrapPassthrough(base) : base;
++    }
++
+     const sp<IServiceManager1_1> sm = defaultServiceManager1_1();
+     if (sm == nullptr) {
+         ALOGE("getService: defaultServiceManager() is null");

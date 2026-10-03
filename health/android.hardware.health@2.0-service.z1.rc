@@ -1,0 +1,7 @@
+service health-hal-z1 /vendor/bin/hw/android.hardware.health@2.0-service.z1
+    class hal
+    user system
+    group system
+    capabilities WAKE_ALARM
+    file /dev/kmsg w
+    interface android.hardware.health@2.0::IHealth default

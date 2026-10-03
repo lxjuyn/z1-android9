@@ -1,0 +1,20 @@
+--- a/frameworks/native/services/surfaceflinger/RenderEngine/RenderEngine.cpp
++++ b/frameworks/native/services/surfaceflinger/RenderEngine/RenderEngine.cpp
+@@ -141,13 +141,10 @@
+ }
+ 
+ bool RenderEngine::overrideUseContextPriorityFromConfig(bool useContextPriority) {
+-    OptionalBool ret;
+-    ISurfaceFlingerConfigs::getService()->useContextPriority([&ret](OptionalBool b) { ret = b; });
+-    if (ret.specified) {
+-        return ret.value;
+-    } else {
+-        return useContextPriority;
+-    }
++    // Configstore is optional.  The shared helper handles missing services,
++    // unspecified values and failed HIDL calls using the actual EGL default.
++    return getBool<ISurfaceFlingerConfigs,
++            &ISurfaceFlingerConfigs::useContextPriority>(useContextPriority);
+ }
+ 
+ RenderEngine::RenderEngine(uint32_t featureFlags)

@@ -1,0 +1,42 @@
+--- a/frameworks/base/core/jni/android_os_HwBinder.cpp
++++ b/frameworks/base/core/jni/android_os_HwBinder.cpp
+@@ -16,6 +16,7 @@
+ 
+ //#define LOG_NDEBUG 0
+ #define LOG_TAG "android_os_HwBinder"
++#include <android-base/properties.h>
+ #include <android-base/logging.h>
+ 
+ #include "android_os_HwBinder.h"
+@@ -267,6 +268,10 @@
+         return;  // NPE will be pending.
+     }
+ 
++    if (android::base::GetBoolProperty("ro.z1.stock_kernel", false)) {
++        signalExceptionForError(env, UNKNOWN_ERROR, true /* canThrowRemoteException */);
++        return;
++    }
+     sp<hardware::IBinder> binder = JHwBinder::GetNativeBinder(env, thiz);
+ 
+     /* TODO(b/33440494) this is not right */
+@@ -320,6 +325,12 @@
+         serviceName = str.c_str();
+     }
+ 
++    // Java HwBinder cannot call a native passthrough HAL through a local
++    // parcel proxy without the missing SG driver. Report it as unavailable.
++    if (android::base::GetBoolProperty("ro.z1.stock_kernel", false)) {
++        signalExceptionForError(env, NAME_NOT_FOUND);
++        return nullptr;
++    }
+     sp<IBase> ret = getRawServiceInternal(ifaceName, serviceName, retry /* retry */, false /* getStub */);
+     sp<hardware::IBinder> service = hardware::toBinder<hidl::base::V1_0::IBase>(ret);
+ 
+@@ -337,6 +348,7 @@
+ void JHwBinder_native_configureRpcThreadpool(JNIEnv *, jclass,
+         jlong maxThreads, jboolean callerWillJoin) {
+     CHECK(maxThreads > 0);
++    if (android::base::GetBoolProperty("ro.z1.stock_kernel", false)) return;
+     ProcessState::self()->setThreadPoolConfiguration(maxThreads, callerWillJoin /*callerJoinsPool*/);
+ }
+ 

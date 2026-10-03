@@ -1,0 +1,19 @@
+--- a/system/libhidl/transport/HidlTransportSupport.cpp
++++ b/system/libhidl/transport/HidlTransportSupport.cpp
+@@ -14,6 +14,7 @@
+  * limitations under the License.
+  */
+ #include <hidl/HidlTransportSupport.h>
++#include <android-base/properties.h>
+ #include <hidl/HidlBinderSupport.h>
+ 
+ #include <android/hidl/manager/1.0/IServiceManager.h>
+@@ -22,6 +23,8 @@
+ namespace hardware {
+ 
+ void configureRpcThreadpool(size_t maxThreads, bool callerWillJoin) {
++    // Process-local stock HALs use their own oneway TaskRunner, not hwbinder.
++    if (android::base::GetBoolProperty("ro.z1.stock_kernel", false)) return;
+     // TODO(b/32756130) this should be transport-dependent
+     configureBinderRpcThreadpool(maxThreads, callerWillJoin);
+ }

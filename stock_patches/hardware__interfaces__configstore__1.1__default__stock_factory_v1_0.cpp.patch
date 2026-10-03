@@ -1,0 +1,10 @@
+--- /dev/null
++++ b/hardware/interfaces/configstore/1.1/default/stock_factory_v1_0.cpp
+@@ -0,0 +1,7 @@
++#include "SurfaceFlingerConfigs.h"
++
++// Return the real base interface using the C++ inheritance conversion.
++extern "C" android::hardware::configstore::V1_0::ISurfaceFlingerConfigs*
++HIDL_FETCH_ISurfaceFlingerConfigs(const char*) {
++    return new android::hardware::configstore::V1_1::implementation::SurfaceFlingerConfigs;
++}

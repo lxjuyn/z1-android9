@@ -1,0 +1,64 @@
+--- a/system/core/init/log.cpp
++++ b/system/core/init/log.cpp
+@@ -16,9 +16,12 @@
+ 
+ #include "log.h"
+ 
++#include <errno.h>
+ #include <fcntl.h>
+ #include <linux/audit.h>
++#include <poll.h>
+ #include <string.h>
++#include <time.h>
+ #include <unistd.h>
+ 
+ #include <android-base/logging.h>
+@@ -44,6 +47,48 @@
+     static bool has_aborted = false;
+     if (!has_aborted) {
+         has_aborted = true;
++        if (access("/z1_stock_kernel", F_OK) == 0) {
++            // LOG(FATAL) calls InitAborter directly, bypassing SIGABRT. Keep
++            // the independently forked ACM logger alive before DoReboot can
++            // terminate processes or reset USB. This is diagnostic only.
++            int fd = open("/dev/kmsg", O_WRONLY | O_NONBLOCK | O_CLOEXEC);
++            static const char notice[] =
++                "<2>[Z1STOCK-DIAG] InitAborter PID1 LOG(FATAL); 15s capture window; send R before bootloader reboot\n";
++            if (fd >= 0) {
++                ssize_t ignored = write(fd, notice, sizeof(notice) - 1);
++                (void)ignored;
++                // Write the original fatal text through a fresh descriptor;
++                // KernelLogger's cached descriptor may have failed earlier.
++                if (abort_message != nullptr) {
++                    ignored = write(fd, abort_message, strlen(abort_message));
++                    (void)ignored;
++                    ignored = write(fd, "\n", 1);
++                    (void)ignored;
++                }
++                close(fd);
++            }
++            struct timespec now, deadline;
++            if (clock_gettime(CLOCK_MONOTONIC, &now) == 0) {
++                deadline = now;
++                deadline.tv_sec += 15;
++                for (;;) {
++                    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) break;
++                    if (now.tv_sec > deadline.tv_sec ||
++                        (now.tv_sec == deadline.tv_sec && now.tv_nsec >= deadline.tv_nsec)) break;
++                    struct timespec remaining;
++                    remaining.tv_sec = deadline.tv_sec - now.tv_sec;
++                    remaining.tv_nsec = deadline.tv_nsec - now.tv_nsec;
++                    if (remaining.tv_nsec < 0) {
++                        --remaining.tv_sec;
++                        remaining.tv_nsec += 1000000000L;
++                    }
++                    int wait_ms = static_cast<int>(remaining.tv_sec * 1000 +
++                                                   (remaining.tv_nsec + 999999) / 1000000);
++                    // Recompute from an absolute deadline after EINTR.
++                    if (poll(nullptr, 0, wait_ms) >= 0 || errno != EINTR) break;
++                }
++            }
++        }
+         // Do not queue "shutdown" trigger since we want to shutdown immediately and it's not likely
+         // that we can even run the ActionQueue at this point.
+         DoReboot(ANDROID_RB_RESTART2, "reboot", "bootloader", false);

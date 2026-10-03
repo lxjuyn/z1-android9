@@ -1,0 +1,27 @@
+--- a/hardware/interfaces/configstore/1.1/default/Android.mk
++++ b/hardware/interfaces/configstore/1.1/default/Android.mk
+@@ -41,3 +41,24 @@
+ LOCAL_SRC_FILES := seccomp_policy/configstore@1.1-$(TARGET_ARCH).policy
+ include $(BUILD_PREBUILT)
+ endif
++
++# Local configstore factory for the stock kernel's passthrough product.
++include $(CLEAR_VARS)
++LOCAL_MODULE := android.hardware.configstore@1.1-impl.z1stock
++LOCAL_VENDOR_MODULE := true
++LOCAL_MODULE_RELATIVE_PATH := hw
++LOCAL_SRC_FILES := stock_factory.cpp
++include $(LOCAL_PATH)/surfaceflinger.mk
++LOCAL_SHARED_LIBRARIES := libhidlbase libhidltransport libhwbinder liblog libutils android.hardware.configstore@1.0 android.hardware.configstore@1.1
++include $(BUILD_SHARED_LIBRARY)
++
++# Passthrough lookup uses the requested version's exact library prefix.
++# Expose the same real implementation through its inherited 1.0 interface.
++include $(CLEAR_VARS)
++LOCAL_MODULE := android.hardware.configstore@1.0-impl.z1stock
++LOCAL_VENDOR_MODULE := true
++LOCAL_MODULE_RELATIVE_PATH := hw
++LOCAL_SRC_FILES := stock_factory_v1_0.cpp
++include $(LOCAL_PATH)/surfaceflinger.mk
++LOCAL_SHARED_LIBRARIES := libhidlbase libhidltransport libhwbinder liblog libutils android.hardware.configstore@1.0 android.hardware.configstore@1.1
++include $(BUILD_SHARED_LIBRARY)

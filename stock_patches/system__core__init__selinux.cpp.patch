@@ -1,0 +1,12 @@
+--- a/system/core/init/selinux.cpp
++++ b/system/core/init/selinux.cpp
+@@ -90,6 +90,9 @@
+ 
+ bool IsEnforcing() {
+     if (ALLOW_PERMISSIVE_SELINUX) {
++        // Stock bring-up has its own compatible monolithic diagnostic policy.
++        // LK does not reliably forward the boot header's cmdline.
++        if (access("/z1_stock_kernel", F_OK) == 0) return false;
+         return StatusFromCmdline() == SELINUX_ENFORCING;
+     }
+     return true;
