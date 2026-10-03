@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -eo pipefail
 REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 : "${LOS_ROOT:?Set LOS_ROOT to the LineageOS 16.0 source checkout}"
 : "${HOST_TOOLS:?Set HOST_TOOLS to the local host compatibility tools directory}"
