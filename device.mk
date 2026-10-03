@@ -7,10 +7,17 @@ PRODUCT_SHIPPING_API_LEVEL := 19
 # Android 9 uses a classic root ramdisk on this device. The kernel's DT
 # bootargs must provide androidboot.hardware=z1 so init imports init.z1.rc.
 ifeq ($(Z1_KERNEL_VARIANT),stock)
+Z1_MT6572_RADIO := $(DEVICE_PATH)/proprietary/mt6572
 PRODUCT_COPY_FILES += \
     $(DEVICE_PATH)/stock/init.z1.rc:root/init.z1.rc \
     $(DEVICE_PATH)/stock/fstab.z1:root/fstab.z1 \
-    $(DEVICE_PATH)/stock/ueventd.z1.rc:root/ueventd.z1.rc
+    $(DEVICE_PATH)/stock/ueventd.z1.rc:root/ueventd.z1.rc \
+    $(Z1_MT6572_RADIO)/bin/wmt_loader:$(TARGET_COPY_OUT_SYSTEM)/bin/wmt_loader \
+    $(Z1_MT6572_RADIO)/bin/6620_launcher:$(TARGET_COPY_OUT_SYSTEM)/bin/6620_launcher \
+    $(Z1_MT6572_RADIO)/etc/firmware/WMT_SOC.cfg:$(TARGET_COPY_OUT_SYSTEM)/etc/firmware/WMT_SOC.cfg \
+    $(Z1_MT6572_RADIO)/etc/firmware/WIFI_RAM_CODE_SOC:$(TARGET_COPY_OUT_SYSTEM)/etc/firmware/WIFI_RAM_CODE_SOC \
+    $(Z1_MT6572_RADIO)/etc/firmware/mt6572_82_patch_e1_0_hdr.bin:$(TARGET_COPY_OUT_SYSTEM)/etc/firmware/mt6572_82_patch_e1_0_hdr.bin \
+    $(Z1_MT6572_RADIO)/etc/firmware/mt6572_82_patch_e1_1_hdr.bin:$(TARGET_COPY_OUT_SYSTEM)/etc/firmware/mt6572_82_patch_e1_1_hdr.bin
 PRODUCT_PROPERTY_OVERRIDES += ro.z1.stock_kernel=true ro.logd.kernel=false ro.hardware.gralloc=z1 ro.hardware.hwcomposer=z1
 PRODUCT_PACKAGES += \
     android.hardware.configstore@1.0-impl.z1stock \
@@ -83,8 +90,9 @@ PRODUCT_CHARACTERISTICS := nosdcard
 
 # TODO: Gate software graphics on board fbdev refresh and full BufferQueue test.
 # TODO: Verify FunctionFS ADB enumeration and secure host authorization on board.
-# TODO: Add Android 9 Wi-Fi and Bluetooth framework bridges after the stock
-# Binder/HIDL transport and MT6572 userspace ABI pass device-level validation.
+# WMT firmware and its stock loader are staged from a local ROM by the
+# whitelist extractor. Framework Wi-Fi/Bluetooth HAL support remains gated on
+# the stock Binder/HIDL transport and MT6572 ABI audit.
 
 # Mainline has FUSE, not Android sdcardfs/esdfs. The replacement daemon retains
 # three permission views and per-package/multi-user access checks.

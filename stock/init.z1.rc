@@ -19,9 +19,13 @@ on post-fs
     mknod /dev/stpbt c 192 0
     chmod 0660 /dev/stpbt
     chown bluetooth radio /dev/stpbt
+    mkdir /data/nvram 2770 root nvram
     exec_background u:r:init:s0 root root -- /z1_bootdiag
 
 on post-fs-data
+    # Preserve the device's own radio calibration. Create only its directory;
+    # never package NVRAM contents in the image or repository.
+    mkdir /data/nvram/bt 2771 bluetooth bluetooth
     swapon_all /fstab.z1
     start z1_logcat_relay
     exec u:r:init:s0 root root -- /z1_bootdiag --graphics-mode
@@ -31,4 +35,20 @@ service z1_logcat_relay /z1_bootdiag --logcat
     user root
     group log
     disabled
+    seclabel u:r:init:s0
+
+# The exact Z1 3.4.67 kernel contains MTK's built-in WMT/WLAN/BTIF drivers.
+# These factory userspace helpers load generic radio firmware; they do not
+# include or replace this device's private NVRAM calibration.
+service conn_launcher /system/bin/6620_launcher -p /system/etc/firmware/
+    class core
+    user system
+    group system
+    seclabel u:r:init:s0
+
+service wmtLoader /system/bin/wmt_loader
+    class main
+    user root
+    group root
+    oneshot
     seclabel u:r:init:s0
