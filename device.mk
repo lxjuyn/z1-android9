@@ -8,6 +8,7 @@ PRODUCT_SHIPPING_API_LEVEL := 19
 # bootargs must provide androidboot.hardware=z1 so init imports init.z1.rc.
 ifeq ($(Z1_KERNEL_VARIANT),stock)
 Z1_MT6572_RADIO := $(DEVICE_PATH)/proprietary/mt6572
+Z1_MT6572_AUDIO := $(DEVICE_PATH)/proprietary/mt6572/audio
 PRODUCT_COPY_FILES += \
     $(DEVICE_PATH)/stock/init.z1.rc:root/init.z1.rc \
     $(DEVICE_PATH)/stock/fstab.z1:root/fstab.z1 \
@@ -17,8 +18,9 @@ PRODUCT_COPY_FILES += \
     $(Z1_MT6572_RADIO)/etc/firmware/WMT_SOC.cfg:$(TARGET_COPY_OUT_SYSTEM)/etc/firmware/WMT_SOC.cfg \
     $(Z1_MT6572_RADIO)/etc/firmware/WIFI_RAM_CODE_SOC:$(TARGET_COPY_OUT_SYSTEM)/etc/firmware/WIFI_RAM_CODE_SOC \
     $(Z1_MT6572_RADIO)/etc/firmware/mt6572_82_patch_e1_0_hdr.bin:$(TARGET_COPY_OUT_SYSTEM)/etc/firmware/mt6572_82_patch_e1_0_hdr.bin \
-    $(Z1_MT6572_RADIO)/etc/firmware/mt6572_82_patch_e1_1_hdr.bin:$(TARGET_COPY_OUT_SYSTEM)/etc/firmware/mt6572_82_patch_e1_1_hdr.bin
-PRODUCT_PROPERTY_OVERRIDES += ro.z1.stock_kernel=true ro.logd.kernel=false ro.hardware.gralloc=z1 ro.hardware.hwcomposer=z1
+    $(Z1_MT6572_RADIO)/etc/firmware/mt6572_82_patch_e1_1_hdr.bin:$(TARGET_COPY_OUT_SYSTEM)/etc/firmware/mt6572_82_patch_e1_1_hdr.bin \
+    $(Z1_MT6572_AUDIO)/lib/hw/audio.primary.mt6572.so:$(TARGET_COPY_OUT_VENDOR)/lib/hw/audio.primary.mt6572.so
+PRODUCT_PROPERTY_OVERRIDES += ro.z1.stock_kernel=true ro.logd.kernel=false ro.hardware.gralloc=z1 ro.hardware.hwcomposer=z1 ro.hardware.audio=mt6572
 PRODUCT_PACKAGES += \
     android.hardware.configstore@1.0-impl.z1stock \
     android.hardware.configstore@1.1-impl.z1stock
@@ -64,8 +66,9 @@ PRODUCT_PACKAGES += \
 # Pie HIDL clients can load these implementations in-process on the stock
 # kernel. The stock profile removes the separate HIDL server processes after
 # all product packages have been inherited; Linux7 retains the normal servers.
-# The primary audio HAL is still the silent software stub. Keymaster is
-# software and does not provide a TEE.
+# The stock profile selects its legacy MT6572 primary audio HAL through
+# ro.hardware.audio; the Android 9 HIDL client loads it in-process. Keymaster
+# remains software and does not provide a TEE.
 PRODUCT_PACKAGES += \
     audio.primary.default \
     audio.r_submix.default \

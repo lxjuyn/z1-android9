@@ -106,6 +106,7 @@ def verify(args):
         board_import = '/init.z1.rc' if args.stock else '/init.${ro.hardware}.rc'
         expected_imports = ('/init.environ.rc', '/init.usb.rc', board_import,
                             '/init.usb.configfs.rc', '/init.${ro.zygote}.rc')
+        roots = set()
         for imported in expected_imports:
             require('import ' + imported in init.splitlines(), f'missing init import {imported}')
             expanded = imported.replace('${ro.hardware}', 'z1').replace('${ro.zygote}', 'zygote32')
@@ -121,8 +122,12 @@ def verify(args):
             require(b'/dev/block/z1-stock-' in files['fstab.z1'][1], 'stock fstab has no resolved aliases')
             props = image.get('build.prop').read_text().splitlines()
             for line in ('ro.z1.stock_kernel=true', 'ro.logd.kernel=false',
-                         'ro.hardware.gralloc=z1', 'ro.hardware.hwcomposer=z1'):
+                         'ro.hardware.gralloc=z1', 'ro.hardware.hwcomposer=z1',
+                         'ro.hardware.audio=mt6572'):
                 require(line in props, 'missing stock property: ' + line)
+            audio_hal = 'vendor/lib/hw/audio.primary.mt6572.so'
+            image.get(audio_hal)
+            roots.add(audio_hal)
         else:
             require('import /init.z1.network.rc' in files['init.z1.rc'][1].decode().splitlines(),
                     'board network RC not imported')
@@ -136,7 +141,6 @@ def verify(args):
                 definitions += services(image.get(relative).read_text(), '/system/' + relative)
         names = [s['name'] for s in definitions]
         require(len(names) == len(set(names)), 'duplicate service definitions')
-        roots = set()
         if args.stock:
             for service in definitions:
                 exe = service['executable']

@@ -6,7 +6,11 @@ Single-device Android 9 project for the Jiabo Z1 / MT6572. The repository tracks
 
 S1J retains the original Z1 3.4.67 kernel and the `CLOCK_BOOTTIME` timerfd fallback. The stock product omits remote HIDL and vendor Binder service processes that require Binder protocols or device nodes the factory kernel does not provide, while retaining client-loaded passthrough HALs. Static init, ELF dependency, classpath and ext4 checks pass. The image has not been boot-tested on the Z1. It uses permissive policy 26 with unknown rules allowed, so treat it as a bring-up image, not a daily-use build.
 
-The current baseline still uses SwiftShader and a silent audio stub. Wi-Fi and Bluetooth have only low-level WMT firmware startup staged. Display, touch and key mappings need another hardware verification pass. Do not describe those features as complete until they are tested on the device.
+The stock candidate now selects the factory MT6572 primary audio HAL; its
+speaker/microphone behavior still needs device testing. Graphics still use
+SwiftShader, Wi-Fi/Bluetooth have only low-level WMT firmware startup staged,
+and display/touch/key mappings need another hardware verification pass. Do not
+describe those features as complete until they are tested on the device.
 
 ## Source and builds
 
