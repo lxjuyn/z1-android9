@@ -1,0 +1,10 @@
+--- a/build/make/core/product.mk
++++ b/build/make/core/product.mk
+@@ -81,6 +81,7 @@
+     PRODUCT_AAPT_PREF_CONFIG \
+     PRODUCT_AAPT_PREBUILT_DPI \
+     PRODUCT_PACKAGES \
++    PRODUCT_PACKAGES_REMOVE \
+     PRODUCT_PACKAGES_DEBUG \
+     PRODUCT_PACKAGES_ENG \
+     PRODUCT_PACKAGES_TESTS \

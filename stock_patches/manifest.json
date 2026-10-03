@@ -152,5 +152,17 @@
     "patch": "system__libhidl__transport__allocator__1__0__default__android.hidl.allocator@1.0-service.rc.patch",
     "base_sha256": "a56e76ce0cb3933dcda463c7b401aee5bf15c78d16279edc98db7bda23bf4ec9",
     "result_sha256": "b55a81d9068144c2cf990375653682e5d5ea1fa637cd8afa3a3b467c7a86b2f6"
+  },
+  {
+    "file": "build/make/core/product.mk",
+    "patch": "build__make__core__product.mk.patch",
+    "base_sha256": "101c2cde122775d64be79f72fedaf01a79823f0862dde7c85576775019415933",
+    "result_sha256": "e8177f3755ff21d3028d72e2bbac7d3c3747f39686ee8864ebe27f04abb72ea9"
+  },
+  {
+    "file": "build/make/core/product_config.mk",
+    "patch": "build__make__core__product_config.mk.patch",
+    "base_sha256": "9d2e38999f0dbf84727e3cb27c3e06595eddabc1ba8098fe58c51a9070861866",
+    "result_sha256": "2c86b06714b8e9047aa83b90e93681181965b253ef3b8c0bb497b619bd5a6f3c"
   }
 ]

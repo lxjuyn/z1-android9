@@ -61,9 +61,11 @@ PRODUCT_PACKAGES += \
     android.hardware.graphics.allocator@2.0-impl \
     android.hardware.graphics.mapper@2.0-impl
 
-# Pie clients need discoverable HIDL factories even while the physical MT6572
-# audio driver is being ported. The primary HAL here is the existing silent
-# software implementation; Keymaster is software and does not provide a TEE.
+# Pie HIDL clients can load these implementations in-process on the stock
+# kernel. The stock profile removes the separate HIDL server processes after
+# all product packages have been inherited; Linux7 retains the normal servers.
+# The primary audio HAL is still the silent software stub. Keymaster is
+# software and does not provide a TEE.
 PRODUCT_PACKAGES += \
     audio.primary.default \
     audio.r_submix.default \

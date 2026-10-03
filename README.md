@@ -2,9 +2,11 @@
 
 Single-device Android 9 project for the Jiabo Z1 / MT6572. The repository tracks the Z1 device tree, stock-kernel compatibility patches, build and verification helpers, and a pinned Android source manifest. Large upstream Android sources are synced by `repo`; generated build products and images are kept out of Git.
 
-## Current candidate: S1I
+## Current candidate: S1J diagnostic baseline
 
-S1I fixes the observed AlarmManager `CLOCK_BOOTTIME` timerfd abort while retaining the original Z1 3.4.67 kernel. The source change is isolated in its own commit and has a source-level host fixture. Static image checks passed; S1I has not yet been runtime boot-tested. Release notes and SHA-256 values are in `release/S1I-20261004/`.
+S1J retains the original Z1 3.4.67 kernel and the `CLOCK_BOOTTIME` timerfd fallback. The stock product omits remote HIDL and vendor Binder service processes that require Binder protocols or device nodes the factory kernel does not provide, while retaining client-loaded passthrough HALs. Static init, ELF dependency, classpath and ext4 checks pass. The image has not been boot-tested on the Z1. It uses permissive policy 26 with unknown rules allowed, so treat it as a bring-up image, not a daily-use build.
+
+The current baseline still uses SwiftShader and a silent audio stub. Wi-Fi and Bluetooth have only low-level WMT firmware startup staged. Display, touch and key mappings need another hardware verification pass. Do not describe those features as complete until they are tested on the device.
 
 ## Source and builds
 

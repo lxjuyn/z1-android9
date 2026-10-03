@@ -1,0 +1,15 @@
+--- a/build/make/core/product_config.mk
++++ b/build/make/core/product_config.mk
+@@ -254,6 +254,12 @@
+ ifneq ($(current_product_makefile),$(INTERNAL_PRODUCT))
+ $(error PRODUCT_NAME inconsistent in $(current_product_makefile) and $(INTERNAL_PRODUCT))
+ endif
++# Apply product package removals after every inherited product makefile has
++# contributed its package list. This lets device products omit incompatible
++# default service processes without modifying each upstream product file.
++PRODUCTS.$(INTERNAL_PRODUCT).PRODUCT_PACKAGES := \
++    $(filter-out $(PRODUCTS.$(INTERNAL_PRODUCT).PRODUCT_PACKAGES_REMOVE), \
++        $(PRODUCTS.$(INTERNAL_PRODUCT).PRODUCT_PACKAGES))
+ current_product_makefile :=
+ all_product_makefiles :=
+ all_product_configs :=

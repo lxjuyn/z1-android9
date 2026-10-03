@@ -227,8 +227,6 @@ def verify(args):
         require(len(configstores) == 1 and configstores[0].findtext('version') == '1.1' and
                 configstores[0].findtext('transport') == ('passthrough' if args.stock else 'hwbinder'),
                 'configstore image manifest transport/version mismatch')
-        require(any(s['executable'] == '/vendor/bin/hw/android.hardware.configstore@1.1-service'
-                    for s in report['services']), 'missing configstore 1.1 executable service')
         report['service_count'] = len(report['services'])
         report['elf_root_count'] = len(roots)
         report['elf_roots'] = sorted(roots)
