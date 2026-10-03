@@ -33,6 +33,7 @@ endif
 PRODUCT_PROPERTY_OVERRIDES += \
     ro.config.low_ram=true \
     ro.sf.lcd_density=160 \
+    qemu.hw.mainkeys=1 \
     ro.hardware.egl=swiftshader \
         ro.vold.z1_fuse=true \
     ro.sys.sdcardfs=false
@@ -82,7 +83,8 @@ PRODUCT_CHARACTERISTICS := nosdcard
 
 # TODO: Gate software graphics on board fbdev refresh and full BufferQueue test.
 # TODO: Verify FunctionFS ADB enumeration and secure host authorization on board.
-# TODO: Add Wi-Fi firmware and HALs after per-binary ABI and kernel API audit.
+# TODO: Add Android 9 Wi-Fi and Bluetooth framework bridges after the stock
+# Binder/HIDL transport and MT6572 userspace ABI pass device-level validation.
 
 # Mainline has FUSE, not Android sdcardfs/esdfs. The replacement daemon retains
 # three permission views and per-package/multi-user access checks.
