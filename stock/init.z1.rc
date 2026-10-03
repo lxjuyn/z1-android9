@@ -9,6 +9,16 @@ on init
     setprop sys.usb.state acm
 
 on post-fs
+    # Original 3.4.67 WMT driver uses fixed MTK character-device numbers.
+    mknod /dev/wmtWifi c 153 0
+    chmod 0660 /dev/wmtWifi
+    chown system system /dev/wmtWifi
+    mknod /dev/stpwmt c 190 0
+    chmod 0660 /dev/stpwmt
+    chown system system /dev/stpwmt
+    mknod /dev/stpbt c 192 0
+    chmod 0660 /dev/stpbt
+    chown bluetooth radio /dev/stpbt
     exec_background u:r:init:s0 root root -- /z1_bootdiag
 
 on post-fs-data
