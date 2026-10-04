@@ -26,6 +26,33 @@ PRODUCT_COPY_FILES += \
     $(Z1_MT6572_BLUETOOTH)/libbluetoothdrv.so:$(TARGET_COPY_OUT_VENDOR)/lib/libbluetoothdrv.so \
     frameworks/native/data/etc/android.hardware.bluetooth.xml:$(TARGET_COPY_OUT_SYSTEM)/etc/permissions/android.hardware.bluetooth.xml \
     frameworks/native/data/etc/android.hardware.bluetooth_le.xml:$(TARGET_COPY_OUT_SYSTEM)/etc/permissions/android.hardware.bluetooth_le.xml
+# Disabled by default: backend dependencies exist, but 10 strong symbols still
+# fail against Pie. This is extraction/ABI bring-up scaffolding, not a flash gate.
+Z1_STOCK_AUDIO_BACKEND ?= false
+ifeq ($(Z1_STOCK_AUDIO_BACKEND),true)
+PRODUCT_COPY_FILES += \
+    $(Z1_MT6572_AUDIO)/lib/libaudio.primary.default.so:$(TARGET_COPY_OUT_VENDOR)/lib/libaudio.primary.default.so \
+    $(Z1_MT6572_AUDIO)/lib/libblisrc.so:$(TARGET_COPY_OUT_VENDOR)/lib/libblisrc.so \
+    $(Z1_MT6572_AUDIO)/lib/libnvram.so:$(TARGET_COPY_OUT_VENDOR)/lib/libnvram.so \
+    $(Z1_MT6572_AUDIO)/lib/libspeech_enh_lib.so:$(TARGET_COPY_OUT_VENDOR)/lib/libspeech_enh_lib.so \
+    $(Z1_MT6572_AUDIO)/lib/libaudiocustparam.so:$(TARGET_COPY_OUT_VENDOR)/lib/libaudiocustparam.so \
+    $(Z1_MT6572_AUDIO)/lib/libaudiosetting.so:$(TARGET_COPY_OUT_VENDOR)/lib/libaudiosetting.so \
+    $(Z1_MT6572_AUDIO)/lib/libaudiocompensationfilter.so:$(TARGET_COPY_OUT_VENDOR)/lib/libaudiocompensationfilter.so \
+    $(Z1_MT6572_AUDIO)/lib/libcvsd_mtk.so:$(TARGET_COPY_OUT_VENDOR)/lib/libcvsd_mtk.so \
+    $(Z1_MT6572_AUDIO)/lib/libmsbc_mtk.so:$(TARGET_COPY_OUT_VENDOR)/lib/libmsbc_mtk.so \
+    $(Z1_MT6572_AUDIO)/lib/libaudiocomponentengine.so:$(TARGET_COPY_OUT_VENDOR)/lib/libaudiocomponentengine.so \
+    $(Z1_MT6572_AUDIO)/lib/libaudiodcrflt.so:$(TARGET_COPY_OUT_VENDOR)/lib/libaudiodcrflt.so \
+    $(Z1_MT6572_AUDIO)/lib/libaed.so:$(TARGET_COPY_OUT_VENDOR)/lib/libaed.so \
+    $(Z1_MT6572_AUDIO)/lib/libcustom_nvram.so:$(TARGET_COPY_OUT_VENDOR)/lib/libcustom_nvram.so \
+    $(Z1_MT6572_AUDIO)/lib/libmtk_drvb.so:$(TARGET_COPY_OUT_VENDOR)/lib/libmtk_drvb.so \
+    $(Z1_MT6572_AUDIO)/lib/libnvram_sec.so:$(TARGET_COPY_OUT_VENDOR)/lib/libnvram_sec.so \
+    $(Z1_MT6572_AUDIO)/lib/libnvram_platform.so:$(TARGET_COPY_OUT_VENDOR)/lib/libnvram_platform.so \
+    $(Z1_MT6572_AUDIO)/lib/libbessound_mtk.so:$(TARGET_COPY_OUT_VENDOR)/lib/libbessound_mtk.so \
+    $(Z1_MT6572_AUDIO)/lib/libblisrc32.so:$(TARGET_COPY_OUT_VENDOR)/lib/libblisrc32.so \
+    $(Z1_MT6572_AUDIO)/lib/libbessound_hd_mtk.so:$(TARGET_COPY_OUT_VENDOR)/lib/libbessound_hd_mtk.so \
+    $(Z1_MT6572_AUDIO)/lib/libmtklimiter.so:$(TARGET_COPY_OUT_VENDOR)/lib/libmtklimiter.so \
+    $(Z1_MT6572_AUDIO)/lib/libmtkshifter.so:$(TARGET_COPY_OUT_VENDOR)/lib/libmtkshifter.so
+endif
 PRODUCT_PROPERTY_OVERRIDES += ro.z1.stock_kernel=true ro.logd.kernel=false ro.hardware.gralloc=z1 ro.hardware.hwcomposer=z1 ro.hardware.audio=mt6572 ro.bt.vendor_owns_bdaddr=true
 PRODUCT_PACKAGES += \
     android.hardware.configstore@1.0-impl.z1stock \
