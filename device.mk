@@ -94,8 +94,8 @@ PRODUCT_COPY_FILES += \
     frameworks/av/services/audiopolicy/config/audio_policy_volumes.xml:$(TARGET_COPY_OUT_VENDOR)/etc/audio_policy_volumes.xml \
     frameworks/av/services/audiopolicy/config/default_volume_tables.xml:$(TARGET_COPY_OUT_VENDOR)/etc/default_volume_tables.xml
 
-# The stock input driver registers as "mtk-kpd". Keep its keycodes aligned
-# with the factory Android keylayout while excluding factory-only key labels.
+# The stock input driver registers as "mtk-kpd". Use the factory-derived
+# keypad map with Pie-compatible actions for navigation and study keys.
 PRODUCT_COPY_FILES += \
     $(DEVICE_PATH)/keylayout/mtk-kpd.kl:$(TARGET_COPY_OUT_SYSTEM)/usr/keylayout/mtk-kpd.kl
 

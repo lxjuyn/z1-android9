@@ -1,7 +1,7 @@
-# Z1 factory MT6572 keypad map, retained for Android 9. The factory key 139
+# Z1 factory MT6572 keypad map, adapted for Android 9. The factory key 139
 # generated MENU; map it to APP_SWITCH so the physical navigation strip opens
-# Recents. Vendor-only READ_T* labels are omitted because Pie does not define
-# them.
+# Recents. Preserve the factory READ_T1..READ_T6 buttons as standard F1..F6
+# events so Android apps can receive them.
 key 399   GRAVE
 key 2     1
 key 3     2
@@ -39,6 +39,12 @@ key 113   MUTE              WAKE_DROPPED
 key 116   POWER             WAKE
 key 212   CAMERA
 key 211   FOCUS
+key 250   F1
+key 251   F2
+key 252   F3
+key 253   F4
+key 254   F5
+key 255   F6
 
 key 16    Q
 key 17    W
