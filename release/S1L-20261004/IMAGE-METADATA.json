@@ -32,6 +32,13 @@
     "keylayout_android9_labels": 90,
     "device_boot": "not verified"
   },
+  "boot_compatibility": {
+    "issue": "Factory timerfd rejects CLOCK_BOOTTIME; an earlier run crashed system_server during AlarmManagerService initialization",
+    "image_fallback": "Retry with CLOCK_BOOTTIME_ALARM to preserve elapsed-time deadlines",
+    "tradeoff": "Non-wakeup alarms may wake the device and increase battery use",
+    "runtime_verified": false,
+    "preferred_fix": "Apply the upstream CLOCK_BOOTTIME timerfd kernel change to the matching Z1 3.4.67 source"
+  },
   "feature_status": {
     "bluetooth": "adapter, passthrough HIDL implementation and generic factory driver included; runtime unverified",
     "wifi": "NL80211 private commands compiled; Android 9 Java HIDL supplicant path unavailable on stock kernel",

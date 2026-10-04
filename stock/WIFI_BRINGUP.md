@@ -18,6 +18,11 @@ implementation is a service rather than a passthrough factory. The framework
 cannot yet control the supplicant through the stock profile. Keep the Wi-Fi
 feature permission disabled until that path is resolved and verified.
 
+An earlier stock-kernel runtime log also reported `NL80211_CMD_GET_PROTOCOL_FEATURES`
+as `Operation not supported on transport endpoint`. Even after the supplicant
+transport is addressed, the WLAN driver's nl80211 compatibility needs a live
+scan/association check.
+
 Never copy WLAN calibration or NVRAM data into the repository or image. The
 factory loader and firmware files are generic; calibration stays in the Z1's
 own NVRAM.

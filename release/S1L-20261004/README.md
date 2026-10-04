@@ -2,6 +2,8 @@
 
 基于 Android 9 / LineageOS 16.0 和 Z1 原厂 Linux 3.4.67 内核。boot 与 system 镜像已通过静态结构、ext4 和 init/ELF 闭包检查；这两个镜像尚未在设备上完成本轮启动验证，仍是 bring-up 候选。
 
+早期一次原厂内核启动中，`system_server` 因内核的 timerfd 不接受 `CLOCK_BOOTTIME` 而反复崩溃。S1L 的 `libandroid_servers.so` 已加入回退：改用 `CLOCK_BOOTTIME_ALARM` 保持计时基准，但非唤醒闹钟也可能唤醒设备、增加耗电。该回退还没有在 S1L 上实机验证；更合适的最终修复是给匹配的 3.4.67 内核加入上游 timerfd 修复。
+
 ## 刷写
 
 1. 下载 Release 资产 `boot.img` 和 `system.img.xz`。

@@ -6,11 +6,13 @@ Single-device Android 9 project for the Jiabo Z1 / MT6572. The repository tracks
 
 S1L uses the original Z1 3.4.67 kernel. Its `boot.img` and raw 943,718,400-byte ext4 `system.img` passed image, filesystem, init and ELF dependency checks. It has not been boot-tested on the device after the current Bluetooth and Wi-Fi integration. The SELinux policy is permissive version 26 with unknown rules allowed, so this is a controlled bring-up candidate, not a daily-use build.
 
+An earlier run with this factory kernel repeatedly aborted `system_server`: its timerfd implementation rejects `CLOCK_BOOTTIME`. S1L's `libandroid_servers.so` retries that clock with `CLOCK_BOOTTIME_ALARM`, which preserves elapsed-time deadlines but can wake the device for non-wakeup alarms and use more battery. This compatibility path is not runtime-verified; adding the upstream kernel fix is preferable.
+
 ## Hardware status
 
 - Display uses the board framebuffer gralloc/HWC path and SwiftShader software rendering. Mali GPU acceleration is not integrated. The factory Mali stack imports Android 4.4 private graphics and ION symbols that do not resolve against this Android 9 system.
 - Touch uses the original kernel input drivers. Earlier logs include a failed Hynitron `hyn_ts` probe; the active panel/controller and touch behavior need a fresh device log and screen test.
-- Wi-Fi firmware and MTK NL80211 private commands are included in the build. Android 9's Java Wi-Fi framework still needs its HIDL supplicant transport; the stock kernel exposes no independent `/dev/hwbinder` context, so Wi-Fi is not runtime-ready.
+- Wi-Fi firmware and MTK NL80211 private commands are included in the build. Android 9's Java Wi-Fi framework still needs its HIDL supplicant transport; the stock kernel exposes no independent `/dev/hwbinder` context. An earlier stock-kernel run also reported `NL80211_CMD_GET_PROTOCOL_FEATURES` as unsupported, so Wi-Fi is not runtime-ready.
 - Bluetooth has a compiled Android 9 passthrough adapter and the generic factory driver library. Static dependency checks pass; controller initialization, pairing and audio have not been tested on the Z1.
 - Audio selects the factory MT6572 primary HAL. Speaker, microphone, headset and suspend/resume behavior need device testing.
 - The keypad map assigns Back, Home and Recents to the physical keys, and `qemu.hw.mainkeys=1` hides the virtual navigation bar. The three capacitive key events still need device confirmation.
