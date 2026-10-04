@@ -2,7 +2,13 @@
 
 Single-device Android 9 project for the Jiabo Z1 / MT6572. The repository tracks the Z1 device tree, stock-kernel compatibility patches, build and verification helpers, and a pinned Android source manifest. Large upstream Android sources are synced by `repo`; generated products and images stay out of Git.
 
-## Current diagnostic candidate: S1Q
+## Current diagnostic candidate: S1R
+
+S1R is the latest locally built stock-kernel candidate in `/home/lxj/claude/6572/out/A9_STOCK_S1R_20261004/`. It pairs the unchanged S1Q boot image (factory Z1 3.4.67 kernel plus VT0 display handoff ramdisk) with a rebuilt raw ext4 system image. The boot image is 5,324,800 bytes with SHA-256 `cc6d5fd0259e6659f1bee3baf14a1d2b258a3b8cd3438ab2090ea847d3ce0098`; `system.img` is 943,718,400 bytes with SHA-256 `e6a8079707a0787670c92a8f89ac82ceb992ae410d18884a3477f96873f23f45`. The read-only ext4 check passed. Full details and per-file checksums are in that directory's `README.md`, `IMAGE-METADATA.json`, and `SHA256SUMS`.
+
+S1R includes the current audio policy, the separately defined physical keypad and capacitive navigation maps, and the MT6572 Wi-Fi private-command integration. It has **not** been runtime-verified on the device and is not a finished daily-use ROM. Wi-Fi framework transport and kernel NL80211 support remain blocked or unverified; GPU acceleration is not integrated; Bluetooth, audio, touch, keys, and display handoff still need device checks. S1R has not yet been uploaded to the private GitHub Release.
+
+## Previous display handoff candidate: S1Q
 
 S1Q pairs the S1P system image with a boot ramdisk that creates `/dev/tty0`, requests `KD_GRAPHICS`, then detaches fbcon as a fallback. It retains the exact Z1 3.4.67 kernel and serial diagnostics. The local package is in `out/A9_STOCK_S1Q_20261004/`: `boot.img` SHA-256 `cc6d5fd0259e6659f1bee3baf14a1d2b258a3b8cd3438ab2090ea847d3ce0098`; raw `system.img` SHA-256 `d63aa528e6eddfe77a01358bf0d25af3a663188015e5ef9415ae30d3d48baee5`. Both hashes were checked against `SHA256SUMS`; the boot image is 5,324,800 bytes and the system image is 943,718,400 bytes.
 
