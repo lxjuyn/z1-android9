@@ -1,20 +1,9 @@
-# Z1 software display bring-up
+# Z1 display and graphics bring-up
 
-The files in `gralloc/` and `hwcomposer/` are board copies of the Apache-2.0
-AOSP Pie `device/generic/goldfish` fbdev gralloc and HWC1 modules from this
-workspace's LOS16 tree. Copyright and license headers are preserved. The
-board modules are `gralloc.z1.so` and `hwcomposer.z1.so` under `/system/lib/hw`;
-the HIDL graphics services and SwiftShader packages are selected in
-`../device.mk`.
+The board modules in `gralloc/` and `hwcomposer/` are based on the Apache-2.0 AOSP Pie `device/generic/goldfish` fbdev gralloc and HWC1 modules. Their license headers are preserved. S1L builds `gralloc.z1.so` and `hwcomposer.z1.so` under `/system/lib/hw`, selects the Android graphics HIDL adapters, and uses SwiftShader for EGL/GLES rendering.
 
-This is for the current `FB_SIMPLE` kernel route only. Z1's device tree declares
-240 x 320 RGB565, a 512-byte framebuffer line, and an LK-owned display scanout.
-The allocated source buffer has a 480-byte row. `fb_post` copies 480 bytes per
-row into the 512-byte destination pitch. HWC waits for every acquire fence,
-closes it, and uses no release or retire fence because the copy is synchronous.
+The current composition path copies rendered scan lines to `/dev/fb0` on the CPU. The board configuration expects 240 x 320 RGB565, a 512-byte framebuffer line and a 480-byte source row. The post path copies 480 bytes per row into the padded framebuffer pitch. HWC waits for acquire fences and uses no release or retire fence because the copy is synchronous. The stock kernel's actual framebuffer geometry still needs confirmation on the device.
 
-Before calling this display working, build the modules against the synced Pie
-tree, check `/dev/fb0` geometry and `FBIOGET_FSCREENINFO.line_length` on Z1,
-write a test pattern and confirm visible refresh, then exercise SurfaceFlinger
-and a producer/consumer buffer queue. This code has not yet been compiled
-against the full LOS16 tree or tested on the board.
+The factory ROM contains MT6572 Mali EGL, gralloc and HWC binaries. Static inspection found unresolved Android 4.4 private `libgui`/`libui` symbols in `libMali.so`, plus MTK ION calls absent from the Android 9 `libion.so`. Those binaries are not included in S1L because their current ABI closure is incomplete. GPU acceleration remains outstanding.
+
+The framebuffer and software graphics modules are present in the image, but the display has not been runtime-verified on this S1L build. Device validation still needs `/dev/fb0` geometry, `FBIOGET_FSCREENINFO.line_length`, visible test-pattern refresh, SurfaceFlinger composition and a producer/consumer buffer queue check.

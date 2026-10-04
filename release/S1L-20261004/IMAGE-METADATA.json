@@ -1,0 +1,53 @@
+{
+  "candidate": "S1L-20261004",
+  "device": "Jiabo Z1 / MT6572",
+  "android": "9 (LineageOS 16.0 based)",
+  "source_commit": "25cc9c4",
+  "device_runtime_verified": false,
+  "kernel": {
+    "version": "3.4.67 factory kernel",
+    "sha256": "f9afaa2a38d64e5a6d6877ccb73ede2250b7efe6389fa60e66ee500cb885cc07"
+  },
+  "boot": {
+    "file": "boot.img",
+    "bytes": 5320704,
+    "partition_bytes": 6291456,
+    "sha256": "20e0667b5483f5e6fb9bc7b8d5943578a024617e9df68e38fe5a5d5389493e01"
+  },
+  "system": {
+    "file": "system.img.xz (decompress before flashing)",
+    "raw_format": "ext4",
+    "raw_bytes": 943718400,
+    "partition_bytes": 943718400,
+    "raw_sha256": "12874464d8bcdac423f9e92c9d06bf21e228f9071f3c800f9b6a9bb591ad05c9",
+    "compressed_bytes": 338789280,
+    "compressed_sha256": "99489d9bcafe2c90152cd41b7e0d9c9aaf281b1714fe075e03dab954a4464eba"
+  },
+  "validation": {
+    "system_image_build": "pass",
+    "ext4_read_only_check": "pass",
+    "init_and_elf_closure": "STATIC_INIT_CLOSURE_PASS",
+    "service_count": 51,
+    "elf_root_count": 54,
+    "keylayout_android9_labels": 90,
+    "device_boot": "not verified"
+  },
+  "feature_status": {
+    "bluetooth": "adapter, passthrough HIDL implementation and generic factory driver included; runtime unverified",
+    "wifi": "NL80211 private commands compiled; Android 9 Java HIDL supplicant path unavailable on stock kernel",
+    "display": "framebuffer software composition and SwiftShader; GPU acceleration not integrated",
+    "touch": "device runtime unverified; prior hyn_ts probe failure needs fresh logs",
+    "audio": "factory MT6572 primary HAL selected; runtime unverified",
+    "physical_navigation_keys": "keymap installed and virtual navbar hidden; runtime unverified"
+  },
+  "security": {
+    "selinux_policy_version": 26,
+    "permissive_domains": true,
+    "allow_unknown": true,
+    "daily_use_ready": false
+  },
+  "privacy": {
+    "packaged_partitions": ["bootimg", "ANDROID"],
+    "excludes": ["NVRAM", "NVDATA", "calibration", "userdata", "credentials", "serial logs"]
+  }
+}

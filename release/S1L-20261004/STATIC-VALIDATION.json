@@ -1,0 +1,36 @@
+{
+  "status": "STATIC_INIT_CLOSURE_PASS",
+  "device_runtime_verified": false,
+  "input_hashes": {
+    "raw_system_ext4": "12874464d8bcdac423f9e92c9d06bf21e228f9071f3c800f9b6a9bb591ad05c9",
+    "stock_boot_ramdisk": "b9c6e1fc8010c762ce6c080b369ee1245c28d9fbdb0e0122d3a483703c547bb4"
+  },
+  "checks": {
+    "init_imports_and_stock_profile": "pass",
+    "stock_graphics_takeover_action": "pass",
+    "stock_partition_resolution": "pass",
+    "disabled_remote_hidl_services": "pass",
+    "build_properties": "pass",
+    "passthrough_vintf_manifest": "pass",
+    "service_executables_and_classpaths": "pass",
+    "elf_dependency_closure": "pass",
+    "service_count": 51,
+    "elf_root_count": 54
+  },
+  "stock_passthrough_factories": [
+    "android.hardware.bluetooth@1.0-impl",
+    "android.hardware.graphics.composer@2.1-impl",
+    "android.hardware.graphics.allocator@2.0-impl",
+    "android.hardware.graphics.mapper@2.0-impl",
+    "android.hardware.audio@2.0-impl",
+    "android.hardware.audio.effect@2.0-impl",
+    "android.hardware.keymaster@3.0-impl",
+    "android.hardware.configstore@1.1-impl.z1stock"
+  ],
+  "optional_missing": [
+    "flash_recovery: disabled one-shot service for install-recovery.sh"
+  ],
+  "limitations": [
+    "Static closure does not demonstrate boot, display, radio, touch, audio or key operation on a device."
+  ]
+}
