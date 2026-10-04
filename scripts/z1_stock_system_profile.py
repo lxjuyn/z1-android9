@@ -26,6 +26,9 @@ def command(image, text, write=False):
 
 def unsupported(service):
     return (service['name'] in ('hwservicemanager', 'vndservicemanager', 'hidl_memory', 'media.codec')
+            # Pie healthd publishes a remote health HAL; the stock product uses
+            # BatteryService's sysfs monitor instead. Match this service exactly.
+            or (service['name'] == 'healthd' and service['executable'] == '/system/bin/healthd')
             or service['executable'].startswith('/vendor/bin/hw/')
             or service['executable'].startswith('/system/bin/hw/'))
 
