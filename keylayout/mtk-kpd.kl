@@ -1,7 +1,6 @@
 # Z1 factory MT6572 keypad map, adapted for Android 9. The factory key 139
-# generated MENU; map it to APP_SWITCH so the physical navigation strip opens
-# Recents. Preserve the factory READ_T1..READ_T6 buttons as standard F1..F6
-# events so Android apps can receive them.
+# generated MENU; map the keypad event to APP_SWITCH for Android 9 Recents.
+# Preserve factory READ_T1..READ_T6 as standard F1..F6 app events.
 key 399   GRAVE
 key 2     1
 key 3     2

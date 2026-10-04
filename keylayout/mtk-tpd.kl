@@ -1,0 +1,5 @@
+# Z1 capacitive navigation events, scoped to the touchscreen input device.
+# Factory Linux keycodes are mapped to Android 9 navigation actions.
+key 158   BACK
+key 102   HOME
+key 139   APP_SWITCH
