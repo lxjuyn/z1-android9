@@ -170,5 +170,11 @@
     "patch": "hardware__interfaces__bluetooth__1__0__default__vendor_interface.cc.patch",
     "base_sha256": "714fd6bb96e6931d5767e9799e463c2bed56da18f17ef458d6feda94c36cd320",
     "result_sha256": "7e27d4752884cec19ce74b092952a1259df11934bd6077704c5c77cfe8bbd403"
+  },
+  {
+    "file": "packages/providers/DownloadProvider/src/com/android/providers/downloads/DownloadProvider.java",
+    "patch": "packages__providers__DownloadProvider__src__com__android__providers__downloads__DownloadProvider.java.patch",
+    "base_sha256": "4c508fa85d9926efd0806b18d7419d7d144c9e9c2a231916a43a49d844372b58",
+    "result_sha256": "c847e2c247ba68f799be0c7ece4c1f51a47e5ecd016590b68b3acad11f6ac968"
   }
 ]

@@ -1,0 +1,29 @@
+--- a/packages/providers/DownloadProvider/src/com/android/providers/downloads/DownloadProvider.java
++++ b/packages/providers/DownloadProvider/src/com/android/providers/downloads/DownloadProvider.java
+@@ -83 +83 @@
+-    private static final int DB_VERSION = 110;
++    private static final int DB_VERSION = 111;
+@@ -360,0 +361,7 @@
++                case 111:
++                    if (!hasFlagsColumn(db)) {
++                        addColumn(db, DB_TABLE, Downloads.Impl.COLUMN_FLAGS,
++                                "INTEGER NOT NULL DEFAULT 0");
++                    }
++                    break;
++
+@@ -408,0 +416,15 @@
++        }
++
++        private boolean hasFlagsColumn(SQLiteDatabase db) {
++            final Cursor cursor = db.rawQuery("PRAGMA table_info(downloads)", null);
++            try {
++                final int nameColumnIndex = cursor.getColumnIndexOrThrow("name");
++                while (cursor.moveToNext()) {
++                    if (Downloads.Impl.COLUMN_FLAGS.equals(cursor.getString(nameColumnIndex))) {
++                        return true;
++                    }
++                }
++            } finally {
++                cursor.close();
++            }
++            return false;
