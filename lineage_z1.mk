@@ -3,6 +3,13 @@ $(call inherit-product, $(SRC_TARGET_DIR)/product/aosp_base.mk)
 $(call inherit-product, device/jiabo/z1/device.mk)
 $(call inherit-product, vendor/lineage/config/common.mk)
 
+# Linux7 bringup has no supported WifiService/SIP transport. SystemConfig
+# applies this device-only mask after the inherited Lineage SIP feature XML.
+# The stock profile has independent capabilities and never loads this mask.
+ifneq ($(Z1_KERNEL_VARIANT),stock)
+$(call inherit-product, device/jiabo/z1/mainline/features.mk)
+endif
+
 # The original Z1 kernel exposes Binder protocol 7, but no hwbinder context or
 # scatter/gather transactions. Keep passthrough libraries for clients and omit
 # the remote HIDL server processes in this profile. BatteryService polls the

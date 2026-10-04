@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Z1 Linux7 currently has no supported SIP transport or WifiService. -->
+<permissions>
+    <unavailable-feature name="android.software.sip" />
+    <unavailable-feature name="android.software.sip.voip" />
+</permissions>
