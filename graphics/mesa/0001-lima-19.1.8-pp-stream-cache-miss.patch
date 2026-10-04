@@ -1,0 +1,189 @@
+--- a/src/gallium/drivers/lima/lima_draw.c
++++ b/src/gallium/drivers/lima/lima_draw.c
+@@ -618,7 +618,40 @@
+    pipe_resource_reference(&pres, NULL);
+ }
+ 
+-static void
++/* Surface-owned caches may not contain this framebuffer size (e.g. shared
++ * surfaces). Generate a transient stream on miss instead of changing their
++ * refcount/eviction contract. The submit holds the BO after pres is released. */
++static bool
++lima_update_uncached_pp_stream(struct lima_context *ctx)
++{
++   struct lima_context_framebuffer *fb = &ctx->framebuffer;
++   struct lima_screen *screen = lima_screen(ctx->base.screen);
++   int size = lima_get_pp_stream_size(
++      screen->num_pp, fb->tiled_w, fb->tiled_h, ctx->pp_stream.offset);
++   void *cpu = NULL;
++   unsigned offset = 0;
++   struct pipe_resource *pres = NULL;
++   if (size <= 0)
++      return false;
++   u_upload_alloc(ctx->uploader, 0, size, 0x40, &offset, &pres, &cpu);
++   if (!pres || !cpu) {
++      pipe_resource_reference(&pres, NULL);
++      return false;
++   }
++   struct lima_resource *res = lima_resource(pres);
++   if (!res->bo || !lima_bo_map(res->bo)) {
++      pipe_resource_reference(&pres, NULL);
++      return false;
++   }
++   ctx->pp_stream.bo = res->bo;
++   ctx->pp_stream.bo_offset = offset;
++   lima_update_pp_stream(ctx, 0, 0, fb->tiled_w, fb->tiled_h);
++   bool ok = lima_submit_add_bo(ctx->pp_submit, res->bo, LIMA_SUBMIT_BO_READ);
++   pipe_resource_reference(&pres, NULL);
++   return ok;
++}
++
++static bool
+ lima_update_full_pp_stream(struct lima_context *ctx)
+ {
+    struct lima_context_framebuffer *fb = &ctx->framebuffer;
+@@ -630,6 +663,8 @@
+ 
+    struct hash_entry *entry =
+       _mesa_hash_table_search(ctx->plb_pp_stream, &key);
++   if (!entry)
++      return lima_update_uncached_pp_stream(ctx);
+    struct lima_ctx_plb_pp_stream *s = entry->data;
+ 
+    if (s->bo) {
+@@ -642,7 +677,8 @@
+       int size = lima_get_pp_stream_size(
+          screen->num_pp, fb->tiled_w, fb->tiled_h, s->offset);
+       s->bo = lima_bo_create(screen, size, 0);
+-      lima_bo_map(s->bo);
++      if (!s->bo || !lima_bo_map(s->bo))
++         return false;
+ 
+       ctx->pp_stream.bo = s->bo;
+       ctx->pp_stream.bo_offset = 0;
+@@ -651,14 +687,16 @@
+       lima_update_pp_stream(ctx, 0, 0, fb->tiled_w, fb->tiled_h);
+    }
+ 
+-   lima_submit_add_bo(ctx->pp_submit, s->bo, LIMA_SUBMIT_BO_READ);
+-}
+-
+-static void
++   return lima_submit_add_bo(ctx->pp_submit, s->bo, LIMA_SUBMIT_BO_READ);
++}
++
++static bool
+ lima_update_submit_bo(struct lima_context *ctx)
+ {
++   if (ctx->z1_context_error)
++      return false;
+    if (lima_ctx_dirty(ctx))
+-      return;
++      return true;
+ 
+    struct lima_screen *screen = lima_screen(ctx->base.screen);
+    lima_submit_add_bo(ctx->gp_submit, ctx->plb_gp_stream, LIMA_SUBMIT_BO_READ);
+@@ -672,8 +710,13 @@
+ 
+    if (ctx->damage.region)
+       lima_update_damage_pp_stream(ctx);
+-   else if (ctx->plb_pp_stream)
+-      lima_update_full_pp_stream(ctx);
++   else if (ctx->plb_pp_stream) {
++      if (!lima_update_full_pp_stream(ctx)) {
++         fprintf(stderr, "lima: PP stream allocation/map failed; context lost\n");
++         ctx->z1_context_error = true;
++         return false;
++      }
++   }
+    else
+       ctx->pp_stream.bo = NULL;
+ 
+@@ -688,6 +731,7 @@
+    lima_submit_add_bo(ctx->pp_submit, ctx->plb[ctx->plb_index], LIMA_SUBMIT_BO_READ);
+    lima_submit_add_bo(ctx->pp_submit, ctx->gp_tile_heap[ctx->plb_index], LIMA_SUBMIT_BO_READ);
+    lima_submit_add_bo(ctx->pp_submit, screen->pp_buffer, LIMA_SUBMIT_BO_READ);
++   return true;
+ }
+ 
+ static void
+@@ -730,7 +774,8 @@
+    if (buffers & PIPE_CLEAR_STENCIL)
+       clear->stencil = stencil;
+ 
+-   lima_update_submit_bo(ctx);
++   if (!lima_update_submit_bo(ctx))
++      return;
+ 
+    lima_pack_head_plbu_cmd(ctx);
+ 
+@@ -1379,7 +1424,8 @@
+    lima_submit_add_bo(ctx->gp_submit, ctx->vs->bo, LIMA_SUBMIT_BO_READ);
+    lima_submit_add_bo(ctx->pp_submit, ctx->fs->bo, LIMA_SUBMIT_BO_READ);
+ 
+-   lima_update_submit_bo(ctx);
++   if (!lima_update_submit_bo(ctx))
++      return;
+ 
+    /* Mali Utgard GPU always need min/max index info for index draw,
+     * compute it if upper layer does not do for us */
+@@ -1686,7 +1732,7 @@
+ void
+ lima_flush(struct lima_context *ctx)
+ {
+-   if (!lima_ctx_dirty(ctx))
++   if (ctx->z1_context_error || !lima_ctx_dirty(ctx))
+       return;
+ 
+    _lima_flush(ctx, false);
+@@ -1697,7 +1743,7 @@
+                 unsigned flags)
+ {
+    struct lima_context *ctx = lima_context(pctx);
+-   if (!lima_ctx_dirty(ctx))
++   if (ctx->z1_context_error || !lima_ctx_dirty(ctx))
+       return;
+ 
+    _lima_flush(ctx, flags & PIPE_FLUSH_END_OF_FRAME);
+@@ -1709,10 +1755,18 @@
+    }
+ }
+ 
++static enum pipe_reset_status
++lima_get_device_reset_status(struct pipe_context *pctx)
++{
++   return lima_context(pctx)->z1_context_error ?
++      PIPE_UNKNOWN_CONTEXT_RESET : PIPE_NO_RESET;
++}
++
+ void
+ lima_draw_init(struct lima_context *ctx)
+ {
+    ctx->base.clear = lima_clear;
+    ctx->base.draw_vbo = lima_draw_vbo;
+    ctx->base.flush = lima_pipe_flush;
+-}
++   ctx->base.get_device_reset_status = lima_get_device_reset_status;
++}
+--- a/src/gallium/drivers/lima/lima_context.h
++++ b/src/gallium/drivers/lima/lima_context.h
+@@ -173,6 +173,9 @@
+ struct lima_context {
+    struct pipe_context base;
+ 
++   /* Fail closed after a stream allocation or submission failure. */
++   bool z1_context_error;
++
+    enum {
+       LIMA_CONTEXT_DIRTY_FRAMEBUFFER  = (1 << 0),
+       LIMA_CONTEXT_DIRTY_CLEAR        = (1 << 1),
+--- a/src/gallium/drivers/lima/lima_screen.c
++++ b/src/gallium/drivers/lima/lima_screen.c
+@@ -100,6 +100,7 @@
+    case PIPE_CAP_ACCELERATED:
+    case PIPE_CAP_UMA:
+    case PIPE_CAP_NATIVE_FENCE_FD:
++   case PIPE_CAP_DEVICE_RESET_STATUS_QUERY:
+       return 1;
+ 
+    /* Unimplemented, but for exporting OpenGL 2.0 */

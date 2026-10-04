@@ -62,4 +62,6 @@ if ! rg -q 'z1_drmDevicesEqual' "$EG_DEVICE"; then
 fi
 cp "$REPO_ROOT/graphics/mesa/egl_device_compat.h" \
     "$SOURCE/src/egl/main/egl_device_compat.h"
+python3 "$REPO_ROOT/graphics/mesa/apply_lima_patches.py" \
+    --source "$SOURCE" --archive "$ARCHIVE" >&2
 echo "$SOURCE"

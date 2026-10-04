@@ -1,0 +1,180 @@
+--- a/src/gallium/drivers/lima/lima_draw.c
++++ b/src/gallium/drivers/lima/lima_draw.c
+@@ -1596,7 +1596,7 @@
+       lima_pack_wb_zsbuf_reg(ctx, wb_reg, wb_idx++);
+ }
+ 
+-static void
++static bool
+ _lima_flush(struct lima_context *ctx, bool end_of_frame)
+ {
+    lima_finish_plbu_cmd(ctx);
+@@ -1641,8 +1641,11 @@
+    lima_dump_command_stream_print(
+       &gp_frame, sizeof(gp_frame), false, "add gp frame\n");
+ 
+-   if (!lima_submit_start(ctx->gp_submit, &gp_frame, sizeof(gp_frame)))
+-      fprintf(stderr, "gp submit error\n");
++   if (!lima_submit_start(ctx->gp_submit, &gp_frame, sizeof(gp_frame))) {
++      fprintf(stderr, "lima: gp submit failed; context lost\n");
++      ctx->z1_context_error = true;
++      return false;
++   }
+ 
+    if (lima_dump_command_stream) {
+       if (lima_submit_wait(ctx->gp_submit, PIPE_TIMEOUT_INFINITE)) {
+@@ -1679,8 +1682,11 @@
+       lima_dump_command_stream_print(
+          &pp_frame, sizeof(pp_frame), false, "add pp frame\n");
+ 
+-      if (!lima_submit_start(ctx->pp_submit, &pp_frame, sizeof(pp_frame)))
+-         fprintf(stderr, "pp submit error\n");
++      if (!lima_submit_start(ctx->pp_submit, &pp_frame, sizeof(pp_frame))) {
++         fprintf(stderr, "lima: pp submit failed; context lost\n");
++         ctx->z1_context_error = true;
++         return false;
++      }
+    }
+    else {
+       struct drm_lima_m450_pp_frame pp_frame = {0};
+@@ -1709,8 +1715,11 @@
+       lima_dump_command_stream_print(
+          &pp_frame, sizeof(pp_frame), false, "add pp frame\n");
+ 
+-      if (!lima_submit_start(ctx->pp_submit, &pp_frame, sizeof(pp_frame)))
+-         fprintf(stderr, "pp submit error\n");
++      if (!lima_submit_start(ctx->pp_submit, &pp_frame, sizeof(pp_frame))) {
++         fprintf(stderr, "lima: pp submit failed; context lost\n");
++         ctx->z1_context_error = true;
++         return false;
++      }
+    }
+ 
+    if (lima_dump_command_stream) {
+@@ -1727,6 +1736,7 @@
+       struct lima_surface *surf = lima_surface(ctx->framebuffer.base.cbufs[0]);
+       surf->reload = !end_of_frame;
+    }
++   return true;
+ }
+ 
+ void
+@@ -1743,15 +1753,31 @@
+                 unsigned flags)
+ {
+    struct lima_context *ctx = lima_context(pctx);
+-   if (ctx->z1_context_error || !lima_ctx_dirty(ctx))
++   if (fence)
++      *fence = NULL;
++   if (ctx->z1_context_error)
+       return;
+ 
+-   _lima_flush(ctx, flags & PIPE_FLUSH_END_OF_FRAME);
++   if (lima_ctx_dirty(ctx) && !_lima_flush(ctx, flags & PIPE_FLUSH_END_OF_FRAME))
++      return;
+ 
+    if (fence) {
+-      int fd;
+-      if (lima_submit_get_out_sync(ctx->pp_submit, &fd))
+-         *fence = lima_fence_create(fd);
++      /* out_sync starts signaled and every real PP submission replaces it.
++       * Empty flushes must export the latest work, never an invented fence. */
++      int fd = -1;
++      if (!lima_submit_get_out_sync(ctx->pp_submit, &fd) ||
++          !lima_submit_merge_pending_sync(ctx->gp_submit, &fd)) {
++         if (fd >= 0)
++            close(fd);
++         fprintf(stderr, "lima: export/merge flush fence failed; context lost\n");
++         ctx->z1_context_error = true;
++         return;
++      }
++      *fence = lima_fence_create(fd);
++      if (!*fence) {
++         fprintf(stderr, "lima: allocate flush fence failed; context lost\n");
++         ctx->z1_context_error = true;
++      }
+    }
+ }
+ 
+--- a/src/gallium/drivers/lima/lima_submit.c
++++ b/src/gallium/drivers/lima/lima_submit.c
+@@ -90,6 +90,12 @@
+ 
+ void lima_submit_free(struct lima_submit *submit)
+ {
++   /* An import/submission failure or lost context can leave queued BOs. */
++   util_dynarray_foreach(&submit->bos, struct lima_bo *, bo) {
++      lima_bo_free(*bo);
++   }
++   util_dynarray_fini(&submit->bos);
++   util_dynarray_fini(&submit->gem_bos);
+    if (submit->in_sync_fd >= 0)
+       close(submit->in_sync_fd);
+    drmSyncobjDestroy(submit->screen->fd, submit->in_sync);
+@@ -128,6 +134,7 @@
+       .bos = VOID2U64(util_dynarray_begin(&submit->gem_bos)),
+       .frame = VOID2U64(frame),
+       .frame_size = size,
++      .out_sync = submit->out_sync,
+    };
+ 
+    if (submit->in_sync_fd >= 0) {
+@@ -178,6 +185,14 @@
+    return !sync_accumulate("lima", &submit->in_sync_fd, fd);
+ }
+ 
++/* Keep pending server-sync dependencies until the next real GP submit, but
++ * include them in an empty flush fence as well. sync_accumulate duplicates
++ * the dependency; it does not consume submit->in_sync_fd. */
++bool lima_submit_merge_pending_sync(struct lima_submit *submit, int *fd)
++{
++   return submit->in_sync_fd < 0 || !sync_accumulate("lima", fd, submit->in_sync_fd);
++}
++
+ bool lima_submit_get_out_sync(struct lima_submit *submit, int *fd)
+ {
+    return !drmSyncobjExportSyncFile(submit->screen->fd, submit->out_sync, fd);
+--- a/src/gallium/drivers/lima/lima_submit.h
++++ b/src/gallium/drivers/lima/lima_submit.h
+@@ -39,5 +39,6 @@
+ bool lima_submit_has_bo(struct lima_submit *submit, struct lima_bo *bo, bool all);
+ bool lima_submit_add_in_sync(struct lima_submit *submit, int fd);
+ bool lima_submit_get_out_sync(struct lima_submit *submit, int *fd);
++bool lima_submit_merge_pending_sync(struct lima_submit *submit, int *fd);
+ 
+ #endif
+--- a/src/gallium/drivers/lima/lima_fence.c
++++ b/src/gallium/drivers/lima/lima_fence.c
+@@ -23,6 +23,7 @@
+  */
+ 
+ #include <fcntl.h>
++#include <stdio.h>
+ #include <libsync.h>
+ 
+ #include <util/u_memory.h>
+@@ -55,7 +56,10 @@
+ {
+    struct lima_context *ctx = lima_context(pctx);
+ 
+-   lima_submit_add_in_sync(ctx->gp_submit, fence->fd);
++   if (!lima_submit_add_in_sync(ctx->gp_submit, fence->fd)) {
++      fprintf(stderr, "lima: server sync merge failed; context lost\n");
++      ctx->z1_context_error = true;
++   }
+ }
+ 
+ void lima_fence_context_init(struct lima_context *ctx)
+@@ -70,8 +74,11 @@
+    struct pipe_fence_handle *fence;
+ 
+    fence = CALLOC_STRUCT(pipe_fence_handle);
+-   if (!fence)
++   if (!fence) {
++      if (fd >= 0)
++         close(fd);
+       return NULL;
++   }
+ 
+    pipe_reference_init(&fence->reference, 1);
+    fence->fd = fd;
