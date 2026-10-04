@@ -80,10 +80,21 @@ def main():
     elf_static_arm(originals['init'][2])
     if 'init.z1.rc' not in originals or b'--graphics-mode' not in originals['init.z1.rc'][2]:
         raise ValueError('ramdisk does not contain the stock board init actions')
+    board_rc = (Path(__file__).resolve().parent.parent / 'stock/init.z1.rc').read_bytes()
+    fbcon_script = (Path(__file__).resolve().parent.parent / 'stock/z1_fbcon_takeover.sh').read_bytes()
+    if b'/z1_fbcon_takeover.sh' not in board_rc or b'/sys/class/vtconsole' not in fbcon_script:
+        raise ValueError('stock init or framebuffer-console fallback is incomplete')
     original_rc = originals['init.rc'][2]
-    if original_rc.count(b'import /init.${ro.hardware}.rc') != 1:
+    generic_import = b'import /init.${ro.hardware}.rc'
+    stock_import = b'import /init.z1.rc'
+    if original_rc.count(generic_import) == 1 and original_rc.count(stock_import) == 0:
+        rc = original_rc.replace(generic_import, stock_import)
+    elif original_rc.count(generic_import) == 0 and original_rc.count(stock_import) == 1:
+        # Rebuilding from an already validated S1 image is useful for focused
+        # ramdisk fixes. Keep its vendor init import and board selection intact.
+        rc = original_rc
+    else:
         raise ValueError('unexpected init.rc board import')
-    rc = original_rc.replace(b'import /init.${ro.hardware}.rc', b'import /init.z1.rc')
     rc = rc.replace(b'    start hwservicemanager\n', b'').replace(b'    start vndservicemanager\n', b'')
     # Diagnostic ACM is owned by the early static logger. Prevent generic USB
     # property actions from changing functions when old persisted settings load.
@@ -97,6 +108,8 @@ def main():
             retained.append(line)
     replacements = {
         'init.rc': rc, 'init.usb.rc': b''.join(retained), 'sepolicy': policy,
+        'init.z1.rc': board_rc,
+        'z1_fbcon_takeover.sh': fbcon_script,
         'z1_stock_kernel': b'Z1 stock S1: exact factory/A7 3.4.67; diagnostic permissive policy26\n',
         'z1_bootdiag': helper,
         'ueventd.mt6572.rc': originals['ueventd.z1.rc'][2],
@@ -107,11 +120,14 @@ def main():
         key = name.lstrip(b'./').decode()
         if key == 'TRAILER!!!':
             for i, (key, content) in enumerate(replacements.items(), 1):
-                mode = 0o100755 if key == 'z1_bootdiag' else 0o100644
+                mode = 0o100755 if key in ('z1_bootdiag', 'z1_fbcon_takeover.sh') else 0o100644
                 f = [maxino+i, mode, 0, 0, 1, 0, len(content), 0, 0, 0, 0, 0, 0]
                 records.append((key.encode(), f, content))
             records.append((name, fields, data))
         elif key in replacements:
+            if key == 'z1_fbcon_takeover.sh':
+                fields = fields.copy()
+                fields[1] = 0o100755
             records.append((name, fields, replacements.pop(key)))
         else:
             records.append((name, fields, data))
@@ -119,6 +135,9 @@ def main():
     archive += b'\0' * (-len(archive) % 512)
     final = {n.lstrip(b'./').decode(): d for n, _, d in entries(archive)}
     assert final['sepolicy'] == policy and final['z1_bootdiag'] == helper
+    assert final['init.z1.rc'] == board_rc
+    assert final['z1_fbcon_takeover.sh'] == fbcon_script
+    assert b'/system/bin/sh /z1_fbcon_takeover.sh' in final['init.z1.rc']
     assert final['init'] == originals['init'][2]
     assert b'start hwservicemanager' not in final['init.rc']
     assert b'on property:' not in final['init.usb.rc']

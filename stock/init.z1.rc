@@ -29,6 +29,9 @@ on post-fs-data
     swapon_all /fstab.z1
     start z1_logcat_relay
     exec u:r:init:s0 root root -- /z1_bootdiag --graphics-mode
+    # Detach fbcon after the graphics-mode request. The serial console stays
+    # active for kernel capture while Android keeps the framebuffer.
+    exec u:r:init:s0 root root -- /system/bin/sh /z1_fbcon_takeover.sh
 
 service z1_logcat_relay /z1_bootdiag --logcat
     class core

@@ -2,7 +2,11 @@
 
 Single-device Android 9 project for the Jiabo Z1 / MT6572. The repository tracks the Z1 device tree, stock-kernel compatibility patches, build and verification helpers, and a pinned Android source manifest. Large upstream Android sources are synced by `repo`; generated products and images stay out of Git.
 
-## Current candidate: S1L static bring-up image
+## Current work: S1M display-console follow-up
+
+S1M is a boot-only update built from the S1L system image. It keeps the exact Z1 3.4.67 kernel and adds a ramdisk script that detaches only the framebuffer console after Android reaches `post-fs-data`; serial kernel logging remains enabled. The boot image fits the 6 MiB boot partition and passes static structure and ramdisk checks. Host tests pass, but the display fix has not yet been verified on the device. The S1L Release remains the previous two-partition candidate; it does not contain this S1M boot change.
+
+## S1L base system status
 
 S1L uses the original Z1 3.4.67 kernel. Its `boot.img` and raw 943,718,400-byte ext4 `system.img` passed image, filesystem, init and ELF dependency checks. It has not been boot-tested on the device after the current Bluetooth and Wi-Fi integration. The SELinux policy is permissive version 26 with unknown rules allowed, so this is a controlled bring-up candidate, not a daily-use build.
 
@@ -16,7 +20,7 @@ An earlier run with this factory kernel repeatedly aborted `system_server`: its 
 - Bluetooth has a compiled Android 9 passthrough adapter and the generic factory driver library. Static dependency checks pass; controller initialization, pairing and audio have not been tested on the Z1.
 - Audio selects the factory MT6572 primary HAL. Speaker, microphone, headset and suspend/resume behavior need device testing.
 - The keypad map assigns Back, Home and Recents to the physical keys, and `qemu.hw.mainkeys=1` hides the virtual navigation bar. The three capacitive key events still need device confirmation.
-- The stock boot helper switches the display to graphics mode and disables kernel text after the takeover. Boot behavior remains unverified for this exact S1L system image.
+- S1L's boot helper switches the display to graphics mode but can leave fbcon attached. S1M adds a best-effort `/sys/class/vtconsole` fallback; device testing must confirm the kernel exposes that interface and Android keeps the screen after startup.
 
 Release notes and the two flashable partition assets are in the private [S1L-20261004 GitHub Release](https://github.com/lxjuyn/z1-android9/releases/tag/S1L-20261004). Packages contain only `boot.img` and `system.img.xz`; they exclude NVRAM, calibration partitions, userdata, credentials and captured logs. Decompress `system.img.xz` before writing the raw ext4 system partition with SP Flash Tool.
 

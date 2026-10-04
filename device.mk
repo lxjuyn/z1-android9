@@ -15,6 +15,7 @@ PRODUCT_COPY_FILES += \
     $(DEVICE_PATH)/stock/init.z1.rc:root/init.z1.rc \
     $(DEVICE_PATH)/stock/fstab.z1:root/fstab.z1 \
     $(DEVICE_PATH)/stock/ueventd.z1.rc:root/ueventd.z1.rc \
+    $(DEVICE_PATH)/stock/z1_fbcon_takeover.sh:root/z1_fbcon_takeover.sh \
     $(Z1_MT6572_RADIO)/bin/wmt_loader:$(TARGET_COPY_OUT_SYSTEM)/bin/wmt_loader \
     $(Z1_MT6572_RADIO)/bin/6620_launcher:$(TARGET_COPY_OUT_SYSTEM)/bin/6620_launcher \
     $(Z1_MT6572_RADIO)/etc/firmware/WMT_SOC.cfg:$(TARGET_COPY_OUT_SYSTEM)/etc/firmware/WMT_SOC.cfg \

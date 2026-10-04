@@ -116,6 +116,15 @@ def verify(args):
             require('import /init.z1.network.rc' not in files['init.z1.rc'][1].decode(),
                     'stock must not load Linux7 modules')
             require(b'--graphics-mode' in files['init.z1.rc'][1], 'missing stock graphics takeover')
+            require(b'/system/bin/sh /z1_fbcon_takeover.sh' in files['init.z1.rc'][1],
+                    'missing stock framebuffer-console fallback action')
+            require('z1_fbcon_takeover.sh' in files, 'stock framebuffer-console script missing')
+            fbcon_fields, fbcon_script = files['z1_fbcon_takeover.sh']
+            require(stat.S_ISREG(fbcon_fields[1]) and fbcon_fields[1] & 0o111,
+                    'stock framebuffer-console script is not executable')
+            require(b'/sys/class/vtconsole' in fbcon_script and
+                    b'frame buffer device' in fbcon_script,
+                    'stock framebuffer-console script has no targeted fbcon action')
             require(b'start hwservicemanager' not in files['init.rc'][1], 'stock starts hwservicemanager')
             require(b'start vndservicemanager' not in files['init.rc'][1], 'stock starts vndservicemanager')
             require(b'--stock-partitions' in files['init.z1.rc'][1], 'stock has no live partition resolver')
