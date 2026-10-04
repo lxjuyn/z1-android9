@@ -2,9 +2,13 @@
 
 Single-device Android 9 project for the Jiabo Z1 / MT6572. The repository tracks the Z1 device tree, stock-kernel compatibility patches, build and verification helpers, and a pinned Android source manifest. Large upstream Android sources are synced by `repo`; generated products and images stay out of Git.
 
-## Current work: S1M display-console follow-up
+## Current diagnostic candidate: S1N
 
-S1M is a boot-only update built from the S1L system image. It keeps the exact Z1 3.4.67 kernel and adds a ramdisk script that detaches only the framebuffer console after Android reaches `post-fs-data`; serial kernel logging remains enabled. The boot image fits the 6 MiB boot partition and passes static structure and ramdisk checks. Host tests pass, but the display fix has not yet been verified on the device. The S1L Release remains the previous two-partition candidate; it does not contain this S1M boot change.
+S1N pairs the S1I system image with the matching S1I stock-kernel ramdisk, adding the S1M framebuffer-console detach helper. It keeps the exact Z1 3.4.67 kernel. The system contains the deferred BatteryService diagnostics, the audioserver restart adjustment, and the narrow `CLOCK_BOOTTIME` timerfd fallback needed by the factory kernel. The boot image passes static structure and ramdisk checks at 5,324,800 bytes, below the 6 MiB partition limit. The system image passes the recorded init/ELF/JAR closure and read-only ext4 check.
+
+The local package is in the Android workspace's `out/A9_STOCK_S1N_20261004/` directory. Its boot SHA-256 is `c7250f36f3cbbbd51706eadb7acf7fc4d5983ffbb610c19b7331f3d6130fbd4b`; its raw system SHA-256 is `ac5ba6831ea26771594dff9a7fb1bf28f845bdd66f90866558f9559cc1834c05`. The system bytes are unchanged from S1I. S1N has not been boot-tested on the Z1, so the framebuffer fix and runtime stability remain unconfirmed. It is a diagnostic candidate, not a finished release.
+
+The separate S1M boot-only update remains available for the earlier S1L system. The S1L Release remains the previous two-partition candidate and does not contain the S1M/S1N framebuffer-console change.
 
 ## S1L base system status
 
