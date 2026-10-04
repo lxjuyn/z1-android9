@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 import re
 import shutil
+import shlex
 import stat
 import subprocess
 
@@ -69,6 +70,61 @@ def edit_existing_rc(system, tree, backup, rc, original, modified, block_size):
     rc.write_bytes(modified)
     return dict(path=relative, before_sha256=hashlib.sha256(original).hexdigest(),
                 after_sha256=hashlib.sha256(modified).hexdigest())
+
+
+def apply_stock_healthd_only_profile(system, tree, backup):
+    """Disable only the exact stock Pie healthd service, preserving its stanza."""
+    system, tree, backup = map(Path, (system, tree, backup))
+    block_size = ext4_block_size(system)
+    candidates = sorted((tree/'etc/init').glob('*.rc'))
+    candidates += sorted((tree/'vendor/etc/init').glob('*.rc'))
+    matches = []
+    for rc in candidates:
+        relative = rc.relative_to(tree).as_posix()
+        original = rc.read_bytes()
+        parsed = services(original.decode(), relative)
+        lines = original.decode().splitlines(keepends=True)
+        for service in parsed:
+            if (service['name'] != 'healthd' or
+                    service['executable'] != '/system/bin/healthd'):
+                continue
+            header = lines[service['line']-1]
+            try:
+                header_tokens = shlex.split(header, comments=True)
+            except ValueError as exc:
+                raise ValueError(f'malformed healthd service header: {relative}') from exc
+            # Do not alter a service that merely shares the name/executable but
+            # adds command-line arguments; only the requested exact stanza fits.
+            if header_tokens == ['service', 'healthd', '/system/bin/healthd']:
+                matches.append((rc, relative, original, service, lines))
+
+    if len(matches) != 1:
+        raise ValueError('expected exactly one exact healthd service; found '+str(len(matches)))
+
+    rc, relative, original, service, lines = matches[0]
+    if ['critical'] not in service['options']:
+        raise ValueError('exact healthd service is missing its original critical option')
+    if command(system, 'cat /'+relative) != original:
+        raise ValueError('image/staging RC mismatch: '+relative)
+
+    if ['disabled'] in service['options']:
+        digest = hashlib.sha256(original).hexdigest()
+        return [dict(path=relative, status='already_disabled',
+                     before_sha256=digest, after_sha256=digest,
+                     critical_preserved=True)]
+
+    header_index = service['line']-1
+    header = lines[header_index]
+    line_ending = '\r\n' if header.endswith('\r\n') else '\n'
+    if not header.endswith(('\n', '\r')):
+        lines[header_index] = header+line_ending
+    lines.insert(header_index+1, '    disabled'+line_ending)
+    modified = ''.join(lines).encode()
+    change = edit_existing_rc(system, tree, backup, rc, original,
+                              modified, block_size)
+    change.update(status='disabled_added', disabled_service='healthd',
+                  critical_preserved=True)
+    return [change]
 
 
 def suppress_stock_audio_restarts(text):
@@ -130,12 +186,25 @@ def main():
     ap.add_argument('--report', type=Path, required=True)
     ap.add_argument('--audio-restart-only', action='store_true',
                     help='only suppress remote audio onrestart hooks in an already-profiled image')
+    ap.add_argument('--healthd-only', action='store_true',
+                    help='only disable the exact stock healthd service stanza')
     args = ap.parse_args()
+    if args.audio_restart_only and args.healthd_only:
+        ap.error('--audio-restart-only and --healthd-only are separate modes')
     if not stat.S_ISREG(args.system.stat().st_mode):
         raise ValueError('only regular new image files may be edited')
     if args.backup.exists():
         raise ValueError('backup directory already exists')
     args.backup.mkdir(parents=True)
+    if args.healthd_only:
+        changes = apply_stock_healthd_only_profile(args.system, args.tree, args.backup)
+        report = dict(result='STATIC_STOCK_HEALTHD_ONLY_PROFILE_PASS',
+                      device_runtime_verified=False,
+                      method='preserve allocated RC data blocks/inode ownership/mode/xattrs',
+                      changes=changes)
+        args.report.write_text(json.dumps(report, indent=2)+'\n')
+        print('Disabled only the exact stock healthd service')
+        return
     block_size = ext4_block_size(args.system)
     if args.audio_restart_only:
         changes = apply_stock_audio_restart_profile(args.system, args.tree, args.backup)
