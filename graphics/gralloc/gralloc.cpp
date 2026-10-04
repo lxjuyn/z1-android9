@@ -36,6 +36,9 @@
 #include "gralloc_priv.h"
 #include "gr.h"
 #include "pixel_copy.h"
+#ifdef Z1_USE_LIMA
+#include "lima_allocator.h"
+#endif
 
 /*****************************************************************************/
 
@@ -136,23 +139,35 @@ static int gralloc_alloc_framebuffer(alloc_device_t* dev,
 }
 
 static int gralloc_alloc_buffer(alloc_device_t* dev,
-        size_t size, int /*usage*/, buffer_handle_t* pHandle)
+        size_t size, int usage, buffer_handle_t* pHandle)
 {
     int err = 0;
     int fd = -1;
+    int flags = 0;
 
     if (size == 0 || size > size_t(INT_MAX) - (PAGE_SIZE - 1))
         return -EINVAL;
     size = roundUpToPageSize(size);
     
-    fd = ashmem_create_region("gralloc-buffer", size);
+#ifdef Z1_USE_LIMA
+    fd = z1_lima_alloc_dmabuf(size);
+    if (fd >= 0) {
+        flags |= private_handle_t::PRIV_FLAGS_DMABUF;
+    } else {
+        ALOGW("Lima dma-buf allocation failed (%s); using ashmem fallback",
+              strerror(-fd));
+    }
+#endif
+
+    if (fd < 0)
+        fd = ashmem_create_region("gralloc-buffer", size);
     if (fd < 0) {
         ALOGE("couldn't create ashmem (%s)", strerror(-errno));
         err = -errno;
     }
 
     if (err == 0) {
-        private_handle_t* hnd = new private_handle_t(fd, size, 0);
+        private_handle_t* hnd = new private_handle_t(fd, size, flags);
         gralloc_module_t* module = reinterpret_cast<gralloc_module_t*>(
                 dev->common.module);
         err = mapBuffer(module, hnd);

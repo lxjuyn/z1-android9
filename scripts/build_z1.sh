@@ -7,6 +7,13 @@ export JAVA_HOME="$LOS_ROOT/prebuilts/jdk/jdk9/linux-x86"
 export PATH="$HOST_TOOLS/python2/bin:$JAVA_HOME/bin:$PATH"
 export Z1_KERNEL_VARIANT=${Z1_KERNEL_VARIANT:-stock}
 case "$Z1_KERNEL_VARIANT" in stock|mainline) ;; *) echo "Invalid Z1_KERNEL_VARIANT" >&2; exit 2;; esac
+if [[ "$Z1_KERNEL_VARIANT" == "mainline" ]]; then
+    export Z1_MESA_SOURCE_DIR="$(bash "$REPO_ROOT/scripts/prepare_mesa_lima.sh" "$LOS_ROOT")"
+    MESA_PYTHON_CACHE="$LOS_ROOT/.cache/z1-python2"
+    export PYTHONPATH="$MESA_PYTHON_CACHE${PYTHONPATH:+:$PYTHONPATH}"
+    bash "$REPO_ROOT/scripts/prepare_mesa_python2.sh" "$LOS_ROOT"
+    python -c 'import mako.template' >/dev/null
+fi
 export GOCACHE="$LOS_ROOT/.cache/go-build"
 export LD_LIBRARY_PATH="$HOST_TOOLS/compat-root/lib/x86_64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 mkdir -p "$GOCACHE"

@@ -16,6 +16,10 @@ BOARD_WPA_SUPPLICANT_PRIVATE_LIB := lib_driver_cmd_mt66xx
 BOARD_HOSTAPD_PRIVATE_LIB := lib_driver_cmd_mt66xx
 else
 TARGET_USES_64_BIT_BINDER := true
+# Mesa 17 shipped with this Android tree predates Lima. The mainline kernel
+# profile uses a checksum-pinned Mesa 19.1.8 source prepared by build_z1.sh.
+BOARD_USE_CUSTOMIZED_MESA := true
+BOARD_GPU_DRIVERS := lima swrast
 endif
 TARGET_ARCH := arm
 TARGET_ARCH_VARIANT := armv7-a-neon

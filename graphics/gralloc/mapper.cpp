@@ -30,6 +30,9 @@
 #include <hardware/gralloc.h>
 
 #include "gralloc_priv.h"
+#ifdef Z1_USE_LIMA
+#include "lima_allocator.h"
+#endif
 
 
 /*****************************************************************************/
@@ -175,6 +178,14 @@ int gralloc_lock(gralloc_module_t const* /*module*/,
             l > hnd->width || t > hnd->height ||
             w > hnd->width - l || h > hnd->height - t)
         return -EINVAL;
+#ifdef Z1_USE_LIMA
+    if (hnd->flags & private_handle_t::PRIV_FLAGS_DMABUF) {
+        int err = z1_lima_sync_dmabuf(hnd->fd, true,
+                GRALLOC_USAGE_SW_READ_MASK | GRALLOC_USAGE_SW_WRITE_MASK);
+        if (err < 0)
+            return err;
+    }
+#endif
     *vaddr = (void*)hnd->base;
     return 0;
 }
@@ -187,5 +198,14 @@ int gralloc_unlock(gralloc_module_t const* /*module*/,
 
     if (private_handle_t::validate(handle) < 0)
         return -EINVAL;
+#ifdef Z1_USE_LIMA
+    private_handle_t* hnd = (private_handle_t*)handle;
+    if (hnd->flags & private_handle_t::PRIV_FLAGS_DMABUF) {
+        int err = z1_lima_sync_dmabuf(hnd->fd, false,
+                GRALLOC_USAGE_SW_READ_MASK | GRALLOC_USAGE_SW_WRITE_MASK);
+        if (err < 0)
+            return err;
+    }
+#endif
     return 0;
 }

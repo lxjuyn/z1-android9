@@ -24,7 +24,7 @@ An earlier run with this factory kernel repeatedly aborted `system_server`: its 
 
 ## Hardware status
 
-- Display uses the board framebuffer gralloc/HWC path and SwiftShader software rendering. Mali GPU acceleration is not integrated. The factory Mali stack imports Android 4.4 private graphics and ION symbols that do not resolve against this Android 9 system.
+- Stock-kernel display uses the board framebuffer gralloc/HWC path and SwiftShader. The Linux7 profile now builds Mesa 19.1.8 Lima with dma-buf-backed gralloc buffers and softpipe/ashmem fallback. This is not runtime-verified yet; no device boot or GPU acceleration result is claimed. Factory Mali binaries remain excluded because their Android 4.4 private graphics and ION symbols do not resolve against Android 9.
 - Touch uses the original kernel input drivers. Earlier logs include a failed Hynitron `hyn_ts` probe; the active panel/controller and touch behavior need a fresh device log and screen test.
 - Wi-Fi firmware and MTK NL80211 private commands are included in the build. Android 9's Java Wi-Fi framework still needs its HIDL supplicant transport; the stock kernel exposes no independent `/dev/hwbinder` context. An earlier stock-kernel run also reported `NL80211_CMD_GET_PROTOCOL_FEATURES` as unsupported, so Wi-Fi is not runtime-ready.
 - Bluetooth has a compiled Android 9 passthrough adapter and the generic factory driver library. Static dependency checks pass; controller initialization, pairing and audio have not been tested on the Z1.

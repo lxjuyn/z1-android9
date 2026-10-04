@@ -1,0 +1,2 @@
+# Mainline DRM render node used by Lima and the Z1 dma-buf gralloc path.
+/dev/dri/renderD128 0660 system graphics

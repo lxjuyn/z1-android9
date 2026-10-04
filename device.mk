@@ -37,7 +37,10 @@ PRODUCT_COPY_FILES += \
     $(DEVICE_PATH)/rootdir/init.z1.rc:root/init.z1.rc \
     $(DEVICE_PATH)/rootdir/fstab.z1:root/fstab.z1 \
     $(DEVICE_PATH)/rootdir/init.z1.network.rc:root/init.z1.network.rc \
+    $(DEVICE_PATH)/rootdir/ueventd.z1.rc:root/ueventd.z1.rc \
     $(DEVICE_PATH)/rootdir/z1_usb_setup.sh:system/bin/z1_usb_setup.sh
+PRODUCT_PROPERTY_OVERRIDES += ro.hardware.egl=mesa
+PRODUCT_PACKAGES += libGLES_mesa gallium_dri
 endif
 
 # Rebuilt module files and dependency order are produced together by
@@ -51,8 +54,7 @@ PRODUCT_PROPERTY_OVERRIDES += \
     ro.config.low_ram=true \
     ro.sf.lcd_density=160 \
     qemu.hw.mainkeys=1 \
-    ro.hardware.egl=swiftshader \
-        ro.vold.z1_fuse=true \
+    ro.vold.z1_fuse=true \
     ro.sys.sdcardfs=false
 
 # FB_SIMPLE exposes Z1's 240x320 RGB565 display through /dev/fb0. The
@@ -62,14 +64,19 @@ PRODUCT_PROPERTY_OVERRIDES += \
 PRODUCT_PACKAGES += \
     gralloc.z1 \
     hwcomposer.z1 \
-    libEGL_swiftshader \
-    libGLESv1_CM_swiftshader \
-    libGLESv2_swiftshader \
     android.hardware.graphics.composer@2.1-impl \
     android.hardware.graphics.composer@2.1-service \
     android.hardware.graphics.allocator@2.0-service \
     android.hardware.graphics.allocator@2.0-impl \
     android.hardware.graphics.mapper@2.0-impl
+
+ifeq ($(Z1_KERNEL_VARIANT),stock)
+PRODUCT_PROPERTY_OVERRIDES += ro.hardware.egl=swiftshader
+PRODUCT_PACKAGES += \
+    libEGL_swiftshader \
+    libGLESv1_CM_swiftshader \
+    libGLESv2_swiftshader
+endif
 
 # Pie HIDL clients can load these implementations in-process on the stock
 # kernel. The stock profile removes the separate HIDL server processes after
