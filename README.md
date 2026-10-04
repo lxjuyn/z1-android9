@@ -9,9 +9,11 @@ S1J retains the original Z1 3.4.67 kernel and the `CLOCK_BOOTTIME` timerfd fallb
 The stock candidate selects the factory MT6572 primary audio HAL and now has
 an Android 9 Bluetooth passthrough adapter around the factory controller
 library. Audio and Bluetooth still need device testing. Graphics still use
-SwiftShader; Wi-Fi framework integration and touch/display/key behavior need
-further bring-up and hardware verification. Do not describe these features as
-complete until they are tested on the device.
+SwiftShader. The MTK NL80211 hooks now compile and link into `wpa_supplicant`
+and `hostapd`, while the Android 9 supplicant HIDL path still needs a solution
+for the stock kernel's missing hwbinder context. Touch/display/key behavior
+also need hardware verification. Do not describe these features as complete
+until they are tested on the device.
 
 ## Source and builds
 
