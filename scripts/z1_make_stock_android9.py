@@ -78,11 +78,16 @@ def main():
     src = entries(gzip.decompress(args.ramdisk.read_bytes()))
     originals = {n.lstrip(b'./').decode(): (n, f, d) for n, f, d in src}
     elf_static_arm(originals['init'][2])
-    if 'init.z1.rc' not in originals or b'--graphics-mode' not in originals['init.z1.rc'][2]:
+    if 'init.z1.rc' not in originals:
         raise ValueError('ramdisk does not contain the stock board init actions')
     board_rc = (Path(__file__).resolve().parent.parent / 'stock/init.z1.rc').read_bytes()
     fbcon_script = (Path(__file__).resolve().parent.parent / 'stock/z1_fbcon_takeover.sh').read_bytes()
-    if b'/z1_fbcon_takeover.sh' not in board_rc or b'/sys/class/vtconsole' not in fbcon_script:
+    display_script = (Path(__file__).resolve().parent.parent / 'stock/z1_display_takeover.sh').read_bytes()
+    if (b'/z1_display_takeover.sh' not in board_rc or
+            b'/z1_bootdiag --graphics-mode' not in display_script or
+            b'/system/bin/mknod -m 0600 /dev/tty0 c 4 0' not in display_script or
+            b'/z1_fbcon_takeover.sh' not in display_script or
+            b'/sys/class/vtconsole' not in fbcon_script):
         raise ValueError('stock init or framebuffer-console fallback is incomplete')
     original_rc = originals['init.rc'][2]
     generic_import = b'import /init.${ro.hardware}.rc'
@@ -110,6 +115,7 @@ def main():
         'init.rc': rc, 'init.usb.rc': b''.join(retained), 'sepolicy': policy,
         'init.z1.rc': board_rc,
         'z1_fbcon_takeover.sh': fbcon_script,
+        'z1_display_takeover.sh': display_script,
         'z1_stock_kernel': b'Z1 stock S1: exact factory/A7 3.4.67; diagnostic permissive policy26\n',
         'z1_bootdiag': helper,
         'ueventd.mt6572.rc': originals['ueventd.z1.rc'][2],
@@ -120,12 +126,13 @@ def main():
         key = name.lstrip(b'./').decode()
         if key == 'TRAILER!!!':
             for i, (key, content) in enumerate(replacements.items(), 1):
-                mode = 0o100755 if key in ('z1_bootdiag', 'z1_fbcon_takeover.sh') else 0o100644
+                mode = 0o100755 if key in ('z1_bootdiag', 'z1_fbcon_takeover.sh',
+                                           'z1_display_takeover.sh') else 0o100644
                 f = [maxino+i, mode, 0, 0, 1, 0, len(content), 0, 0, 0, 0, 0, 0]
                 records.append((key.encode(), f, content))
             records.append((name, fields, data))
         elif key in replacements:
-            if key == 'z1_fbcon_takeover.sh':
+            if key in ('z1_fbcon_takeover.sh', 'z1_display_takeover.sh'):
                 fields = fields.copy()
                 fields[1] = 0o100755
             records.append((name, fields, replacements.pop(key)))
@@ -137,7 +144,8 @@ def main():
     assert final['sepolicy'] == policy and final['z1_bootdiag'] == helper
     assert final['init.z1.rc'] == board_rc
     assert final['z1_fbcon_takeover.sh'] == fbcon_script
-    assert b'/system/bin/sh /z1_fbcon_takeover.sh' in final['init.z1.rc']
+    assert b'/system/bin/sh /z1_display_takeover.sh' in final['init.z1.rc']
+    assert b'/z1_bootdiag --graphics-mode' in final['z1_display_takeover.sh']
     assert final['init'] == originals['init'][2]
     assert b'start hwservicemanager' not in final['init.rc']
     assert b'on property:' not in final['init.usb.rc']

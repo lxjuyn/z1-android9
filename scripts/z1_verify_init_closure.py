@@ -115,9 +115,16 @@ def verify(args):
             require('z1_stock_kernel' in files, 'stock marker missing')
             require('import /init.z1.network.rc' not in files['init.z1.rc'][1].decode(),
                     'stock must not load Linux7 modules')
-            require(b'--graphics-mode' in files['init.z1.rc'][1], 'missing stock graphics takeover')
-            require(b'/system/bin/sh /z1_fbcon_takeover.sh' in files['init.z1.rc'][1],
-                    'missing stock framebuffer-console fallback action')
+            require(b'/system/bin/sh /z1_display_takeover.sh' in files['init.z1.rc'][1],
+                    'missing stock display takeover action')
+            require('z1_display_takeover.sh' in files, 'stock display takeover script missing')
+            display_fields, display_script = files['z1_display_takeover.sh']
+            require(stat.S_ISREG(display_fields[1]) and display_fields[1] & 0o111,
+                    'stock display takeover script is not executable')
+            require(b'/system/bin/mknod -m 0600 /dev/tty0 c 4 0' in display_script and
+                    b'/z1_bootdiag --graphics-mode' in display_script and
+                    b'/z1_fbcon_takeover.sh' in display_script,
+                    'stock display takeover script does not create VT0 and detach fbcon')
             require('z1_fbcon_takeover.sh' in files, 'stock framebuffer-console script missing')
             fbcon_fields, fbcon_script = files['z1_fbcon_takeover.sh']
             require(stat.S_ISREG(fbcon_fields[1]) and fbcon_fields[1] & 0o111,

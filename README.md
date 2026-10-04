@@ -24,7 +24,7 @@ An earlier run with this factory kernel repeatedly aborted `system_server`: its 
 - Bluetooth has a compiled Android 9 passthrough adapter and the generic factory driver library. Static dependency checks pass; controller initialization, pairing and audio have not been tested on the Z1.
 - Audio selects the factory MT6572 primary HAL. Speaker, microphone, headset and suspend/resume behavior need device testing.
 - Separate `mtk-kpd` and `mtk-tpd` layouts map the keypad and capacitive navigation events; `qemu.hw.mainkeys=1` hides the software navigation bar. Actual board events still need device confirmation.
-- S1L's boot helper switches the display to graphics mode but can leave fbcon attached. S1M adds a best-effort `/sys/class/vtconsole` fallback; device testing must confirm the kernel exposes that interface and Android keeps the screen after startup.
+- Previous stock-kernel logs showed the graphics-mode request failed because `/dev/tty0` was missing, so the fbcon fallback could not be trusted. The stock display helper now creates VT0 before requesting `KD_GRAPHICS`, then runs the fbcon detach; serial logging remains enabled. This still needs a fresh Z1 boot check.
 
 Release notes and the two flashable partition assets are in the private [S1L-20261004 GitHub Release](https://github.com/lxjuyn/z1-android9/releases/tag/S1L-20261004). Packages contain only `boot.img` and `system.img.xz`; they exclude NVRAM, calibration partitions, userdata, credentials and captured logs. Decompress `system.img.xz` before writing the raw ext4 system partition with SP Flash Tool.
 
