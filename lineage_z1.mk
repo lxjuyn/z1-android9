@@ -10,6 +10,7 @@ $(call inherit-product, vendor/lineage/config/common.mk)
 ifeq ($(Z1_KERNEL_VARIANT),stock)
 Z1_STOCK_REMOTE_HIDL_SERVERS := \
     android.hardware.audio@2.0-service \
+    android.hardware.bluetooth@1.0-service \
     android.hardware.cas@1.0-service \
     android.hardware.configstore@1.1-service \
     android.hardware.drm@1.1-service.clearkey \

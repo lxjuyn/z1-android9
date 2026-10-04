@@ -164,5 +164,11 @@
     "patch": "build__make__core__product_config.mk.patch",
     "base_sha256": "9d2e38999f0dbf84727e3cb27c3e06595eddabc1ba8098fe58c51a9070861866",
     "result_sha256": "2c86b06714b8e9047aa83b90e93681181965b253ef3b8c0bb497b619bd5a6f3c"
+  },
+  {
+    "file": "hardware/interfaces/bluetooth/1.0/default/vendor_interface.cc",
+    "patch": "hardware__interfaces__bluetooth__1__0__default__vendor_interface.cc.patch",
+    "base_sha256": "714fd6bb96e6931d5767e9799e463c2bed56da18f17ef458d6feda94c36cd320",
+    "result_sha256": "7e27d4752884cec19ce74b092952a1259df11934bd6077704c5c77cfe8bbd403"
   }
 ]

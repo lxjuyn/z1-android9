@@ -1,0 +1,21 @@
+diff --git a/hardware/interfaces/bluetooth/1.0/default/vendor_interface.cc b/hardware/interfaces/bluetooth/1.0/default/vendor_interface.cc
+index a8f5bb4..f94cc89 100644
+--- a/hardware/interfaces/bluetooth/1.0/default/vendor_interface.cc
++++ b/hardware/interfaces/bluetooth/1.0/default/vendor_interface.cc
+@@ -24,0 +25 @@
++#include <string.h>
+@@ -210,4 +211,10 @@
+-  uint8_t local_bda[BluetoothAddress::kBytes];
+-  if (!BluetoothAddress::get_local_address(local_bda)) {
+-    LOG_ALWAYS_FATAL("%s: No Bluetooth Address!", __func__);
+-  }
++  uint8_t local_bda[BluetoothAddress::kBytes] = {};
++  if (!BluetoothAddress::get_local_address(local_bda)) {
++    char vendor_owns_bdaddr[PROPERTY_VALUE_MAX] = {};
++    property_get("ro.bt.vendor_owns_bdaddr", vendor_owns_bdaddr, "false");
++    if (strcmp(vendor_owns_bdaddr, "true") != 0) {
++      LOG_ALWAYS_FATAL("%s: No Bluetooth Address!", __func__);
++    }
++    ALOGW("%s: no host-side BD_ADDR; the Z1 MTK driver reads it from the "
++          "device's local NVRAM", __func__);
++  }

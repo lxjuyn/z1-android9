@@ -10,6 +10,35 @@ case "$Z1_KERNEL_VARIANT" in stock|mainline) ;; *) echo "Invalid Z1_KERNEL_VARIA
 export GOCACHE="$LOS_ROOT/.cache/go-build"
 export LD_LIBRARY_PATH="$HOST_TOOLS/compat-root/lib/x86_64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 mkdir -p "$GOCACHE"
+
+# Soong's source scanner does not walk the local device-tree symlink used by
+# this workspace. Materialize only that small source tree for the duration of
+# the build so Android.bp modules are discovered. Restore the original link on
+# success, error, or an interrupt.
+DEVICE_TREE="$LOS_ROOT/device/jiabo/z1"
+DEVICE_TREE_LINK_BACKUP=""
+DEVICE_TREE_MATERIALIZED=0
+restore_device_tree_link() {
+    if [[ "$DEVICE_TREE_MATERIALIZED" == "1" ]]; then
+        rm -rf -- "$DEVICE_TREE"
+        mv -- "$DEVICE_TREE_LINK_BACKUP" "$DEVICE_TREE"
+        DEVICE_TREE_MATERIALIZED=0
+    fi
+}
+trap restore_device_tree_link EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+if [[ -L "$DEVICE_TREE" && "$(readlink -f "$DEVICE_TREE")" == "$REPO_ROOT" ]]; then
+    DEVICE_TREE_LINK_BACKUP="${TMPDIR:-/tmp}/z1-device-tree-link.$$"
+    [[ ! -e "$DEVICE_TREE_LINK_BACKUP" && ! -L "$DEVICE_TREE_LINK_BACKUP" ]]
+    mv -- "$DEVICE_TREE" "$DEVICE_TREE_LINK_BACKUP"
+    DEVICE_TREE_MATERIALIZED=1
+    mkdir -- "$DEVICE_TREE"
+    tar --exclude='./.git' --exclude='./release' --exclude='*/__pycache__' \
+        -C "$REPO_ROOT" -cf - . | tar -C "$DEVICE_TREE" -xf -
+fi
+
 cd "$LOS_ROOT"
 source build/envsetup.sh
 lunch lineage_z1-userdebug

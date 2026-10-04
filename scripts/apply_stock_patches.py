@@ -40,12 +40,17 @@ def main():
             print(f"HASH MISMATCH: {item['file']} current={current} expected={'result' if args.check else 'base/result'}", file=sys.stderr)
             failed = True
             continue
-        check = subprocess.run(["git", "apply", "--check", str(patch)], cwd=source)
+        command = ["patch", "-p1", "--directory", str(source),
+                   "--input", str(patch)]
+        check = subprocess.run(command[:1] + ["--dry-run"] + command[1:],
+                               text=True, capture_output=True)
         if check.returncode:
-            print(f"PATCH DOES NOT APPLY: {item['patch']}", file=sys.stderr)
+            detail = (check.stderr or check.stdout).strip()
+            print(f"PATCH DOES NOT APPLY: {item['patch']}: {detail}", file=sys.stderr)
             failed = True
             continue
-        subprocess.run(["git", "apply", str(patch)], cwd=source, check=True)
+        subprocess.run(command, check=True, stdout=subprocess.PIPE,
+                       stderr=subprocess.PIPE, text=True)
         actual = sha(target)
         if actual != result:
             print(f"RESULT HASH MISMATCH: {item['file']} got={actual} expected={result}", file=sys.stderr)

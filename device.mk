@@ -1,4 +1,5 @@
 DEVICE_PATH := device/jiabo/z1
+PRODUCT_SOONG_NAMESPACES += $(DEVICE_PATH)
 
 # Factory Android 4.4 launch level. Pie build's legacy path keeps vendor
 # content under /system/vendor and does not impose Treble launch requirements.
@@ -9,6 +10,7 @@ PRODUCT_SHIPPING_API_LEVEL := 19
 ifeq ($(Z1_KERNEL_VARIANT),stock)
 Z1_MT6572_RADIO := $(DEVICE_PATH)/proprietary/mt6572
 Z1_MT6572_AUDIO := $(DEVICE_PATH)/proprietary/mt6572/audio
+Z1_MT6572_BLUETOOTH := $(DEVICE_PATH)/proprietary/mt6572/bluetooth
 PRODUCT_COPY_FILES += \
     $(DEVICE_PATH)/stock/init.z1.rc:root/init.z1.rc \
     $(DEVICE_PATH)/stock/fstab.z1:root/fstab.z1 \
@@ -19,11 +21,16 @@ PRODUCT_COPY_FILES += \
     $(Z1_MT6572_RADIO)/etc/firmware/WIFI_RAM_CODE_SOC:$(TARGET_COPY_OUT_SYSTEM)/etc/firmware/WIFI_RAM_CODE_SOC \
     $(Z1_MT6572_RADIO)/etc/firmware/mt6572_82_patch_e1_0_hdr.bin:$(TARGET_COPY_OUT_SYSTEM)/etc/firmware/mt6572_82_patch_e1_0_hdr.bin \
     $(Z1_MT6572_RADIO)/etc/firmware/mt6572_82_patch_e1_1_hdr.bin:$(TARGET_COPY_OUT_SYSTEM)/etc/firmware/mt6572_82_patch_e1_1_hdr.bin \
-    $(Z1_MT6572_AUDIO)/lib/hw/audio.primary.mt6572.so:$(TARGET_COPY_OUT_VENDOR)/lib/hw/audio.primary.mt6572.so
-PRODUCT_PROPERTY_OVERRIDES += ro.z1.stock_kernel=true ro.logd.kernel=false ro.hardware.gralloc=z1 ro.hardware.hwcomposer=z1 ro.hardware.audio=mt6572
+    $(Z1_MT6572_AUDIO)/lib/hw/audio.primary.mt6572.so:$(TARGET_COPY_OUT_VENDOR)/lib/hw/audio.primary.mt6572.so \
+    $(Z1_MT6572_BLUETOOTH)/libbluetoothdrv.so:$(TARGET_COPY_OUT_VENDOR)/lib/libbluetoothdrv.so \
+    frameworks/native/data/etc/android.hardware.bluetooth.xml:$(TARGET_COPY_OUT_SYSTEM)/etc/permissions/android.hardware.bluetooth.xml \
+    frameworks/native/data/etc/android.hardware.bluetooth_le.xml:$(TARGET_COPY_OUT_SYSTEM)/etc/permissions/android.hardware.bluetooth_le.xml
+PRODUCT_PROPERTY_OVERRIDES += ro.z1.stock_kernel=true ro.logd.kernel=false ro.hardware.gralloc=z1 ro.hardware.hwcomposer=z1 ro.hardware.audio=mt6572 ro.bt.vendor_owns_bdaddr=true
 PRODUCT_PACKAGES += \
     android.hardware.configstore@1.0-impl.z1stock \
-    android.hardware.configstore@1.1-impl.z1stock
+    android.hardware.configstore@1.1-impl.z1stock \
+    android.hardware.bluetooth@1.0-impl \
+    libbt-vendor
 else
 PRODUCT_COPY_FILES += \
     $(DEVICE_PATH)/rootdir/init.z1.rc:root/init.z1.rc \
@@ -96,8 +103,9 @@ PRODUCT_CHARACTERISTICS := nosdcard
 # TODO: Gate software graphics on board fbdev refresh and full BufferQueue test.
 # TODO: Verify FunctionFS ADB enumeration and secure host authorization on board.
 # WMT firmware and its stock loader are staged from a local ROM by the
-# whitelist extractor. Framework Wi-Fi/Bluetooth HAL support remains gated on
-# the stock Binder/HIDL transport and MT6572 ABI audit.
+# whitelist extractor. Bluetooth uses a 32-bit passthrough HIDL implementation
+# and a source-built adapter around the factory driver library. That driver
+# reads its Bluetooth address/calibration from this device's own NVRAM.
 
 # Mainline has FUSE, not Android sdcardfs/esdfs. The replacement daemon retains
 # three permission views and per-package/multi-user access checks.

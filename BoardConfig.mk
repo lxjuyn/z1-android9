@@ -5,6 +5,9 @@ DEVICE_PATH := device/jiabo/z1
 ifeq ($(Z1_KERNEL_VARIANT),stock)
 # The exact A7/factory 3.4.67 kernel exposes protocol 7 and 32-bit fields.
 TARGET_USES_64_BIT_BINDER := false
+BOARD_HAVE_BLUETOOTH := true
+BOARD_HAVE_BLUETOOTH_MTK := true
+BOARD_BLUETOOTH_DOES_NOT_USE_RFKILL := true
 else
 TARGET_USES_64_BIT_BINDER := true
 endif

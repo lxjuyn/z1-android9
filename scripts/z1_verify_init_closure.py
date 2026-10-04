@@ -123,11 +123,26 @@ def verify(args):
             props = image.get('build.prop').read_text().splitlines()
             for line in ('ro.z1.stock_kernel=true', 'ro.logd.kernel=false',
                          'ro.hardware.gralloc=z1', 'ro.hardware.hwcomposer=z1',
-                         'ro.hardware.audio=mt6572'):
+                         'ro.hardware.audio=mt6572',
+                         'ro.bt.vendor_owns_bdaddr=true'):
                 require(line in props, 'missing stock property: ' + line)
             audio_hal = 'vendor/lib/hw/audio.primary.mt6572.so'
             image.get(audio_hal)
             roots.add(audio_hal)
+            bluetooth_vendor = 'vendor/lib/libbt-vendor.so'
+            bluetooth_driver = 'vendor/lib/libbluetoothdrv.so'
+            vendor_path = image.get(bluetooth_vendor)
+            driver_path = image.get(bluetooth_driver)
+            vendor_symbols = run(['readelf', '--dyn-syms', '--wide',
+                                  str(vendor_path)]).stdout
+            driver_symbols = run(['readelf', '--dyn-syms', '--wide',
+                                  str(driver_path)]).stdout
+            require('BLUETOOTH_VENDOR_LIB_INTERFACE' in vendor_symbols,
+                    'Bluetooth vendor interface symbol missing')
+            for symbol in ('mtk_bt_enable', 'mtk_bt_disable'):
+                require(re.search(r'\b' + symbol + r'$', driver_symbols, re.M),
+                        'factory Bluetooth driver symbol missing: ' + symbol)
+            roots.update((bluetooth_vendor, bluetooth_driver))
         else:
             require('import /init.z1.network.rc' in files['init.z1.rc'][1].decode().splitlines(),
                     'board network RC not imported')
@@ -149,6 +164,7 @@ def verify(args):
                 require(not unsupported or ['disabled'] in service['options'],
                         'stock remote HIDL server is enabled: ' + service['name'])
             factories = {
+                'android.hardware.bluetooth@1.0-impl.so': 'IBluetoothHci',
                 'android.hardware.graphics.composer@2.1-impl.so': 'IComposer',
                 'android.hardware.graphics.allocator@2.0-impl.so': 'IAllocator',
                 'android.hardware.graphics.mapper@2.0-impl.so': 'IMapper',
@@ -227,6 +243,16 @@ def verify(args):
                             f'classpath JAR lacks dex: {absolute}')
             report['classpaths'][kind] = paths
         manifest = ET.parse(image.get('vendor/etc/vintf/manifest.xml')).getroot()
+        if args.stock:
+            bluetooth_hals = [h for h in manifest.findall('hal')
+                              if h.findtext('name') == 'android.hardware.bluetooth']
+            require(len(bluetooth_hals) == 1 and
+                    bluetooth_hals[0].findtext('version') == '1.0' and
+                    bluetooth_hals[0].findtext('transport') == 'passthrough' and
+                    bluetooth_hals[0].find('transport').get('arch') == '32' and
+                    bluetooth_hals[0].findtext('interface/name') == 'IBluetoothHci' and
+                    bluetooth_hals[0].findtext('interface/instance') == 'default',
+                    'Bluetooth passthrough HIDL manifest mismatch')
         configstores = [h for h in manifest.findall('hal') if h.findtext('name') == 'android.hardware.configstore']
         require(len(configstores) == 1 and configstores[0].findtext('version') == '1.1' and
                 configstores[0].findtext('transport') == ('passthrough' if args.stock else 'hwbinder'),

@@ -1,0 +1,11 @@
+cc_library_shared {
+    name: "libbt-vendor",
+    vendor: true,
+    compile_multilib: "32",
+    srcs: ["bluetooth/libbt-vendor-mtk/libbt-vendor-mtk.c"],
+    include_dirs: ["system/bt/hci/include"],
+    shared_libs: [
+        "libdl",
+        "liblog",
+    ],
+}
