@@ -2,13 +2,13 @@
 
 Single-device Android 9 project for the Jiabo Z1 / MT6572. The repository tracks the Z1 device tree, stock-kernel compatibility patches, build and verification helpers, and a pinned Android source manifest. Large upstream Android sources are synced by `repo`; generated products and images stay out of Git.
 
-## Current diagnostic candidate: S1N
+## Current diagnostic candidate: S1Q
 
-S1N pairs the S1I system image with the matching S1I stock-kernel ramdisk, adding the S1M framebuffer-console detach helper. It keeps the exact Z1 3.4.67 kernel. The system contains the deferred BatteryService diagnostics, the audioserver restart adjustment, and the narrow `CLOCK_BOOTTIME` timerfd fallback needed by the factory kernel. The boot image passes static structure and ramdisk checks at 5,324,800 bytes, below the 6 MiB partition limit. The system image passes the recorded init/ELF/JAR closure and read-only ext4 check.
+S1Q pairs the S1P system image with a boot ramdisk that creates `/dev/tty0`, requests `KD_GRAPHICS`, then detaches fbcon as a fallback. It retains the exact Z1 3.4.67 kernel and serial diagnostics. The local package is in `out/A9_STOCK_S1Q_20261004/`: `boot.img` SHA-256 `cc6d5fd0259e6659f1bee3baf14a1d2b258a3b8cd3438ab2090ea847d3ce0098`; raw `system.img` SHA-256 `d63aa528e6eddfe77a01358bf0d25af3a663188015e5ef9415ae30d3d48baee5`. Both hashes were checked against `SHA256SUMS`; the boot image is 5,324,800 bytes and the system image is 943,718,400 bytes.
 
-The local package is in the Android workspace's `out/A9_STOCK_S1N_20261004/` directory. Its boot SHA-256 is `c7250f36f3cbbbd51706eadb7acf7fc4d5983ffbb610c19b7331f3d6130fbd4b`; its raw system SHA-256 is `ac5ba6831ea26771594dff9a7fb1bf28f845bdd66f90866558f9559cc1834c05`. The system bytes are unchanged from S1I. S1N has not been boot-tested on the Z1, so the framebuffer fix and runtime stability remain unconfirmed. It is a diagnostic candidate, not a finished release.
+The display change is based on earlier boot logs and still needs a fresh Z1 boot to confirm that the kernel text no longer overwrites Android. S1Q's system image is unchanged from S1P, so it contains the separate keypad and capacitive-navigation key layouts but **does not include** the later Z1-specific audio-policy routing change (`a167005`). S1Q is a diagnostic candidate, not a finished daily-use ROM.
 
-The separate S1M boot-only update remains available for the earlier S1L system. The S1L Release remains the previous two-partition candidate and does not contain the S1M/S1N framebuffer-console change.
+The S1L Release remains an older two-partition candidate; its boot image predates the S1Q display handoff fix.
 
 ## S1L base system status
 
@@ -22,7 +22,7 @@ An earlier run with this factory kernel repeatedly aborted `system_server`: its 
 - Touch uses the original kernel input drivers. Earlier logs include a failed Hynitron `hyn_ts` probe; the active panel/controller and touch behavior need a fresh device log and screen test.
 - Wi-Fi firmware and MTK NL80211 private commands are included in the build. Android 9's Java Wi-Fi framework still needs its HIDL supplicant transport; the stock kernel exposes no independent `/dev/hwbinder` context. An earlier stock-kernel run also reported `NL80211_CMD_GET_PROTOCOL_FEATURES` as unsupported, so Wi-Fi is not runtime-ready.
 - Bluetooth has a compiled Android 9 passthrough adapter and the generic factory driver library. Static dependency checks pass; controller initialization, pairing and audio have not been tested on the Z1.
-- Audio selects the factory MT6572 primary HAL. Speaker, microphone, headset and suspend/resume behavior need device testing.
+- S1Q selects the MT6572 primary HAL with the older generic speaker/microphone policy. Source commit `a167005` adds Z1 headset and earpiece routes for the next system build; audio routing and suspend/resume still need device testing.
 - Separate `mtk-kpd` and `mtk-tpd` layouts map the keypad and capacitive navigation events; `qemu.hw.mainkeys=1` hides the software navigation bar. Actual board events still need device confirmation.
 - Previous stock-kernel logs showed the graphics-mode request failed because `/dev/tty0` was missing, so the fbcon fallback could not be trusted. The stock display helper now creates VT0 before requesting `KD_GRAPHICS`, then runs the fbcon detach; serial logging remains enabled. This still needs a fresh Z1 boot check.
 
