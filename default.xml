@@ -739,5 +739,7 @@
   
   <repo-hooks in-project="platform/tools/repohooks" enabled-list="pre-upload"/>
   <remote name="z1" fetch="https://github.com/lxjuyn" />
-  <project name="z1-android9" path="device/jiabo/z1" remote="z1" revision="380109420656ff156c7d08e1864524f59fc32dca" />
+  <project name="z1-android9" path="device/jiabo/z1" remote="z1" revision="refs/heads/main">
+    <linkfile src="Android.mk" dest="device/jiabo/Android.mk" />
+  </project>
 </manifest>

@@ -36,7 +36,7 @@ Release notes and the two flashable partition assets are in the private [S1L-202
 
 ## Source and builds
 
-A clean checkout uses this repository as the Repo manifest and syncs the pinned Android/LineageOS projects plus the Z1 device tree:
+A clean checkout uses this repository as the Repo manifest and syncs the pinned Android/LineageOS projects plus the current `main` branch of the Z1 device tree. The manifest also links the device tree's root `Android.mk` into its parent directory so legacy Make discovers the Z1 modules on a clean sync:
 
 ```sh
 repo init -u https://github.com/lxjuyn/z1-android9.git -b main -m default.xml
