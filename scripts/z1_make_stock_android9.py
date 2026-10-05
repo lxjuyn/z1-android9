@@ -40,12 +40,67 @@ def digest(data):
 
 
 def elf_static_arm(data):
-    if data[:6] != b'\x7fELF\x01\x01' or struct.unpack_from('<H', data, 18)[0] != 40:
+    if len(data) < 52 or data[:7] != b'\x7fELF\x01\x01\x01' or struct.unpack_from('<H', data, 18)[0] != 40:
         raise ValueError('expected little-endian ARM32 ELF')
+    if struct.unpack_from('<H', data, 16)[0] != 2:
+        raise ValueError('expected an executable ELF, not a shared object')
     phoff = struct.unpack_from('<I', data, 28)[0]
     phsize, phnum = struct.unpack_from('<HH', data, 42)
-    if any(struct.unpack_from('<I', data, phoff+i*phsize)[0] == 3 for i in range(phnum)):
-        raise ValueError('ramdisk executable cannot depend on /system linker')
+    if phsize != 32 or not phnum or phoff < 52 or phoff+phnum*phsize > len(data):
+        raise ValueError('invalid ELF program header table')
+    loaded = False
+    for i in range(phnum):
+        kind, offset, _, _, filesz, memsz, _, _ = struct.unpack_from('<8I', data, phoff+i*phsize)
+        if kind in (2, 3):
+            raise ValueError('ramdisk executable cannot use PT_DYNAMIC or PT_INTERP')
+        if kind == 1:
+            loaded = True
+            if filesz > memsz or offset+filesz > len(data):
+                raise ValueError('truncated ELF load segment')
+    if not loaded:
+        raise ValueError('executable ELF lacks a load segment')
+
+
+def ramdisk_key(name):
+    key = name.decode()
+    while key.startswith('./'):
+        key = key[2:]
+    if not key or key.startswith('/') or (key != '.' and any(p in ('', '.', '..') for p in key.split('/'))):
+        raise ValueError('unsafe or ambiguous ramdisk path: '+repr(name))
+    return key
+
+
+def ramdisk_index(records):
+    result = {}
+    for name, fields, data in records:
+        key = ramdisk_key(name)
+        if key in result:
+            raise ValueError('duplicate ramdisk path: '+key)
+        result[key] = (name, fields, data)
+    return result
+
+
+def check_boot_executable(index, key, expected, exact_mode=None):
+    if key not in index:
+        raise ValueError('missing ramdisk executable: /'+key)
+    _, fields, data = index[key]
+    mode = fields[1]
+    if mode & 0o170000 != 0o100000 or fields[2:5] != [0, 0, 1]:
+        raise ValueError('/'+key+' must be a root:root regular file with one link')
+    if mode & 0o7022 or mode & 0o500 != 0o500 or (exact_mode is not None and mode != exact_mode):
+        raise ValueError('unsafe executable permissions for /'+key)
+    if not data or fields[6] != len(data) or data != expected:
+        raise ValueError('ramdisk executable content mismatch: /'+key)
+    elf_static_arm(data)
+
+
+def mount_guard_fields(fields, inode):
+    fields = fields.copy()
+    fields[0] = inode
+    fields[1] = 0o100755
+    fields[2:5] = [0, 0, 1]
+    fields[7:11] = [0, 0, 0, 0]
+    return fields
 
 
 def parse_boot(data):
@@ -97,8 +152,10 @@ def main():
     if version != 26:
         raise ValueError('stock policy must use binary version 26')
     src = entries(gzip.decompress(args.ramdisk.read_bytes()))
-    originals = {n.lstrip(b'./').decode(): (n, f, d) for n, f, d in src}
-    elf_static_arm(originals['init'][2])
+    originals = ramdisk_index(src)
+    if 'init' not in originals:
+        raise ValueError('ramdisk lacks /init')
+    check_boot_executable(originals, 'init', originals['init'][2])
     if 'init.z1.rc' not in originals:
         raise ValueError('ramdisk does not contain the stock board init actions')
     board_rc = (Path(__file__).resolve().parent.parent / 'stock/init.z1.rc').read_bytes()
@@ -152,25 +209,35 @@ def main():
     }
     records = []
     maxino = max(f[0] for _, f, _ in src)
+    nextino = maxino
     for name, fields, data in src:
-        key = name.lstrip(b'./').decode()
+        key = ramdisk_key(name)
         if key == 'TRAILER!!!':
-            for i, (key, content) in enumerate(replacements.items(), 1):
+            for key, content in replacements.items():
+                nextino += 1
                 mode = 0o100755 if key in ('z1_bootdiag', 'z1_stock_mount_guard', 'z1_fbcon_takeover.sh',
                                            'z1_display_takeover.sh') else 0o100644
-                f = [maxino+i, mode, 0, 0, 1, 0, len(content), 0, 0, 0, 0, 0, 0]
+                f = [nextino, mode, 0, 0, 1, 0, len(content), 0, 0, 0, 0, 0, 0]
                 records.append((key.encode(), f, content))
             records.append((name, fields, data))
         elif key in replacements:
             if key in ('z1_stock_mount_guard', 'z1_fbcon_takeover.sh', 'z1_display_takeover.sh'):
                 fields = fields.copy()
                 fields[1] = 0o100755
+            if key == 'z1_stock_mount_guard':
+                # An input symlink/hardlink/non-root entry cannot define the
+                # metadata of the newly supplied trusted static executable.
+                nextino += 1
+                fields = mount_guard_fields(fields, nextino)
             records.append((name, fields, replacements.pop(key)))
         else:
             records.append((name, fields, data))
     archive = b''.join(encode(*item) for item in records)
     archive += b'\0' * (-len(archive) % 512)
-    final = {n.lstrip(b'./').decode(): d for n, _, d in entries(archive)}
+    final_index = ramdisk_index(entries(archive))
+    check_boot_executable(final_index, 'init', originals['init'][2])
+    check_boot_executable(final_index, 'z1_stock_mount_guard', mount_guard, 0o100755)
+    final = {key: data for key, (_, _, data) in final_index.items()}
     assert final['sepolicy'] == policy and final['z1_bootdiag'] == helper
     assert final['z1_stock_mount_guard'] == mount_guard and gate in final['init.z1.rc']
     assert final['init.z1.rc'] == board_rc
@@ -209,6 +276,8 @@ def main():
         mount_guard_sha256=digest(mount_guard),
         mount_guard_source_sha256=digest((REPO_ROOT / 'stock/z1_stock_mount_guard.c').read_bytes()),
         mount_guard_origin='provided ELF' if args.mount_guard else 'compiled repository stock source',
+        executable_metadata_verified=['init: root:root regular, one link, owner rx, no special/group/world write bits',
+                                      'z1_stock_mount_guard: root:root regular, one link, 0755'],
         mount_gate='post-fs wait_for_prop; runtime unverified',
         unchanged_ramdisk_files=sum(final.get(k) == d for k, (_, _, d) in originals.items()),
         risks=['experimental native HIDL passthrough; Java HIDL services unavailable',
