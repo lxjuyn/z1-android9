@@ -10,11 +10,29 @@ import hashlib
 import json
 from pathlib import Path
 import struct
+import subprocess
+import tempfile
 
 from z1_add_bootdiag import entries, encode
 
 KERNEL_SHA = 'f9afaa2a38d64e5a6d6877ccb73ede2250b7efe6389fa60e66ee500cb885cc07'
 LIMIT = 6291456
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def load_mount_guard(prebuilt):
+    if prebuilt is not None:
+        data = prebuilt.read_bytes()
+    else:
+        with tempfile.TemporaryDirectory(prefix='z1-stock-mount-guard-') as directory:
+            output = Path(directory) / 'z1_stock_mount_guard'
+            subprocess.run(['bash', str(REPO_ROOT / 'stock/build_mount_guard.sh'), str(output)],
+                           check=True, timeout=120)
+            data = output.read_bytes()
+    elf_static_arm(data)
+    if b'Z1 stock mount guard' not in data or b'sys.z1.stock_mount_ready' not in data:
+        raise ValueError('mount guard lacks stock readiness protocol')
+    return data
 
 
 def digest(data):
@@ -54,6 +72,8 @@ def main():
     ap.add_argument('--factory-boot', type=Path, required=True)
     ap.add_argument('--ramdisk', type=Path, required=True)
     ap.add_argument('--helper', type=Path, required=True)
+    ap.add_argument('--mount-guard', type=Path,
+                    help='reuse a static ARM guard; default builds stock/ source with Z1_GUARD_CC')
     ap.add_argument('--policy', type=Path, required=True)
     ap.add_argument('--output', type=Path, required=True)
     args = ap.parse_args()
@@ -68,6 +88,7 @@ def main():
     elf_static_arm(helper)
     if b'--acm-stock' not in helper or b'--graphics-mode' not in helper or b'--stock-partitions' not in helper:
         raise ValueError('helper lacks stock transport/display takeover')
+    mount_guard = load_mount_guard(args.mount_guard)
     policy = args.policy.read_bytes()
     if len(policy) < 32 or struct.unpack_from('<I', policy, 0)[0] != 0xf97cff8c:
         raise ValueError('invalid SELinux binary policy')
@@ -81,6 +102,14 @@ def main():
     if 'init.z1.rc' not in originals:
         raise ValueError('ramdisk does not contain the stock board init actions')
     board_rc = (Path(__file__).resolve().parent.parent / 'stock/init.z1.rc').read_bytes()
+    gate = (b'    exec u:r:init:s0 root root -- /z1_stock_mount_guard\n'
+            b'    wait_for_prop sys.z1.stock_mount_ready 1\n')
+    if board_rc.count(gate) != 1 or board_rc.count(b'    setprop sys.z1.stock_mount_ready 0\n') != 1:
+        raise ValueError('stock board init lacks fail-closed mount gate')
+    post_fs = board_rc.split(b'on post-fs\n', 1)[1].split(b'\non ', 1)[0]
+    executable = [line for line in post_fs.splitlines() if line.strip() and not line.lstrip().startswith(b'#')]
+    if executable[:2] != gate.splitlines():
+        raise ValueError('mount gate must precede every stock post-fs command')
     fbcon_script = (Path(__file__).resolve().parent.parent / 'stock/z1_fbcon_takeover.sh').read_bytes()
     display_script = (Path(__file__).resolve().parent.parent / 'stock/z1_display_takeover.sh').read_bytes()
     if (b'/z1_display_takeover.sh' not in board_rc or
@@ -118,6 +147,7 @@ def main():
         'z1_display_takeover.sh': display_script,
         'z1_stock_kernel': b'Z1 stock S1: exact factory/A7 3.4.67; diagnostic permissive policy26\n',
         'z1_bootdiag': helper,
+        'z1_stock_mount_guard': mount_guard,
         'ueventd.mt6572.rc': originals['ueventd.z1.rc'][2],
     }
     records = []
@@ -126,13 +156,13 @@ def main():
         key = name.lstrip(b'./').decode()
         if key == 'TRAILER!!!':
             for i, (key, content) in enumerate(replacements.items(), 1):
-                mode = 0o100755 if key in ('z1_bootdiag', 'z1_fbcon_takeover.sh',
+                mode = 0o100755 if key in ('z1_bootdiag', 'z1_stock_mount_guard', 'z1_fbcon_takeover.sh',
                                            'z1_display_takeover.sh') else 0o100644
                 f = [maxino+i, mode, 0, 0, 1, 0, len(content), 0, 0, 0, 0, 0, 0]
                 records.append((key.encode(), f, content))
             records.append((name, fields, data))
         elif key in replacements:
-            if key in ('z1_fbcon_takeover.sh', 'z1_display_takeover.sh'):
+            if key in ('z1_stock_mount_guard', 'z1_fbcon_takeover.sh', 'z1_display_takeover.sh'):
                 fields = fields.copy()
                 fields[1] = 0o100755
             records.append((name, fields, replacements.pop(key)))
@@ -142,6 +172,7 @@ def main():
     archive += b'\0' * (-len(archive) % 512)
     final = {n.lstrip(b'./').decode(): d for n, _, d in entries(archive)}
     assert final['sepolicy'] == policy and final['z1_bootdiag'] == helper
+    assert final['z1_stock_mount_guard'] == mount_guard and gate in final['init.z1.rc']
     assert final['init.z1.rc'] == board_rc
     assert final['z1_fbcon_takeover.sh'] == fbcon_script
     assert b'/system/bin/sh /z1_display_takeover.sh' in final['init.z1.rc']
@@ -175,6 +206,10 @@ def main():
         kernel_version='3.4.67 (factory/A7 exact payload)', kernel_sha256=KERNEL_SHA,
         boot_bytes=len(image), boot_sha256=digest(image), ramdisk_sha256=digest(rd),
         policy_version=version, policy_sha256=digest(policy), helper_sha256=digest(helper),
+        mount_guard_sha256=digest(mount_guard),
+        mount_guard_source_sha256=digest((REPO_ROOT / 'stock/z1_stock_mount_guard.c').read_bytes()),
+        mount_guard_origin='provided ELF' if args.mount_guard else 'compiled repository stock source',
+        mount_gate='post-fs wait_for_prop; runtime unverified',
         unchanged_ramdisk_files=sum(final.get(k) == d for k, (_, _, d) in originals.items()),
         risks=['experimental native HIDL passthrough; Java HIDL services unavailable',
                'policy26 permissive domains and allow_unknown; diagnostic build',

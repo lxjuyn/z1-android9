@@ -1,0 +1,327 @@
+diff --git a/scripts/z1_make_stock_android9.py b/scripts/z1_make_stock_android9.py
+index b217aca..fbe87e1 100644
+--- a/scripts/z1_make_stock_android9.py
++++ b/scripts/z1_make_stock_android9.py
+@@ -12,0 +13,2 @@ import struct
++import subprocess
++import tempfile
+@@ -17,0 +20,16 @@ LIMIT = 6291456
++REPO_ROOT = Path(__file__).resolve().parent.parent
++
++
++def load_mount_guard(prebuilt):
++    if prebuilt is not None:
++        data = prebuilt.read_bytes()
++    else:
++        with tempfile.TemporaryDirectory(prefix='z1-stock-mount-guard-') as directory:
++            output = Path(directory) / 'z1_stock_mount_guard'
++            subprocess.run(['bash', str(REPO_ROOT / 'stock/build_mount_guard.sh'), str(output)],
++                           check=True, timeout=120)
++            data = output.read_bytes()
++    elf_static_arm(data)
++    if b'Z1 stock mount guard' not in data or b'sys.z1.stock_mount_ready' not in data:
++        raise ValueError('mount guard lacks stock readiness protocol')
++    return data
+@@ -56,0 +75,2 @@ def main():
++    ap.add_argument('--mount-guard', type=Path,
++                    help='reuse a static ARM guard; default builds stock/ source with Z1_GUARD_CC')
+@@ -70,0 +91 @@ def main():
++    mount_guard = load_mount_guard(args.mount_guard)
+@@ -83,0 +105,8 @@ def main():
++    gate = (b'    exec u:r:init:s0 root root -- /z1_stock_mount_guard\n'
++            b'    wait_for_prop sys.z1.stock_mount_ready 1\n')
++    if board_rc.count(gate) != 1 or board_rc.count(b'    setprop sys.z1.stock_mount_ready 0\n') != 1:
++        raise ValueError('stock board init lacks fail-closed mount gate')
++    post_fs = board_rc.split(b'on post-fs\n', 1)[1].split(b'\non ', 1)[0]
++    executable = [line for line in post_fs.splitlines() if line.strip() and not line.lstrip().startswith(b'#')]
++    if executable[:2] != gate.splitlines():
++        raise ValueError('mount gate must precede every stock post-fs command')
+@@ -120,0 +150 @@ def main():
++        'z1_stock_mount_guard': mount_guard,
+@@ -129 +159 @@ def main():
+-                mode = 0o100755 if key in ('z1_bootdiag', 'z1_fbcon_takeover.sh',
++                mode = 0o100755 if key in ('z1_bootdiag', 'z1_stock_mount_guard', 'z1_fbcon_takeover.sh',
+@@ -135 +165 @@ def main():
+-            if key in ('z1_fbcon_takeover.sh', 'z1_display_takeover.sh'):
++            if key in ('z1_stock_mount_guard', 'z1_fbcon_takeover.sh', 'z1_display_takeover.sh'):
+@@ -144,0 +175 @@ def main():
++    assert final['z1_stock_mount_guard'] == mount_guard and gate in final['init.z1.rc']
+@@ -177,0 +209,4 @@ def main():
++        mount_guard_sha256=digest(mount_guard),
++        mount_guard_source_sha256=digest((REPO_ROOT / 'stock/z1_stock_mount_guard.c').read_bytes()),
++        mount_guard_origin='provided ELF' if args.mount_guard else 'compiled repository stock source',
++        mount_gate='post-fs wait_for_prop; runtime unverified',
+diff --git a/stock/README.md b/stock/README.md
+new file mode 100644
+index 0000000..dcc07cc
+--- /dev/null
++++ b/stock/README.md
+@@ -0,0 +1,58 @@
++# Stock ramdisk：必需挂载门禁
++
++本目录包含原厂3.4.67路线的mount gate源码、单文件构建脚本、主机验证fixture和init接入。WMT三节点guarded exec原文保留，补丁0002及其说明不变。
++
++## 为什么需要门禁
++
++分区helper失败不取消后续init命令；Pie fs_mgr对wait超时可能只跳过该挂载，并返回NOT_ENCRYPTABLE。独立门禁因此检查实际挂载，不把mount_all返回成功当作充分条件。这是源码确认的条件风险，不是S1R已发生的挂载失败。
++
++`stock/init.z1.rc`的on init先置`sys.z1.stock_mount_ready=0`；on post-fs首部同步exec `/z1_stock_mount_guard`，接着执行Pie支持的`wait_for_prop sys.z1.stock_mount_ready 1`。失败或helper退出不会释放等待。正常事件顺序中它位于WMT shell调用、post-fs-data、zygote-start和nonencrypted/class main之前。
++
++Guard来自本仓`stock/z1_stock_mount_guard.c`：静态ARM32 ELF，无PT_INTERP和Android shared-library依赖，不用/system shell。检查system/cache/data实际ext4根挂载、mountinfo和stat设备号与三个z1-stock块alias一致、vendor解析为/system/vendor；检查app_process/linker/sh为非空可执行ARM32 ELF，boot.art/oat、framework.jar、services.jar为同一system filesystem上的非空文件。仅全部通过才发送Pie property socket SETPROP2并检查成功ack，发布readiness=1。失败写stderr和/dev/kmsg，早期ACM可继续取证。没有格式化、重挂载、猜编号或伪造成功。
++
++## 在本仓重建静态helper
++
++需要bash、Python3及具有ARM hard-float静态libc的`arm-linux-gnueabihf-gcc`。不需要6572工作区源码，不启动Android整构建。
++
++```sh
++bash stock/build_mount_guard.sh out/mount_guard/z1_stock_mount_guard
++```
++
++可用`Z1_GUARD_CC=/path/to/arm-linux-gnueabihf-gcc`指定编译器；该值必须是单一可执行文件路径，不能附带shell参数。固定参数为-static -Os -Wall -Wextra -Werror -march=armv7-a -mfpu=vfpv3-d16 -mfloat-abi=hard。脚本先编译临时文件，成功后原子替换OUTPUT，编译失败不会覆盖之前输出。
++
++## 本仓最终stock打包接口
++
++`python3 scripts/z1_make_stock_android9.py`默认从本仓源码临时编译guard，验证static ARM及marker，放入最终cpio的`/z1_stock_mount_guard`并确保0755。可选`--mount-guard FILE`复用已生成static ARM guard；报告区分预编译与本仓编译来源，并记录源码与ELF SHA256。预编译marker检查不等于证明任意传入binary匹配当前源码，优先用默认从源编译。
++
++A7/factory原内核boot、LOS gzip-cpio ramdisk、已有静态诊断helper和policy26是外部输入；本仓不包含用户数据、NVRAM或厂商镜像。示例以INPUT_DIR指向你提供的物料：
++
++```sh
++python3 scripts/z1_make_stock_android9.py \
++  --a7-boot "$INPUT_DIR/a7-boot.img" --factory-boot "$INPUT_DIR/factory-boot.img" \
++  --ramdisk "$INPUT_DIR/ramdisk.img" --helper "$INPUT_DIR/z1_bootdiag" \
++  --policy "$INPUT_DIR/sepolicy" --output out/stock.boot.img
++```
++
++Packer沿用本仓stock board RC、显示脚本和真实factory kernel；guard必须在post-fs第一段，WMT段不被替换。原kernel hash及6MiB限制继续检查。它支持已固定stock import的旧ramdisk输入，不要求修改其它代理的native路径补丁。
++
++**构建接口边界：** `scripts/build_z1.sh`产生LOS目标；普通`m ramdisk/bootimage`不自动调用本MTK packer，也不自动提供guard。最终交付stock boot必须经过上述packer。仅使用带gate的普通LOS ramdisk会停在等待，不能发布为完成的stock boot。make bootimage防漏hook由构建脚本负责人接入；本次不改device.mk或build_z1.sh。需要的环境仅Z1_GUARD_CC，需要的步骤是最终stock packer调用，无需预先在共享工作区构建guard。
++
++## 精简验证与限制
++
++主机fixture直接复用生产函数，不发布ready属性：
++
++```sh
++mkdir -p out/mount_guard
++cc -Os -Wall -Wextra -Werror stock/mount_guard_test.c -o out/mount_guard/host_check
++out/mount_guard/host_check
++```
++
++覆盖12项生产函数断言：错误mountpoint/dev/type/subdir、缺system、错误filesystem、非执行及空文件。解析/临时打包验收还需检查guard为static ARM且0755、当前init全文与WMT guarded exec保留、kernel不变且boot≤6MiB、gate在post-fs第一段；测试boot不是发布候选。
++
++没有板级property/SELinux/启动验证。默认交叉glibc标注minimum Linux3.2 ABI，但vendor3.4实际syscall行为仍须上板确认；socket拒绝会停在诊断等待，而不会假启动。挂载和文件检查不证明ART/HAL/framework完整启动。发行物S3没有因源码改动自动获得gate。出现BLOCKED时应修真实挂载或文件错误，不能手动置1冒充成功。
++
++### 2026-10-05 本仓验证结果
++
++独立build_mount_guard.sh编译成功。默认从源编译与--mount-guard复用两种packer入口均exit0，guard SHA256一致为`5334ffaf4da300cdc41d536fe9f9e67794f60c8868f95cdcd99b0ba2e996a0d4`，481388 B；两次临时boot均5,584,896 B，kernel精确hash不变。cpio读回确认0755/static ARM、init全文与本仓一致、三WMT guarded exec保留。临时boot均删除。主机12项断言、bash -n、Python解析、git diff --check与补丁reverse --check通过。
++
++仅生成本仓忽略的out/mount_guard验证记录：HOST_CHECK.log、PACK_CHECK.json以及BUILD_STATUS.json；没有写入/暂存/清理外部6572工作区，没有提交或上传。property socket/SELinux与板级启动仍未实测。
+diff --git a/stock/build_mount_guard.sh b/stock/build_mount_guard.sh
+new file mode 100644
+index 0000000..c779ab2
+--- /dev/null
++++ b/stock/build_mount_guard.sh
+@@ -0,0 +1,18 @@
++#!/usr/bin/env bash
++# Compile only the freestanding-from-/system stock ramdisk mount guard.
++set -euo pipefail
++STOCK_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
++if [[ $# != 1 ]]; then
++    echo "Usage: bash stock/build_mount_guard.sh OUTPUT" >&2
++    exit 2
++fi
++GUARD_CC=${Z1_GUARD_CC:-arm-linux-gnueabihf-gcc}
++GUARD_OUTPUT=$1
++mkdir -p -- "$(dirname "$GUARD_OUTPUT")"
++GUARD_TEMP="${GUARD_OUTPUT}.tmp.$$"
++trap 'rm -f -- "$GUARD_TEMP"' EXIT
++"$GUARD_CC" -static -Os -Wall -Wextra -Werror \
++    -march=armv7-a -mfpu=vfpv3-d16 -mfloat-abi=hard \
++    "$STOCK_DIR/z1_stock_mount_guard.c" -o "$GUARD_TEMP"
++chmod 0755 -- "$GUARD_TEMP"
++mv -f -- "$GUARD_TEMP" "$GUARD_OUTPUT"
+diff --git a/stock/init.z1.rc b/stock/init.z1.rc
+index 4144574..2696a91 100644
+--- a/stock/init.z1.rc
++++ b/stock/init.z1.rc
+@@ -6,0 +7 @@ on init
++    setprop sys.z1.stock_mount_ready 0
+@@ -11,0 +13,4 @@ on post-fs
++    # This static ramdisk executable does not require /system/bin/sh.
++    # A failed check never publishes readiness; keep later startup blocked.
++    exec u:r:init:s0 root root -- /z1_stock_mount_guard
++    wait_for_prop sys.z1.stock_mount_ready 1
+diff --git a/stock/mount_guard_test.c b/stock/mount_guard_test.c
+new file mode 100644
+index 0000000..dd33886
+--- /dev/null
++++ b/stock/mount_guard_test.c
+@@ -0,0 +1,23 @@
++#define Z1_MOUNT_GUARD_TEST
++#include "z1_stock_mount_guard.c"
++#include <assert.h>
++int main(void) {
++  const char *good="23 1 179:4 / /system ro - ext4 /dev/block/z1-stock-system ro\n";
++  assert(mount_row(good,"/system",179,4));
++  assert(!mount_row(good,"/data",179,4));
++  assert(!mount_row(good,"/system",179,5));
++  assert(!mount_row("23 1 179:4 /subdir /system ro - ext4 /dev/block/x ro\n","/system",179,4));
++  assert(!mount_row("23 1 179:4 / /system rw - tmpfs tmpfs rw\n","/system",179,4));
++  assert(!mount_row("bad input","/system",179,4));
++  assert(verify() == -1); /* host lacks real stock aliases */
++  char path[]="/tmp/z1-guard-file-XXXXXX"; int fd=mkstemp(path); struct stat st;
++  unsigned char header[20]={0x7f,'E','L','F',1,1}; header[18]=40;
++  assert(fd>=0); assert(write(fd,header,20)==20); assert(fchmod(fd,0700)==0); assert(fstat(fd,&st)==0); close(fd);
++  assert(required_file(path,1,st.st_dev)==0);
++  assert(required_file(path,1,st.st_dev+1)==-1);
++  assert(chmod(path,0600)==0); assert(required_file(path,1,st.st_dev)==-1);
++  assert(required_file(path,0,st.st_dev)==0);
++  assert(truncate(path,0)==0); assert(required_file(path,0,st.st_dev)==-1); unlink(path);
++  (void)publish;
++  puts("PASS: 12 production-function assertions; no readiness property published"); return 0;
++}
+diff --git a/stock/z1_stock_mount_guard.c b/stock/z1_stock_mount_guard.c
+new file mode 100644
+index 0000000..d4231f3
+--- /dev/null
++++ b/stock/z1_stock_mount_guard.c
+@@ -0,0 +1,140 @@
++/* Stock ramdisk mount guard. No /system executable or Android shared library. */
++#define _GNU_SOURCE
++#include <errno.h>
++#include <fcntl.h>
++#include <limits.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/socket.h>
++#include <sys/stat.h>
++#include <sys/sysmacros.h>
++#include <sys/time.h>
++#include <sys/un.h>
++#include <unistd.h>
++
++#define READY_PROPERTY "sys.z1.stock_mount_ready"
++static void logline(const char *text) {
++    fprintf(stderr, "%s\n", text);
++#ifndef Z1_MOUNT_GUARD_TEST
++    int fd = open("/dev/kmsg", O_WRONLY | O_CLOEXEC | O_NONBLOCK);
++    if (fd >= 0) { dprintf(fd, "<3>%s\n", text); close(fd); }
++#endif
++}
++static int fail(const char *what) {
++    char message[256];
++    snprintf(message, sizeof(message), "Z1 stock mount guard: BLOCKED %s errno=%d", what, errno);
++    logline(message);
++    return -1;
++}
++
++/* Check mountinfo's device, filesystem root and type, not directory existence. */
++static int mount_row(const char *line, const char *path, unsigned maj, unsigned min) {
++    char root[256], point[256], type[32];
++    unsigned a, b;
++    const char *separator = strstr(line, " - ");
++    if (!separator || sscanf(line, "%*u %*u %u:%u %255s %255s", &a, &b, root, point) != 4 ||
++        sscanf(separator + 3, "%31s", type) != 1) return 0;
++    return a == maj && b == min && !strcmp(root, "/") &&
++           !strcmp(point, path) && !strcmp(type, "ext4");
++}
++
++static int mounted(const char *path, const char *alias) {
++    struct stat device, directory;
++    char line[4096];
++    int found = 0;
++    FILE *mounts;
++    if (stat(alias, &device) || !S_ISBLK(device.st_mode) ||
++        stat(path, &directory) || !S_ISDIR(directory.st_mode) ||
++        directory.st_dev != device.st_rdev) return fail(path);
++    mounts = fopen("/proc/self/mountinfo", "re");
++    if (!mounts) return fail("mountinfo");
++    while (fgets(line, sizeof(line), mounts)) {
++        if (!strchr(line, '\n')) { fclose(mounts); errno = EOVERFLOW; return fail("mountinfo row"); }
++        if (mount_row(line, path, major(device.st_rdev), minor(device.st_rdev))) found = 1;
++    }
++    if (ferror(mounts)) { fclose(mounts); return fail("mountinfo read"); }
++    fclose(mounts);
++    if (!found) { errno = ENODEV; return fail(path); }
++    return 0;
++}
++
++static int required_file(const char *path, int executable, dev_t filesystem) {
++    struct stat st;
++    unsigned char elf[20];
++    int fd = open(path, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
++    if (fd < 0) return fail(path);
++    if (fstat(fd, &st) || !S_ISREG(st.st_mode) || !st.st_size || st.st_dev != filesystem ||
++        (executable && (!(st.st_mode & 0111) || read(fd, elf, sizeof(elf)) != sizeof(elf) ||
++         memcmp(elf, "\177ELF\1\1", 6) || elf[18] != 40 || elf[19]))) {
++        close(fd); errno = EINVAL; return fail(path);
++    }
++    close(fd);
++    return 0;
++}
++
++static int verify(void) {
++    static const char *bins[] = {"/system/bin/app_process", "/system/bin/linker", "/system/bin/sh"};
++    static const char *framework[] = {"/system/framework/arm/boot.art", "/system/framework/arm/boot.oat",
++        "/system/framework/framework.jar", "/system/framework/services.jar"};
++    char vendor[PATH_MAX];
++    struct stat system, vd;
++    size_t i;
++    if (mounted("/system", "/dev/block/z1-stock-system") ||
++        mounted("/cache", "/dev/block/z1-stock-cache") ||
++        mounted("/data", "/dev/block/z1-stock-data")) return -1;
++    if (stat("/system", &system) || !realpath("/vendor", vendor) ||
++        strcmp(vendor, "/system/vendor") || stat(vendor, &vd) ||
++        !S_ISDIR(vd.st_mode) || vd.st_dev != system.st_dev) {
++        errno = EINVAL; return fail("/vendor must resolve to mounted /system/vendor");
++    }
++    for (i = 0; i < sizeof(bins)/sizeof(bins[0]); ++i)
++        if (required_file(bins[i], 1, system.st_dev)) return -1;
++    for (i = 0; i < sizeof(framework)/sizeof(framework[0]); ++i)
++        if (required_file(framework[i], 0, system.st_dev)) return -1;
++    return 0;
++}
++
++static int transfer(int fd, void *buffer, size_t bytes, int receive) {
++    unsigned char *p = buffer;
++    while (bytes) {
++        ssize_t n = receive ? recv(fd, p, bytes, 0) : send(fd, p, bytes, MSG_NOSIGNAL);
++        if (n < 0 && errno == EINTR) continue;
++        if (n <= 0) return -1;
++        p += n; bytes -= (size_t)n;
++    }
++    return 0;
++}
++
++/* Pie PROP_MSG_SETPROP2 with acknowledgement; timeout/failure never opens gate. */
++static int publish(void) {
++    struct sockaddr_un address = {.sun_family = AF_UNIX};
++    struct timeval timeout = {.tv_sec = 2};
++    uint32_t command = 0x00020001, name_length = sizeof(READY_PROPERTY)-1, value_length = 1, reply = ~0U;
++    char name[] = READY_PROPERTY, value = '1';
++    int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0), result;
++    if (fd < 0) return fail("property socket");
++    strcpy(address.sun_path, "/dev/socket/property_service");
++    result = setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) ||
++        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) ||
++        connect(fd, (struct sockaddr *)&address, sizeof(address)) ||
++        transfer(fd, &command, sizeof(command), 0) || transfer(fd, &name_length, sizeof(name_length), 0) ||
++        transfer(fd, name, name_length, 0) || transfer(fd, &value_length, sizeof(value_length), 0) ||
++        transfer(fd, &value, 1, 0) || transfer(fd, &reply, sizeof(reply), 1) || reply;
++    close(fd);
++    if (result) { errno = EACCES; return fail("readiness property not acknowledged"); }
++    return 0;
++}
++
++#ifndef Z1_MOUNT_GUARD_TEST
++int main(int argc, char **argv) {
++    int verify_only = argc == 2 && !strcmp(argv[1], "--verify-only");
++    if (argc != 1 && !verify_only) return 2;
++    if (verify()) return 1;
++    if (!verify_only && publish()) return 1;
++    logline(verify_only ? "Z1 stock mount guard: verified system/cache/data, vendor and boot files (no property written)" :
++            "Z1 stock mount guard: verified system/cache/data, vendor and boot files; readiness=1");
++    return 0;
++}
++#endif
