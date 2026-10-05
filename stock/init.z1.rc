@@ -9,7 +9,6 @@ on init
     setprop sys.usb.configfs 0
     setprop sys.usb.config acm
     setprop sys.usb.state acm
-    start z1_acm_log
 
 on post-fs
     # This static ramdisk executable does not require /system/bin/sh.
@@ -48,13 +47,6 @@ on post-fs-data
     # Create the missing VT alias, request graphics mode, then detach fbcon.
     # The serial console remains active for kernel and Android log capture.
     exec u:r:init:s0 root root -- /system/bin/sh /z1_display_takeover.sh
-
-service z1_acm_log /z1_bootdiag --acm-stock
-    class core
-    user root
-    group root
-    disabled
-    seclabel u:r:init:s0
 
 service z1_logcat_relay /z1_bootdiag --logcat
     class core

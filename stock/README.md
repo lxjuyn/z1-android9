@@ -8,7 +8,7 @@
 
 `stock/init.z1.rc`的on init先置`sys.z1.stock_mount_ready=0`；on post-fs首部同步exec `/z1_stock_mount_guard`，接着执行Pie支持的`wait_for_prop sys.z1.stock_mount_ready 1`。失败或helper退出不会释放等待。正常事件顺序中它位于WMT shell调用、post-fs-data、zygote-start和nonencrypted/class main之前。
 
-Guard来自本仓`stock/z1_stock_mount_guard.c`：静态ARM32 ELF，无PT_INTERP和Android shared-library依赖，不用/system shell。检查system/cache/data实际ext4根挂载、mountinfo和stat设备号与三个z1-stock块alias一致、vendor解析为/system/vendor；检查app_process/linker/sh为非空可执行ARM32 ELF，boot.art/oat、framework.jar、services.jar为同一system filesystem上的非空文件。仅全部通过才发送Pie property socket SETPROP2并检查成功ack，发布readiness=1。失败写stderr和/dev/kmsg；由`init.z1.rc`显式启动的`z1_acm_log`（`/z1_bootdiag --acm-stock`）负责不依赖/system的USB ACM日志取证，最终打包器会拒绝缺失或权限错误的 logger/helper/init 配置。没有格式化、重挂载、猜编号或伪造成功。
+Guard来自本仓`stock/z1_stock_mount_guard.c`：静态ARM32 ELF，无PT_INTERP和Android shared-library依赖，不用/system shell。检查system/cache/data实际ext4根挂载、mountinfo和stat设备号与三个z1-stock块alias一致、vendor解析为/system/vendor；检查app_process/linker/sh为非空可执行ARM32 ELF，boot.art/oat、framework.jar、services.jar为同一system filesystem上的非空文件。仅全部通过才发送Pie property socket SETPROP2并检查成功ack，发布readiness=1。失败写stderr和/dev/kmsg；stock 补丁版 `/init` 在 first-stage mount 和 SELinux policy 加载前 fork `/z1_bootdiag --acm-stock`，提供不依赖/system的USB ACM日志取证。板级init不再另启第二个ACM logger；最终打包器检查早期hook标记并拒绝重复的 `z1_acm_log` rc 服务。没有格式化、重挂载、猜编号或伪造成功。
 
 ## 在本仓重建静态helper
 
@@ -22,7 +22,7 @@ bash stock/build_mount_guard.sh out/mount_guard/z1_stock_mount_guard
 
 ## 本仓最终stock打包接口
 
-先用`bash scripts/build_z1_bootdiag.sh out/z1_bootdiag`从本仓`tools/z1_android9_bootdiag.c`构建静态ARMv7 hard-float诊断helper；脚本会记录源码、编译器和产物SHA256。Linux7只调用`--acm`与`--logcat`，原内核init调用`--acm-stock`及原厂诊断模式。
+先用`bash scripts/build_z1_bootdiag.sh out/z1_bootdiag`从本仓`tools/z1_android9_bootdiag.c`构建静态ARMv7 hard-float诊断helper；脚本会记录源码、编译器和产物SHA256。Linux7只调用`--acm`与`--logcat`，原内核路线由打过本仓 `system/core/init/init.cpp` 补丁的 `/init` 在 first-stage 调用 `--acm-stock` 及原厂诊断模式。打包器要求补丁清单和 `/init` 字符串标记都存在，并拒绝 ramdisk rc 再次启动 `z1_acm_log`；避免两个进程争用legacy ACM gadget。
 
 `python3 scripts/z1_make_stock_android9.py`默认从本仓源码临时编译guard，验证static ARM及marker，放入最终cpio的`/z1_stock_mount_guard`并确保0755。可选`--mount-guard FILE`复用已生成static ARM guard；报告区分预编译与本仓编译来源，并记录源码与ELF SHA256。预编译marker检查不等于证明任意传入binary匹配当前源码，优先用默认从源编译。
 
@@ -37,7 +37,7 @@ python3 scripts/z1_make_stock_android9.py \
 
 Packer沿用本仓stock board RC、显示脚本和真实factory kernel；guard必须在post-fs第一段，WMT段不被替换。原kernel hash及6MiB限制继续检查。它支持已固定stock import的旧ramdisk输入，不要求修改其它代理的native路径补丁。
 
-**构建接口边界：** stock 构建必须通过 `scripts/build_z1.sh`。包装脚本先只读检查原内核补丁均已应用，再从本仓源码构建静态 mount guard，并把 `Z1_STOCK_MOUNT_GUARD` 传给产品配置；`device.mk` 将它复制进 LOS ramdisk。补丁检查失败会停止构建，不会自动改动LOS源码。直接运行 `m` 不会执行这些前置检查。普通 LOS `ramdisk`/`bootimage` 目标仍不会调用本 MTK packer，也不会加入 ACM logger；交付的 stock `boot.img` 必须再经过 `scripts/z1_make_stock_android9.py`。packer 会把 `init.z1.rc`、ACM helper 和重新构建的 guard 写入最终 ramdisk，并读回检查服务、可执行文件和 `fstab.z1`。中间 ramdisk 不等于可刷写 boot 镜像。`Z1_GUARD_CC` 可指定交叉编译器；默认从当前源码编译 guard。
+**构建接口边界：** stock 构建必须通过 `scripts/build_z1.sh`。包装脚本先只读检查原内核补丁均已应用，再从本仓源码构建静态 mount guard，并把 `Z1_STOCK_MOUNT_GUARD` 传给产品配置；`device.mk` 将它复制进 LOS ramdisk。补丁检查失败会停止构建，不会自动改动LOS源码。直接运行 `m` 不会执行这些前置检查。普通 LOS `ramdisk`/`bootimage` 目标仍不会调用本 MTK packer；交付的 stock `boot.img` 必须再经过 `scripts/z1_make_stock_android9.py`。packer 会把 `init.z1.rc`、ACM helper 和重新构建的 guard 写入最终 ramdisk，要求 `/init` 含早期 ACM hook 标记，并确认 board rc 没有第二个 ACM logger，同时检查mount guard、可执行文件和 `fstab.z1`。中间 ramdisk不等于可刷写boot镜像。`Z1_GUARD_CC` 可指定交叉编译器；默认从当前源码编译guard。
 
 Linux 7 路线不执行 stock mount gate；它在 DT bootargs 中保留 `console=ttyS0,921600n8` 与 MTK earlycon。原内核路线不使用这份 DT 配置，而是原样保留已校验哈希的 factory 3.4.67 kernel；既有板端日志显示它使用 `console=ttyMT0,921600n1` 和 `printk.disable_uart=0`。两条路线的 UART 名称不同，均需在对应镜像上板后复验。源码检查不能替代设备上的 ACM 枚举和串口日志验证。
 

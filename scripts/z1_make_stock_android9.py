@@ -78,6 +78,23 @@ def validate_stock_policy(policy, manifest_path):
     return version, config, manifest, digest(manifest_data)
 
 
+def validate_early_stock_acm(init_binary):
+    """Require the first-stage init hook to own stock ACM from the ramdisk."""
+    patch_name = 'system__core__init__init.cpp.patch'
+    patch_path = REPO_ROOT / 'stock_patches' / patch_name
+    manifest_path = REPO_ROOT / 'stock_patches/manifest.json'
+    manifest = json.loads(manifest_path.read_text())
+    if not any(item.get('file') == 'system/core/init/init.cpp' and
+               item.get('patch') == patch_name for item in manifest):
+        raise ValueError('stock patch manifest does not require the early ACM init hook')
+    hook = b'execl("/z1_bootdiag", "z1_bootdiag", "--acm-stock", nullptr);'
+    if hook not in patch_path.read_bytes():
+        raise ValueError('stock init patch lacks the first-stage --acm-stock hook')
+    if any(marker not in init_binary for marker in
+           (b'--acm-stock', b'/z1_stock_kernel', b'/z1_bootdiag')):
+        raise ValueError('ramdisk /init lacks the patched first-stage ACM hook markers')
+
+
 def elf_static_arm(data):
     if len(data) < 52 or data[:7] != b'\x7fELF\x01\x01\x01' or struct.unpack_from('<H', data, 18)[0] != 40:
         raise ValueError('expected little-endian ARM32 ELF')
@@ -210,15 +227,12 @@ def main():
     if 'init' not in originals:
         raise ValueError('ramdisk lacks /init')
     check_boot_executable(originals, 'init', originals['init'][2])
+    validate_early_stock_acm(originals['init'][2])
     if 'init.z1.rc' not in originals:
         raise ValueError('ramdisk does not contain the stock board init actions')
     board_rc = (Path(__file__).resolve().parent.parent / 'stock/init.z1.rc').read_bytes()
-    acm_start = b'    start z1_acm_log\n'
-    acm_service = (b'service z1_acm_log /z1_bootdiag --acm-stock\n'
-                   b'    class core\n    user root\n    group root\n'
-                   b'    disabled\n    seclabel u:r:init:s0\n')
-    if board_rc.count(acm_start) != 1 or board_rc.count(acm_service) != 1:
-        raise ValueError('stock board init must explicitly start the ramdisk ACM logger')
+    if b'z1_acm_log' in board_rc:
+        raise ValueError('stock board init must not start a second ACM logger')
     gate = (b'    exec u:r:init:s0 root root -- /z1_stock_mount_guard\n'
             b'    wait_for_prop sys.z1.stock_mount_ready 1\n')
     if board_rc.count(gate) != 1 or board_rc.count(b'    setprop sys.z1.stock_mount_ready 0\n') != 1:
@@ -302,6 +316,13 @@ def main():
     if 'fstab.z1' not in final_index or final_index['fstab.z1'][2] != expected_fstab:
         raise ValueError('final ramdisk /fstab.z1 does not match repository stock/fstab.z1')
     final = {key: data for key, (_, _, data) in final_index.items()}
+    duplicate_acm_rc = [key for key, data in final.items()
+                        if key.endswith('.rc') and
+                        (b'--acm-stock' in data or b'service z1_acm_log' in data or
+                         b'start z1_acm_log' in data)]
+    if duplicate_acm_rc:
+        raise ValueError('final stock ramdisk has duplicate ACM logger references: ' +
+                         ', '.join(duplicate_acm_rc))
     if (final['sepolicy'] != policy or final['z1_bootdiag'] != helper or
             final['z1_stock_mount_guard'] != mount_guard or gate not in final['init.z1.rc'] or
             final['init.z1.rc'] != board_rc or final['z1_fbcon_takeover.sh'] != fbcon_script or
@@ -311,8 +332,6 @@ def main():
             b'start hwservicemanager' in final['init.rc'] or
             b'on property:' in final['init.usb.rc']):
         raise ValueError('final stock ramdisk content or startup invariant mismatch')
-    if final['init.z1.rc'].count(acm_start) != 1 or final['init.z1.rc'].count(acm_service) != 1:
-        raise ValueError('final stock ramdisk lacks the USB ACM log service')
     body = gzip.compress(archive, compresslevel=9, mtime=0)
     if oldrd[:4] != b'\x88\x16\x88\x58' or oldrd[8:14] != b'ROOTFS':
         raise ValueError('A7 ROOTFS header missing')
@@ -354,6 +373,7 @@ def main():
                                       'z1_bootdiag: root:root regular, one link, 0755',
                                       'z1_stock_mount_guard: root:root regular, one link, 0755'],
         mount_gate='post-fs wait_for_prop; runtime unverified',
+        acm_owner='patched first-stage init fork; duplicate rc service rejected; runtime unverified',
         unchanged_ramdisk_files=sum(final.get(k) == d for k, (_, _, d) in originals.items()),
         risks=['experimental native HIDL passthrough; Java HIDL services unavailable',
                'policy26 permissive domains and allow_unknown; diagnostic build',
