@@ -1,0 +1,3 @@
+# Linux 7 Z1 keypad. The current DTS defines only these two volume keys.
+key 115 VOLUME_UP
+key 114 VOLUME_DOWN
