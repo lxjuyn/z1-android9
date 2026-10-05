@@ -112,8 +112,14 @@ def main():
     if end != start + body_size:
         fail(f"DTB initrd-end {end:#x} != start {start:#x} + body {body_size:#x}")
     bootargs = dt_bootargs(args.dtb)
-    if not args.linux_diagnostic and "androidboot.hardware=z1" not in bootargs.split():
-        fail("DTB bootargs must contain androidboot.hardware=z1 for Android init")
+    if not args.linux_diagnostic:
+        tokens = bootargs.split()
+        if "androidboot.hardware=z1" not in tokens:
+            fail("DTB bootargs must contain androidboot.hardware=z1 for Android init")
+        if "console=ttyS0,921600n8" not in tokens or "earlycon=mtk8250,0x11005000" not in tokens:
+            fail("Android candidate must retain Z1 UART and earlycon logging")
+        if "console=tty0" in tokens:
+            fail("Android candidate must not route printk to the shared display framebuffer")
     kernel = args.zimage.read_bytes() + args.dtb.read_bytes()
     mkbootimg = ROOT / "build/mtkbootimg/mkbootimg"
     if not mkbootimg.is_file():
