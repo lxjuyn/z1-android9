@@ -1,0 +1,56 @@
+diff --git a/tools/z1_make_bootimg.sh b/tools/z1_make_bootimg.sh
+index 6d5cc0efe..f9c2896ca 100755
+--- a/tools/z1_make_bootimg.sh
++++ b/tools/z1_make_bootimg.sh
+@@ -71,4 +71,47 @@ done
+-# 非致命提示: ramdisk 应为 MTK ROOTFS blob (头 4 字节 88 16 88 58), 别用标准 gzip-cpio
+-if [ "$(head -c 4 "$RAMDISK" | od -An -tx1 | tr -d ' \n')" != "88168858" ]; then
+-    echo "WARN: ramdisk 头不是 MTK ROOTFS (期望 8816 8858 ...) — 确认用的是 out/ramdisk_mainline_connsys.gz 或 out/forensic/linux/ramdisk.gz"
+-fi
++# 硬性构建护栏: DTB initrd 区间必须精确覆盖 MTK ROOTFS 头声明的压缩 body.
++# MTK 头为 512 字节, offset 4 的 little-endian u32 是 body 长度.
++python3 - "$RAMDISK" "$DTB" <<'PY'
++import os, shutil, struct, subprocess, sys
++
++ramdisk, dtb = sys.argv[1:3]
++def fail(message):
++    print("ERROR: initrd range guard: " + message, file=sys.stderr)
++    raise SystemExit(1)
++
++try:
++    with open(ramdisk, "rb") as stream:
++        header = stream.read(512)
++    blob_len = os.path.getsize(ramdisk)
++except OSError as exc:
++    fail(f"cannot read MTK ramdisk: {exc}")
++if len(header) != 512 or header[:4] != b"\x88\x16\x88\x58":
++    fail("ramdisk must have a complete 512-byte MTK header with magic 88168858")
++body_len = struct.unpack_from("<I", header, 4)[0]
++if body_len == 0 or blob_len != 512 + body_len:
++    fail(f"ramdisk size {blob_len} does not match MTK header plus body ({512 + body_len})")
++
++fdtget = shutil.which("fdtget")
++if not fdtget:
++    fail("fdtget is required to read the DTB passed to mkbootimg")
++def read_cell(name):
++    result = subprocess.run([fdtget, "-t", "x", dtb, "/chosen", name],
++                            capture_output=True, text=True, check=False)
++    fields = result.stdout.split()
++    if result.returncode or len(fields) != 1:
++        detail = result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}"
++        fail(f"DTB /chosen/{name} must be one readable 32-bit cell: {detail}")
++    try:
++        value = int(fields[0], 16)
++    except ValueError:
++        fail(f"DTB /chosen/{name} is not hexadecimal: {fields[0]!r}")
++    if not 0 < value <= 0xFFFFFFFF:
++        fail(f"DTB /chosen/{name} is outside the nonzero 32-bit range")
++    return value
++
++initrd_start = read_cell("linux,initrd-start")
++initrd_end = read_cell("linux,initrd-end")
++expected_end = initrd_start + body_len
++if expected_end > 0xFFFFFFFF or initrd_end != expected_end:
++    fail(f"DTB range [0x{initrd_start:08x}, 0x{initrd_end:08x}) must end at 0x{expected_end:08x} for {body_len}-byte body")
++print(f"[OK] DTB initrd range exactly covers MTK compressed body ({body_len} bytes)")
++PY
