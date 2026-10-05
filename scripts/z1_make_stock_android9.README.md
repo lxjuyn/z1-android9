@@ -7,7 +7,10 @@
 | 条目 | 要求 | 处理 |
 |---|---|---|
 | `/init` | root:root、regular、nlink=1、owner 有 read/execute、无 setuid/setgid/sticky 或 group/world write 位 | 输入必须满足，输出保留原字节和权限；最终 newc 再检查 |
+| `/z1_bootdiag` | root:root、regular、nlink=1、精确 0755 | 原条目即使是 symlink/hardlink/非 root 也会被改成新 inode 的可信 helper 条目；最终 newc 检查 ACM helper 可执行 |
 | `/z1_stock_mount_guard` | root:root、regular、nlink=1、精确 0755 | 不继承旧条目的 owner/link/type；替换时分配新 inode 并清设备字段；新条目也按相同规则生成 |
+| `/init.z1.rc` | root:root、regular、nlink=1、owner 可读、无特殊位或 group/world write | 最终 newc 读回检查配置内容和安全 metadata |
+| USB ACM 日志 | `init.z1.rc` 在 init 阶段启动 `z1_acm_log`，service 执行 `/z1_bootdiag --acm-stock` | 不依赖已从 `init.usb.rc` 移除的通用 property action；最终 cpio 读回必须保留 start action 和 service |
 | 内容 | 非空、newc filesize 与实际长度一致，最终字节等于选定输入 init/guard | 使用显式 ValueError，`python -O` 不能关闭检查 |
 | ELF | ELF32 little-endian ARM、ET_EXEC、完整 program-header table、有完整 PT_LOAD、无 PT_DYNAMIC/PT_INTERP | 输入及最终内容都验证；拒绝截断 ELF 和共享对象 |
 

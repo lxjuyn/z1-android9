@@ -8,7 +8,7 @@
 
 `stock/init.z1.rc`的on init先置`sys.z1.stock_mount_ready=0`；on post-fs首部同步exec `/z1_stock_mount_guard`，接着执行Pie支持的`wait_for_prop sys.z1.stock_mount_ready 1`。失败或helper退出不会释放等待。正常事件顺序中它位于WMT shell调用、post-fs-data、zygote-start和nonencrypted/class main之前。
 
-Guard来自本仓`stock/z1_stock_mount_guard.c`：静态ARM32 ELF，无PT_INTERP和Android shared-library依赖，不用/system shell。检查system/cache/data实际ext4根挂载、mountinfo和stat设备号与三个z1-stock块alias一致、vendor解析为/system/vendor；检查app_process/linker/sh为非空可执行ARM32 ELF，boot.art/oat、framework.jar、services.jar为同一system filesystem上的非空文件。仅全部通过才发送Pie property socket SETPROP2并检查成功ack，发布readiness=1。失败写stderr和/dev/kmsg，早期ACM可继续取证。没有格式化、重挂载、猜编号或伪造成功。
+Guard来自本仓`stock/z1_stock_mount_guard.c`：静态ARM32 ELF，无PT_INTERP和Android shared-library依赖，不用/system shell。检查system/cache/data实际ext4根挂载、mountinfo和stat设备号与三个z1-stock块alias一致、vendor解析为/system/vendor；检查app_process/linker/sh为非空可执行ARM32 ELF，boot.art/oat、framework.jar、services.jar为同一system filesystem上的非空文件。仅全部通过才发送Pie property socket SETPROP2并检查成功ack，发布readiness=1。失败写stderr和/dev/kmsg；由`init.z1.rc`显式启动的`z1_acm_log`（`/z1_bootdiag --acm-stock`）负责不依赖/system的USB ACM日志取证，最终打包器会拒绝缺失或权限错误的 logger/helper/init 配置。没有格式化、重挂载、猜编号或伪造成功。
 
 ## 在本仓重建静态helper
 

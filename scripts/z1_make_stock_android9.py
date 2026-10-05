@@ -94,7 +94,20 @@ def check_boot_executable(index, key, expected, exact_mode=None):
     elf_static_arm(data)
 
 
-def mount_guard_fields(fields, inode):
+def check_ramdisk_config(index, key, expected):
+    if key not in index:
+        raise ValueError('missing ramdisk configuration: /'+key)
+    _, fields, data = index[key]
+    mode = fields[1]
+    if mode & 0o170000 != 0o100000 or fields[2:5] != [0, 0, 1]:
+        raise ValueError('/'+key+' must be a root:root regular file with one link')
+    if mode & 0o7022 or not mode & 0o400:
+        raise ValueError('unsafe configuration permissions for /'+key)
+    if fields[6] != len(data) or data != expected:
+        raise ValueError('ramdisk configuration content mismatch: /'+key)
+
+
+def trusted_executable_fields(fields, inode):
     fields = fields.copy()
     fields[0] = inode
     fields[1] = 0o100755
@@ -159,6 +172,12 @@ def main():
     if 'init.z1.rc' not in originals:
         raise ValueError('ramdisk does not contain the stock board init actions')
     board_rc = (Path(__file__).resolve().parent.parent / 'stock/init.z1.rc').read_bytes()
+    acm_start = b'    start z1_acm_log\n'
+    acm_service = (b'service z1_acm_log /z1_bootdiag --acm-stock\n'
+                   b'    class core\n    user root\n    group root\n'
+                   b'    disabled\n    seclabel u:r:init:s0\n')
+    if board_rc.count(acm_start) != 1 or board_rc.count(acm_service) != 1:
+        raise ValueError('stock board init must explicitly start the ramdisk ACM logger')
     gate = (b'    exec u:r:init:s0 root root -- /z1_stock_mount_guard\n'
             b'    wait_for_prop sys.z1.stock_mount_ready 1\n')
     if board_rc.count(gate) != 1 or board_rc.count(b'    setprop sys.z1.stock_mount_ready 0\n') != 1:
@@ -221,14 +240,14 @@ def main():
                 records.append((key.encode(), f, content))
             records.append((name, fields, data))
         elif key in replacements:
-            if key in ('z1_stock_mount_guard', 'z1_fbcon_takeover.sh', 'z1_display_takeover.sh'):
+            if key in ('z1_stock_mount_guard', 'z1_bootdiag', 'z1_fbcon_takeover.sh', 'z1_display_takeover.sh'):
                 fields = fields.copy()
                 fields[1] = 0o100755
-            if key == 'z1_stock_mount_guard':
+            if key in ('z1_stock_mount_guard', 'z1_bootdiag'):
                 # An input symlink/hardlink/non-root entry cannot define the
                 # metadata of the newly supplied trusted static executable.
                 nextino += 1
-                fields = mount_guard_fields(fields, nextino)
+                fields = trusted_executable_fields(fields, nextino)
             records.append((name, fields, replacements.pop(key)))
         else:
             records.append((name, fields, data))
@@ -236,17 +255,21 @@ def main():
     archive += b'\0' * (-len(archive) % 512)
     final_index = ramdisk_index(entries(archive))
     check_boot_executable(final_index, 'init', originals['init'][2])
+    check_boot_executable(final_index, 'z1_bootdiag', helper, 0o100755)
     check_boot_executable(final_index, 'z1_stock_mount_guard', mount_guard, 0o100755)
+    check_ramdisk_config(final_index, 'init.z1.rc', board_rc)
     final = {key: data for key, (_, _, data) in final_index.items()}
-    assert final['sepolicy'] == policy and final['z1_bootdiag'] == helper
-    assert final['z1_stock_mount_guard'] == mount_guard and gate in final['init.z1.rc']
-    assert final['init.z1.rc'] == board_rc
-    assert final['z1_fbcon_takeover.sh'] == fbcon_script
-    assert b'/system/bin/sh /z1_display_takeover.sh' in final['init.z1.rc']
-    assert b'/z1_bootdiag --graphics-mode' in final['z1_display_takeover.sh']
-    assert final['init'] == originals['init'][2]
-    assert b'start hwservicemanager' not in final['init.rc']
-    assert b'on property:' not in final['init.usb.rc']
+    if (final['sepolicy'] != policy or final['z1_bootdiag'] != helper or
+            final['z1_stock_mount_guard'] != mount_guard or gate not in final['init.z1.rc'] or
+            final['init.z1.rc'] != board_rc or final['z1_fbcon_takeover.sh'] != fbcon_script or
+            b'/system/bin/sh /z1_display_takeover.sh' not in final['init.z1.rc'] or
+            b'/z1_bootdiag --graphics-mode' not in final['z1_display_takeover.sh'] or
+            final['init'] != originals['init'][2] or
+            b'start hwservicemanager' in final['init.rc'] or
+            b'on property:' in final['init.usb.rc']):
+        raise ValueError('final stock ramdisk content or startup invariant mismatch')
+    if final['init.z1.rc'].count(acm_start) != 1 or final['init.z1.rc'].count(acm_service) != 1:
+        raise ValueError('final stock ramdisk lacks the USB ACM log service')
     body = gzip.compress(archive, compresslevel=9, mtime=0)
     if oldrd[:4] != b'\x88\x16\x88\x58' or oldrd[8:14] != b'ROOTFS':
         raise ValueError('A7 ROOTFS header missing')
@@ -266,7 +289,8 @@ def main():
     if len(image) > LIMIT:
         raise ValueError('boot image exceeds 6MiB partition')
     _, checkk, checkr, _ = parse_boot(image)
-    assert checkk == kernel and checkr == rd
+    if checkk != kernel or checkr != rd:
+        raise ValueError('packed boot image failed kernel/ramdisk readback')
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_bytes(image)
     report = dict(result='STATIC_STOCK_BOOT_PASS', device_boot_verified=False,
@@ -277,6 +301,7 @@ def main():
         mount_guard_source_sha256=digest((REPO_ROOT / 'stock/z1_stock_mount_guard.c').read_bytes()),
         mount_guard_origin='provided ELF' if args.mount_guard else 'compiled repository stock source',
         executable_metadata_verified=['init: root:root regular, one link, owner rx, no special/group/world write bits',
+                                      'z1_bootdiag: root:root regular, one link, 0755',
                                       'z1_stock_mount_guard: root:root regular, one link, 0755'],
         mount_gate='post-fs wait_for_prop; runtime unverified',
         unchanged_ramdisk_files=sum(final.get(k) == d for k, (_, _, d) in originals.items()),
