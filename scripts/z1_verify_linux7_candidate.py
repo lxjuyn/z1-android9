@@ -187,8 +187,11 @@ def verify(args):
         require(dt_cell(args.dtb, "linux,initrd-start") == INITRD_START and
                 dt_cell(args.dtb, "linux,initrd-end") == INITRD_START + body_size, "wrong DT initrd bounds")
         bootargs = dt_bootargs(args.dtb).split()
-        require("androidboot.hardware=z1" in bootargs and "console=tty0" in bootargs,
-                "missing board hardware or screen console bootargs")
+        require("androidboot.hardware=z1" in bootargs and
+                "console=ttyS0,921600n8" in bootargs and
+                "earlycon=mtk8250,0x11005000" in bootargs and
+                "console=tty0" not in bootargs,
+                "missing Z1 serial logging or tty0 is still writing over the Android framebuffer")
         files = ramdisk_files(ramdisk)
         module_rc = check_ramdisk_services(files)
         helper = temp / "z1_bootdiag"

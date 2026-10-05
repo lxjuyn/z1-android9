@@ -39,7 +39,8 @@ TARGET_NO_KERNEL := true
 BOARD_BUILD_SYSTEM_ROOT_IMAGE := false
 BOARD_KERNEL_BASE := 0x10000000
 BOARD_KERNEL_PAGESIZE := 2048
-BOARD_KERNEL_CMDLINE := console=tty0 console=ttyS0,921600n8 root=/dev/ram panic=10 loglevel=7 clk_ignore_unused regulator_ignore_unused oops=panic sysrq_always_enabled rdinit=/init earlycon=mtk8250,0x11005000 androidboot.hardware=z1
+# Keep kernel logs on UART; tty0 is the LK framebuffer that Android displays on.
+BOARD_KERNEL_CMDLINE := console=ttyS0,921600n8 root=/dev/ram panic=10 loglevel=7 clk_ignore_unused regulator_ignore_unused oops=panic sysrq_always_enabled rdinit=/init earlycon=mtk8250,0x11005000 androidboot.hardware=z1
 BOARD_MKBOOTIMG_ARGS := --kernel_offset 0x8000 --ramdisk_offset 0x1000000
 
 # The boot header command line is ignored by this LK. Keep the same parameters
