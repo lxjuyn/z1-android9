@@ -61,6 +61,33 @@ def services(text, source):
     return result
 
 
+def check_stock_service_policy(definitions, rc_texts):
+    """Disabled HAL stanzas are retained; explicit healthd restarts are forbidden."""
+    for service in definitions:
+        exe = service['executable']
+        if service['name'] == 'healthd':
+            require(exe == '/system/bin/healthd' and ['disabled'] in service['options'],
+                    'stock healthd must be the disabled /system/bin/healthd stanza')
+        unsupported = (service['name'] in ('hwservicemanager', 'vndservicemanager', 'hidl_memory', 'media.codec')
+                       or exe == '/system/bin/healthd'
+                       or exe.startswith(('/vendor/bin/hw/', '/system/bin/hw/')))
+        require(not unsupported or ['disabled'] in service['options'],
+                'stock unsupported service is enabled: ' + service['name'])
+    for source, text in rc_texts:
+        pending = ''
+        for physical in text.splitlines():
+            pending += physical if not pending else physical.lstrip()
+            if pending.endswith('\\'):
+                pending = pending[:-1] + ' '
+                continue
+            tokens = shlex.split(pending, comments=True)
+            pending = ''
+            require(not (tokens[:2] == ['restart', 'healthd'] or
+                         tokens[:3] == ['onrestart', 'restart', 'healthd']),
+                    'stock RC contains an active restart healthd command: '+source)
+        require(not pending, 'unterminated RC command: '+source)
+
+
 def optional_recovery(service):
     return (service['name'] == 'flash_recovery' and
             service['executable'] == '/system/bin/install-recovery.sh' and
@@ -100,6 +127,7 @@ def verify(args):
         temp = Path(directory)
         image = ImageFiles(args.system, args.system_tree, temp / 'system')
         definitions = []
+        rc_texts = []
         defaults = files['default.prop'][1].decode()
         require('ro.zygote=zygote32' in defaults.splitlines(), 'unsupported or missing ro.zygote')
         init = files['init.rc'][1].decode()
@@ -165,22 +193,18 @@ def verify(args):
         for name, (fields, data) in sorted(files.items()):
             if '/' not in name and name.endswith('.rc'):
                 require(stat.S_ISREG(fields[1]), f'ramdisk RC not regular: {name}')
+                rc_texts.append(('/' + name, data.decode()))
                 definitions += services(data.decode(), '/' + name)
         for subdirectory in ('etc/init', 'vendor/etc/init'):
             for rc in sorted((image.tree / subdirectory).glob('*.rc')):
                 relative = rc.relative_to(image.tree).as_posix()
-                definitions += services(image.get(relative).read_text(), '/system/' + relative)
+                text = image.get(relative).read_text()
+                rc_texts.append(('/system/' + relative, text))
+                definitions += services(text, '/system/' + relative)
         names = [s['name'] for s in definitions]
         require(len(names) == len(set(names)), 'duplicate service definitions')
         if args.stock:
-            require('healthd' not in names,
-                    'stock image contains critical healthd without a hwbinder device')
-            for service in definitions:
-                exe = service['executable']
-                unsupported = (service['name'] in ('hwservicemanager', 'vndservicemanager', 'hidl_memory', 'media.codec')
-                               or exe.startswith(('/vendor/bin/hw/', '/system/bin/hw/')))
-                require(not unsupported or ['disabled'] in service['options'],
-                        'stock remote HIDL server is enabled: ' + service['name'])
+            check_stock_service_policy(definitions, rc_texts)
             factories = {
                 'android.hardware.bluetooth@1.0-impl.so': 'IBluetoothHci',
                 'android.hardware.graphics.composer@2.1-impl.so': 'IComposer',

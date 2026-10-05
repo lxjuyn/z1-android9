@@ -72,8 +72,76 @@ def edit_existing_rc(system, tree, backup, rc, original, modified, block_size):
                 after_sha256=hashlib.sha256(modified).hexdigest())
 
 
+def remove_servicemanager_healthd_hook(text):
+    """Remove a prevalidated physical hook, preserving every other line."""
+    active = False
+    retained = []
+    for line in text.splitlines(keepends=True):
+        if line.strip() and not line[0].isspace() and not line.lstrip().startswith('#'):
+            active = shlex.split(line, comments=True) == [
+                'service', 'servicemanager', '/system/bin/servicemanager']
+        if active and shlex.split(line, comments=True) == ['onrestart', 'restart', 'healthd']:
+            continue
+        retained.append(line)
+    return ''.join(retained)
+
+
+def stock_healthd_restart_plan(tree):
+    """Find one exact servicemanager stanza and at most its single healthd hook.
+
+    Plan before edits; reject duplicate/continued hooks instead of guessing.
+    A hook already removed is an idempotent no-op, still checked against image.
+    """
+    matches = []
+    candidates = sorted((tree/'etc/init').glob('*.rc'))
+    candidates += sorted((tree/'vendor/etc/init').glob('*.rc'))
+    for rc in candidates:
+        original = rc.read_bytes()
+        text = original.decode()
+        for service in services(text, rc.relative_to(tree).as_posix()):
+            if service['name'] != 'servicemanager':
+                continue
+            lines = text.splitlines(keepends=True)
+            if shlex.split(lines[service['line']-1], comments=True) != [
+                    'service', 'servicemanager', '/system/bin/servicemanager']:
+                raise ValueError('unexpected servicemanager stanza: '+str(rc))
+            hooks = [option for option in service['options']
+                     if option[:3] == ['onrestart', 'restart', 'healthd']]
+            if len(hooks) > 1 or any(hook != ['onrestart', 'restart', 'healthd'] for hook in hooks):
+                raise ValueError('ambiguous servicemanager healthd restart hook: '+str(rc))
+            indexes = []
+            for i in range(service['line'], len(lines)):
+                line = lines[i]
+                if line.strip() and not line[0].isspace() and not line.lstrip().startswith('#'):
+                    break
+                if shlex.split(line, comments=True) == ['onrestart', 'restart', 'healthd']:
+                    indexes.append(i)
+            if len(indexes) != len(hooks):
+                raise ValueError('continued/ambiguous healthd hook: '+str(rc))
+            modified = ''.join(line for i, line in enumerate(lines) if i not in indexes).encode()
+            matches.append((rc, original, modified, bool(hooks)))
+    if len(matches) != 1:
+        raise ValueError('expected one exact servicemanager stanza; found '+str(len(matches)))
+    return matches[0]
+
+
+def apply_healthd_restart_plan(system, tree, backup, plan, block_size):
+    rc, original, modified, removed = plan
+    if original != modified:
+        change = edit_existing_rc(system, tree, backup, rc, original, modified, block_size)
+    else:
+        relative = rc.relative_to(tree).as_posix()
+        if command(system, 'cat /'+relative) != original:
+            raise ValueError('image/staging RC mismatch: '+relative)
+        digest = hashlib.sha256(original).hexdigest()
+        change = dict(path=relative, before_sha256=digest, after_sha256=digest)
+    change.update(status='healthd_restart_removed' if removed else 'healthd_restart_absent',
+                  removed_restart_hooks=['healthd'] if removed else [])
+    return change
+
+
 def apply_stock_healthd_only_profile(system, tree, backup):
-    """Disable only the exact stock Pie healthd service, preserving its stanza."""
+    """Disable exact healthd and remove its servicemanager restart path."""
     system, tree, backup = map(Path, (system, tree, backup))
     block_size = ext4_block_size(system)
     candidates = sorted((tree/'etc/init').glob('*.rc'))
@@ -101,30 +169,37 @@ def apply_stock_healthd_only_profile(system, tree, backup):
     if len(matches) != 1:
         raise ValueError('expected exactly one exact healthd service; found '+str(len(matches)))
 
+    restart_plan = stock_healthd_restart_plan(tree)
     rc, relative, original, service, lines = matches[0]
     if ['critical'] not in service['options']:
         raise ValueError('exact healthd service is missing its original critical option')
     if command(system, 'cat /'+relative) != original:
         raise ValueError('image/staging RC mismatch: '+relative)
 
-    if ['disabled'] in service['options']:
-        digest = hashlib.sha256(original).hexdigest()
-        return [dict(path=relative, status='already_disabled',
-                     before_sha256=digest, after_sha256=digest,
-                     critical_preserved=True)]
-
-    header_index = service['line']-1
-    header = lines[header_index]
-    line_ending = '\r\n' if header.endswith('\r\n') else '\n'
-    if not header.endswith(('\n', '\r')):
-        lines[header_index] = header+line_ending
-    lines.insert(header_index+1, '    disabled'+line_ending)
+    already_disabled = ['disabled'] in service['options']
+    if not already_disabled:
+        header_index = service['line']-1
+        header = lines[header_index]
+        line_ending = '\r\n' if header.endswith('\r\n') else '\n'
+        if not header.endswith(('\n', '\r')):
+            lines[header_index] = header+line_ending
+        lines.insert(header_index+1, '    disabled'+line_ending)
     modified = ''.join(lines).encode()
-    change = edit_existing_rc(system, tree, backup, rc, original,
-                              modified, block_size)
-    change.update(status='disabled_added', disabled_service='healthd',
-                  critical_preserved=True)
-    return [change]
+    same_rc = restart_plan[0] == rc
+    if same_rc:
+        # Combine edits into one block update and one original backup.
+        modified = remove_servicemanager_healthd_hook(modified.decode()).encode()
+    if modified != original:
+        change = edit_existing_rc(system, tree, backup, rc, original, modified, block_size)
+    else:
+        digest = hashlib.sha256(original).hexdigest()
+        change = dict(path=relative, before_sha256=digest, after_sha256=digest)
+    change.update(status='already_disabled' if already_disabled else 'disabled_added',
+                  disabled_service='healthd', critical_preserved=True)
+    if same_rc:
+        change['removed_restart_hooks'] = ['healthd'] if restart_plan[3] else []
+        return [change]
+    return [change, apply_healthd_restart_plan(system, tree, backup, restart_plan, block_size)]
 
 
 def suppress_stock_audio_restarts(text):
@@ -187,7 +262,7 @@ def main():
     ap.add_argument('--audio-restart-only', action='store_true',
                     help='only suppress remote audio onrestart hooks in an already-profiled image')
     ap.add_argument('--healthd-only', action='store_true',
-                    help='only disable the exact stock healthd service stanza')
+                    help='disable exact stock healthd and remove its servicemanager restart hook')
     args = ap.parse_args()
     if args.audio_restart_only and args.healthd_only:
         ap.error('--audio-restart-only and --healthd-only are separate modes')
@@ -203,7 +278,7 @@ def main():
                       method='preserve allocated RC data blocks/inode ownership/mode/xattrs',
                       changes=changes)
         args.report.write_text(json.dumps(report, indent=2)+'\n')
-        print('Disabled only the exact stock healthd service')
+        print('Disabled exact stock healthd and removed its servicemanager restart path')
         return
     block_size = ext4_block_size(args.system)
     if args.audio_restart_only:
@@ -215,6 +290,7 @@ def main():
         args.report.write_text(json.dumps(report, indent=2)+'\n')
         print('Suppressed stock remote audio restart hooks in', len(changes), 'RC files')
         return
+    restart_plan = stock_healthd_restart_plan(args.tree)
     changes = []
     hardware_manager_found = False
     candidates = sorted((args.tree/'etc/init').glob('*.rc'))
@@ -230,13 +306,22 @@ def main():
             result.append(line)
             if line.startswith('service ') and line.split()[1] in names:
                 result.append('    disabled\n')
-        modified_text, restarts = suppress_stock_audio_restarts(''.join(result))
+        base_text = ''.join(result)
+        if rc == restart_plan[0]:
+            if original != restart_plan[1]:
+                raise ValueError('servicemanager RC changed after preflight')
+            base_text = remove_servicemanager_healthd_hook(base_text)
+        modified_text, restarts = suppress_stock_audio_restarts(base_text)
         modified = modified_text.encode()
         if modified == original:
+            if rc == restart_plan[0] and command(args.system, 'cat /'+relative) != original:
+                raise ValueError('image/staging RC mismatch: '+relative)
             continue
         change = edit_existing_rc(args.system, args.tree, args.backup, rc,
                                   original, modified, block_size)
         change['disabled_services'] = sorted(names)
+        if rc == restart_plan[0]:
+            change['removed_restart_hooks'] = ['healthd'] if restart_plan[3] else []
         if restarts:
             change['suppressed_restarts'] = restarts
         changes.append(change)
