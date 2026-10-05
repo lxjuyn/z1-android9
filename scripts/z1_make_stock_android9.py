@@ -39,6 +39,45 @@ def digest(data):
     return hashlib.sha256(data).hexdigest()
 
 
+def validate_stock_policy(policy, manifest_path):
+    """Validate the binary header and the policy generator's hashed audit record."""
+    if len(policy) < 32:
+        raise ValueError('truncated SELinux binary policy')
+    magic, ident_size = struct.unpack_from('<II', policy, 0)
+    if magic != 0xf97cff8c or ident_size != 8 or policy[8:16] != b'SE Linux':
+        raise ValueError('invalid SELinux binary policy header')
+    version, config, _, _ = struct.unpack_from('<4I', policy, 16)
+    if version != 26:
+        raise ValueError('stock policy must use binary version 26')
+    if not config & 1 or not config & 4:
+        raise ValueError('stock policy must enable MLS and allow_unknown')
+
+    try:
+        manifest_data = manifest_path.read_bytes()
+        manifest = json.loads(manifest_data)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError('missing or invalid stock policy MANIFEST.json') from exc
+    if not isinstance(manifest, dict):
+        raise ValueError('stock policy MANIFEST.json must contain a JSON object')
+    final = manifest.get('final')
+    domain_count = manifest.get('domain_count')
+    permissive_count = manifest.get('permissive_count')
+    if (manifest.get('status') != 'HOST_COMPILE_AND_PARSE_PASS_NOT_KERNEL_LOADED' or
+            not isinstance(final, dict) or
+            final.get('bytes') != len(policy) or
+            final.get('sha256') != digest(policy) or
+            final.get('policy_version') != version or
+            final.get('config') != config or
+            manifest.get('all_domains_permissive') is not True or
+            manifest.get('allow_unknown') is not True or
+            manifest.get('kernel_loaded') is not False or
+            not isinstance(domain_count, int) or isinstance(domain_count, bool) or domain_count <= 0 or
+            not isinstance(permissive_count, int) or isinstance(permissive_count, bool) or
+            permissive_count < domain_count):
+        raise ValueError('policy manifest does not attest the required v26 MLS/allow_unknown permissive policy')
+    return version, config, manifest, digest(manifest_data)
+
+
 def elf_static_arm(data):
     if len(data) < 52 or data[:7] != b'\x7fELF\x01\x01\x01' or struct.unpack_from('<H', data, 18)[0] != 40:
         raise ValueError('expected little-endian ARM32 ELF')
@@ -143,6 +182,8 @@ def main():
     ap.add_argument('--mount-guard', type=Path,
                     help='reuse a static ARM guard; default builds stock/ source with Z1_GUARD_CC')
     ap.add_argument('--policy', type=Path, required=True)
+    ap.add_argument('--policy-manifest', type=Path,
+                    help='policy generator MANIFEST.json; defaults to MANIFEST.json beside --policy')
     ap.add_argument('--output', type=Path, required=True)
     args = ap.parse_args()
     if args.output.exists():
@@ -158,14 +199,14 @@ def main():
         raise ValueError('helper lacks stock transport/display takeover')
     mount_guard = load_mount_guard(args.mount_guard)
     policy = args.policy.read_bytes()
-    if len(policy) < 32 or struct.unpack_from('<I', policy, 0)[0] != 0xf97cff8c:
-        raise ValueError('invalid SELinux binary policy')
-    ident_size = struct.unpack_from('<I', policy, 4)[0]
-    version = struct.unpack_from('<I', policy, 8+ident_size)[0]
-    if version != 26:
-        raise ValueError('stock policy must use binary version 26')
+    policy_manifest_path = args.policy_manifest or args.policy.parent / 'MANIFEST.json'
+    version, policy_config, policy_manifest, policy_manifest_sha256 = validate_stock_policy(
+        policy, policy_manifest_path)
     src = entries(gzip.decompress(args.ramdisk.read_bytes()))
     originals = ramdisk_index(src)
+    expected_fstab = (REPO_ROOT / 'stock/fstab.z1').read_bytes()
+    if 'fstab.z1' not in originals or originals['fstab.z1'][2] != expected_fstab:
+        raise ValueError('input ramdisk /fstab.z1 does not match repository stock/fstab.z1')
     if 'init' not in originals:
         raise ValueError('ramdisk lacks /init')
     check_boot_executable(originals, 'init', originals['init'][2])
@@ -258,6 +299,8 @@ def main():
     check_boot_executable(final_index, 'z1_bootdiag', helper, 0o100755)
     check_boot_executable(final_index, 'z1_stock_mount_guard', mount_guard, 0o100755)
     check_ramdisk_config(final_index, 'init.z1.rc', board_rc)
+    if 'fstab.z1' not in final_index or final_index['fstab.z1'][2] != expected_fstab:
+        raise ValueError('final ramdisk /fstab.z1 does not match repository stock/fstab.z1')
     final = {key: data for key, (_, _, data) in final_index.items()}
     if (final['sepolicy'] != policy or final['z1_bootdiag'] != helper or
             final['z1_stock_mount_guard'] != mount_guard or gate not in final['init.z1.rc'] or
@@ -300,6 +343,13 @@ def main():
         mount_guard_sha256=digest(mount_guard),
         mount_guard_source_sha256=digest((REPO_ROOT / 'stock/z1_stock_mount_guard.c').read_bytes()),
         mount_guard_origin='provided ELF' if args.mount_guard else 'compiled repository stock source',
+        policy_config=policy_config, policy_mls=bool(policy_config & 1),
+        policy_allow_unknown=bool(policy_config & 4),
+        policy_manifest_sha256=policy_manifest_sha256,
+        policy_domains_permissive=policy_manifest['all_domains_permissive'],
+        policy_domain_count=policy_manifest['domain_count'],
+        policy_permissive_count=policy_manifest['permissive_count'],
+        fstab_sha256=digest(expected_fstab),
         executable_metadata_verified=['init: root:root regular, one link, owner rx, no special/group/world write bits',
                                       'z1_bootdiag: root:root regular, one link, 0755',
                                       'z1_stock_mount_guard: root:root regular, one link, 0755'],

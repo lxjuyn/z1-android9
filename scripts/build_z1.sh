@@ -16,6 +16,12 @@ export JAVA_HOME="$LOS_ROOT/prebuilts/jdk/jdk9/linux-x86"
 export PATH="$HOST_TOOLS/python2/bin:$JAVA_HOME/bin:$PATH"
 export Z1_KERNEL_VARIANT=${Z1_KERNEL_VARIANT:-stock}
 case "$Z1_KERNEL_VARIANT" in stock|mainline) ;; *) echo "Invalid Z1_KERNEL_VARIANT" >&2; exit 2;; esac
+if [[ "$Z1_KERNEL_VARIANT" == "stock" ]]; then
+    if ! python3 "$REPO_ROOT/scripts/apply_stock_patches.py" --source "$LOS_ROOT" --check; then
+        echo "Stock build preflight failed: required stock source patches are missing or modified; refusing to build." >&2
+        exit 2
+    fi
+fi
 if [[ "$Z1_KERNEL_VARIANT" == "mainline" ]]; then
     export Z1_MESA_SOURCE_DIR="$(bash "$REPO_ROOT/scripts/prepare_mesa_lima.sh" "$LOS_ROOT")"
     MESA_PYTHON_CACHE="$LOS_ROOT/.cache/z1-python2"

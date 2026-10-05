@@ -26,7 +26,7 @@ bash stock/build_mount_guard.sh out/mount_guard/z1_stock_mount_guard
 
 `python3 scripts/z1_make_stock_android9.py`默认从本仓源码临时编译guard，验证static ARM及marker，放入最终cpio的`/z1_stock_mount_guard`并确保0755。可选`--mount-guard FILE`复用已生成static ARM guard；报告区分预编译与本仓编译来源，并记录源码与ELF SHA256。预编译marker检查不等于证明任意传入binary匹配当前源码，优先用默认从源编译。
 
-A7/factory原内核boot、LOS gzip-cpio ramdisk和policy26是外部输入；本仓不包含用户数据、NVRAM或厂商镜像。示例以INPUT_DIR指向你提供的物料：
+A7/factory原内核boot、LOS gzip-cpio ramdisk和policy26是外部输入；本仓不包含用户数据、NVRAM或厂商镜像。policy必须与`z1_stock_policy.py`生成的`MANIFEST.json`放在同一目录（或显式传入`--policy-manifest`），packer会比对二进制SHA256、版本/config和策略审计摘要；它还会拒绝与本仓`stock/fstab.z1`不一致的ramdisk。示例以INPUT_DIR指向你提供的物料：
 
 ```sh
 python3 scripts/z1_make_stock_android9.py \
@@ -37,9 +37,9 @@ python3 scripts/z1_make_stock_android9.py \
 
 Packer沿用本仓stock board RC、显示脚本和真实factory kernel；guard必须在post-fs第一段，WMT段不被替换。原kernel hash及6MiB限制继续检查。它支持已固定stock import的旧ramdisk输入，不要求修改其它代理的native路径补丁。
 
-**构建接口边界：** stock 构建必须通过 `scripts/build_z1.sh`。包装脚本先从本仓源码构建静态 mount guard，并把 `Z1_STOCK_MOUNT_GUARD` 传给产品配置；`device.mk` 将它复制进 LOS ramdisk。直接运行 `m` 而不经过包装脚本会因缺少 guard 而停止。普通 LOS `ramdisk`/`bootimage` 目标仍不会调用本 MTK packer，也不会加入 ACM logger；交付的 stock `boot.img` 必须再经过 `scripts/z1_make_stock_android9.py`。packer 会把 `init.z1.rc`、ACM helper 和重新构建的 guard 写入最终 ramdisk，并读回检查服务及可执行文件。中间 ramdisk 不等于可刷写 boot 镜像。`Z1_GUARD_CC` 可指定交叉编译器；默认从当前源码编译 guard。
+**构建接口边界：** stock 构建必须通过 `scripts/build_z1.sh`。包装脚本先只读检查原内核补丁均已应用，再从本仓源码构建静态 mount guard，并把 `Z1_STOCK_MOUNT_GUARD` 传给产品配置；`device.mk` 将它复制进 LOS ramdisk。补丁检查失败会停止构建，不会自动改动LOS源码。直接运行 `m` 不会执行这些前置检查。普通 LOS `ramdisk`/`bootimage` 目标仍不会调用本 MTK packer，也不会加入 ACM logger；交付的 stock `boot.img` 必须再经过 `scripts/z1_make_stock_android9.py`。packer 会把 `init.z1.rc`、ACM helper 和重新构建的 guard 写入最终 ramdisk，并读回检查服务、可执行文件和 `fstab.z1`。中间 ramdisk 不等于可刷写 boot 镜像。`Z1_GUARD_CC` 可指定交叉编译器；默认从当前源码编译 guard。
 
-Linux 7 路线不执行 stock mount gate。两条路线都保留 DT 中的 `console=ttyS0,921600n8` 与 MTK earlycon；对应的最终 boot packer 会检查串口参数。源码检查不能替代设备上的 ACM 枚举和串口日志验证。
+Linux 7 路线不执行 stock mount gate；它在 DT bootargs 中保留 `console=ttyS0,921600n8` 与 MTK earlycon。原内核路线不使用这份 DT 配置，而是原样保留已校验哈希的 factory 3.4.67 kernel；既有板端日志显示它使用 `console=ttyMT0,921600n1` 和 `printk.disable_uart=0`。两条路线的 UART 名称不同，均需在对应镜像上板后复验。源码检查不能替代设备上的 ACM 枚举和串口日志验证。
 
 ## 精简验证与限制
 
