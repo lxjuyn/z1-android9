@@ -79,3 +79,37 @@ embeds the init file as `init.z1.rc` and the ueventd rules as
 `ueventd.mt6572.rc` in the generated ramdisk. The root-level
 `scripts/apply_stock_patches.py` uses `stock_patches/manifest.json`; it does
 not read or apply this `stock/patches` series.
+
+## 0004: restore factory WLAN function-on/off actions
+
+`0004-stock-toggle-wifi-on-driver-status.patch` adds the two property actions
+from the factory Z1 `init.mt6572.rc`: `wlan.driver.status=ok` writes `1` to
+`/dev/wmtWifi`, and `wlan.driver.status=unloaded` writes `0`. Android 9's
+`libwifi_hal` uses the same property name and sets these values from its
+`wifi_load_driver()` and `wifi_unload_driver()` paths. The actions are separate
+from `post-fs`. A local `sys.z1.wmt_nodes_ready` condition re-evaluates an
+early status transition after node setup. Each action also checks that
+`/dev/wmtWifi` is a character device before opening it, since Android 9's init
+`write` builtin creates a regular file when a target is absent.
+
+This restores only the factory low-level WLAN function switch. It does not
+provide `wificond`'s missing nl80211 protocol feature support, the absent
+supplicant HIDL service, or prove that Wi-Fi associates. The candidate's
+permissive diagnostic policy remains required for runtime evaluation; this
+patch adds no SELinux rules and makes no enforcing-mode claim. The existing
+`/dev/stpwmt` and `/dev/stpbt` repairs are unchanged. No Bluetooth init change
+is justified by the source/runtime evidence in this patch, and no calibration,
+MAC, or NVRAM data is added. This source change has not been built into an
+image.
+
+Parser review against Android 9 `system/core/init` confirms the syntax: the
+`on` parser accepts multiple `property:name=value` triggers joined with `&&`,
+and reevaluates the action when either property changes. Its `exec` parser
+passes the shell command after `--` as child arguments. The Android shell's
+`printf` builtin emits the one-byte control value without a newline; `[ -c ]`
+ensures the redirection only opens an existing character device. The parser
+and command syntax are defined in `action_parser.cpp`, `builtins.cpp`,
+`system/core/init/README.md`, and Android's `mksh` source. After a reviewed
+image boots, runtime validation must still confirm that each property
+transition reaches the node; do not manually write to `/dev/wmtWifi` during
+this check.
