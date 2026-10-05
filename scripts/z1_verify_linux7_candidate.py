@@ -306,8 +306,11 @@ def verify(args):
                 "mainline system property must select Mesa EGL")
         require(re.findall(r"^persist\.sys\.usb\.config=(.*)$", build_props, re.M) == ["none"],
                 "Android USB must default to none so ramdisk ACM retains UDC ownership")
-        mesa_gles = "lib/egl/libGLES_mesa.so"
-        gallium_dri = "lib/dri/gallium_dri.so"
+        # LOS is built without a separate vendor partition, so Android's
+        # TARGET_COPY_OUT_VENDOR artifacts land below system/vendor in the
+        # product tree and are exposed to init/linker through /vendor.
+        mesa_gles = "vendor/lib/egl/libGLES_mesa.so"
+        gallium_dri = "vendor/lib/dri/gallium_dri.so"
         image.get(mesa_gles)
         dri_module = image.get(gallium_dri)
         require(b"lima\0" in dri_module.read_bytes(),
