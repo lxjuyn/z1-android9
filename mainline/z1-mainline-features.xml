@@ -1,6 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Z1 Linux7 currently has no supported SIP transport or WifiService. -->
+<!-- Z1 Linux7 currently has no supported SIP, Wi-Fi, or Bluetooth stack. -->
 <permissions>
     <unavailable-feature name="android.software.sip" />
     <unavailable-feature name="android.software.sip.voip" />
+    <unavailable-feature name="android.hardware.wifi" />
+    <unavailable-feature name="android.hardware.wifi.direct" />
+    <unavailable-feature name="android.hardware.bluetooth" />
+    <unavailable-feature name="android.hardware.bluetooth_le" />
 </permissions>

@@ -32,6 +32,14 @@ HWS = ["audio.primary.default.so",
        "android.hardware.graphics.composer@2.1-impl.so"]
 REQUIRED_MODULES = {"ipv6", "nfnetlink", "nfnetlink_log", "x_tables", "ip_tables",
                     "ip6_tables", "xt_NFLOG", "xt_quota2", "xt_IDLETIMER"}
+UNAVAILABLE_FEATURES = {
+    "android.software.sip",
+    "android.software.sip.voip",
+    "android.hardware.wifi",
+    "android.hardware.wifi.direct",
+    "android.hardware.bluetooth",
+    "android.hardware.bluetooth_le",
+}
 
 
 def require(condition, message):
@@ -306,6 +314,11 @@ def verify(args):
                 "mainline system property must select Mesa EGL")
         require(re.findall(r"^persist\.sys\.usb\.config=(.*)$", build_props, re.M) == ["none"],
                 "Android USB must default to none so ramdisk ACM retains UDC ownership")
+        feature_permissions = ET.parse(image.get("etc/permissions/z1-mainline-features.xml"))
+        unavailable = {node.get("name") for node in feature_permissions.findall(
+            "./unavailable-feature")}
+        require(UNAVAILABLE_FEATURES <= unavailable,
+                "mainline must hide unsupported SIP, Wi-Fi, and Bluetooth capabilities")
         # LOS is built without a separate vendor partition, so Android's
         # TARGET_COPY_OUT_VENDOR artifacts land below system/vendor in the
         # product tree and are exposed to init/linker through /vendor.
