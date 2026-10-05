@@ -1,0 +1,5 @@
+--- a/arch/arm/boot/dts/mediatek/mt6572-z1.dts
++++ b/arch/arm/boot/dts/mediatek/mt6572-z1.dts
+@@ -37 +37 @@
+-		bootargs = "console=tty0 console=ttyS0,921600n8 root=/dev/ram panic=10 loglevel=7 clk_ignore_unused regulator_ignore_unused oops=panic sysrq_always_enabled rdinit=/init earlycon=mtk8250,0x11005000 androidboot.hardware=z1 androidboot.selinux=permissive";
++		bootargs = "console=ttyS0,921600n8 root=/dev/ram panic=10 loglevel=7 clk_ignore_unused regulator_ignore_unused oops=panic sysrq_always_enabled rdinit=/init earlycon=mtk8250,0x11005000 androidboot.hardware=z1 androidboot.selinux=permissive";
