@@ -1,0 +1,11 @@
+diff --git a/frameworks/native/cmds/servicemanager/servicemanager.rc b/frameworks/native/cmds/servicemanager/servicemanager.rc
+--- a/frameworks/native/cmds/servicemanager/servicemanager.rc
++++ b/frameworks/native/cmds/servicemanager/servicemanager.rc
+@@ -3,7 +3,6 @@ service servicemanager /system/bin/servicemanager
+     user system
+     group system readproc
+     critical
+-    onrestart restart healthd
+     onrestart restart zygote
+     onrestart restart audioserver
+     onrestart restart media
