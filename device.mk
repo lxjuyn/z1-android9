@@ -76,8 +76,7 @@ PRODUCT_COPY_FILES += \
     $(DEVICE_PATH)/rootdir/init.z1.rc:root/init.z1.rc \
     $(DEVICE_PATH)/rootdir/fstab.z1:root/fstab.z1 \
     $(DEVICE_PATH)/rootdir/init.z1.network.rc:root/init.z1.network.rc \
-    $(DEVICE_PATH)/rootdir/ueventd.z1.rc:root/ueventd.z1.rc \
-    $(DEVICE_PATH)/rootdir/z1_usb_setup.sh:system/bin/z1_usb_setup.sh
+    $(DEVICE_PATH)/rootdir/ueventd.z1.rc:root/ueventd.z1.rc
 PRODUCT_PROPERTY_OVERRIDES += ro.hardware.egl=mesa
 PRODUCT_PACKAGES += libGLES_mesa gallium_dri
 endif
@@ -169,5 +168,5 @@ PRODUCT_PACKAGES += sdcard.z1_fuse
 ifeq ($(Z1_KERNEL_VARIANT),stock)
 PRODUCT_PROPERTY_OVERRIDES += persist.sys.usb.config=acm
 else
-PRODUCT_PROPERTY_OVERRIDES += persist.sys.usb.config=adb
+PRODUCT_PROPERTY_OVERRIDES += persist.sys.usb.config=none
 endif

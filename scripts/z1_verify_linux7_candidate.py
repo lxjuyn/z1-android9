@@ -84,6 +84,82 @@ def init_actions(rc):
     return actions
 
 
+def check_ramdisk_usb_ownership(files):
+    """Require the ramdisk ACM helper to be the sole init USB gadget owner."""
+    rc_files = []
+    acm_services = []
+    acm_starts = []
+    generic_usb_rc = re.compile(r"init\.usb[^/]*\.rc\Z")
+    generic_usb_import = re.compile(r"(?:^|/)init\.usb[^/]*\.rc\Z")
+    forbidden = (
+        (re.compile(r"\badbd\b"), "ADB daemon rule"),
+        (re.compile(r"\bz1_usb_setup\b"), "competing Z1 ADB helper"),
+        (re.compile(r"/config/usb_gadget(?:/|\b)"), "configfs USB gadget owner"),
+        (re.compile(r"/sys/class/android_usb(?:/|\b)"), "legacy Android USB gadget owner"),
+        (re.compile(r"/sys/class/udc(?:/|\b)"), "UDC sysfs owner"),
+        (re.compile(r"\bUDC\b"), "UDC binding rule"),
+        (re.compile(r"/dev/usb-ffs/adb\b|\bffs\.adb\b|\bfunctionfs\s+adb\b"),
+         "ADB FunctionFS gadget rule"),
+    )
+
+    for name, (fields, data) in files.items():
+        basename = name.rsplit("/", 1)[-1]
+        require(not generic_usb_rc.fullmatch(basename),
+                f"generic USB init file remains in ramdisk: {name}")
+        if not name.endswith(".rc"):
+            continue
+        require((fields[1] & 0o170000) == 0o100000,
+                f"init RC is not a regular file: {name}")
+        content = "\n".join(line.split("#", 1)[0]
+                             for line in data.decode().splitlines())
+        rc_files.append((name, content))
+
+    require(rc_files, "ramdisk has no init RC files")
+    board_rc = dict(rc_files).get("init.z1.rc", "")
+    ready_reset = init_actions(board_rc).get("property:ro.persistent_properties.ready=true")
+    require(ready_reset == ["setprop persist.sys.usb.config none", "setprop sys.usb.config none"],
+            "init.z1.rc must clear persisted ADB USB state after persistent properties load")
+    for name, content in rc_files:
+        for line in content.splitlines():
+            tokens = line.split()
+            if tokens and tokens[0] == "import" and len(tokens) == 2:
+                require(not generic_usb_import.search(tokens[1]),
+                        f"generic USB init import remains in {name}: {tokens[1]}")
+        for pattern, description in forbidden:
+            require(not pattern.search(content), f"{description} remains in ramdisk RC: {name}")
+        require(not re.search(r"^\s*on\s+.*(?:property:[^\n]*\b(?:sys|persist)\.usb\.|"
+                              r"property:[^\n]*usb\.ffs|property:[^\n]*\b(?:usb|adb)\b)",
+                              content, re.M | re.I),
+                f"generic USB property trigger remains in ramdisk RC: {name}")
+
+        for line in content.splitlines():
+            tokens = line.split()
+            if tokens and tokens[0] in {"service", "start", "exec", "exec_background", "exec_start"}:
+                usb_service = re.search(r"\b(?:usb|adb)\b", line, re.I)
+                is_acm_service = (tokens[0] == "service" and len(tokens) >= 4 and
+                                  tokens[1] == "z1_acm_log" and
+                                  tokens[2:4] == ["/z1_bootdiag", "--acm"])
+                is_acm_start = tokens[:2] == ["start", "z1_acm_log"]
+                require(not usb_service or is_acm_service or is_acm_start,
+                        f"USB/ADB service or exec rule remains in {name}: {' '.join(tokens)}")
+            if len(tokens) >= 3 and tokens[0] == "setprop" and tokens[1].startswith(
+                    ("sys.usb.", "persist.sys.usb.")):
+                require((tokens[1], tokens[2]) in {
+                    ("sys.usb.config", "none"),
+                    ("persist.sys.usb.config", "none"),
+                }, f"unexpected USB property owner in {name}: {' '.join(tokens)}")
+
+        acm_services.extend((name, service, command.strip()) for service, command in re.findall(
+            r"^service\s+(\S+)\s+([^\n]*?/z1_bootdiag\s+--acm[^\n]*)$", content, re.M))
+        acm_starts.extend((name, action) for action, commands in init_actions(content).items()
+                          for command in commands if command == "start z1_acm_log")
+
+    require(acm_services == [("init.z1.rc", "z1_acm_log", "/z1_bootdiag --acm")],
+            "z1_bootdiag --acm must be the single USB gadget service in init.z1.rc")
+    require(acm_starts == [("init.z1.rc", "init")],
+            "z1_acm_log must have exactly one start action, on init")
+
+
 def check_ramdisk_services(files):
     def text(name):
         require(name in files, f"missing ramdisk {name}")
@@ -97,8 +173,7 @@ def check_ramdisk_services(files):
         require(re.search(rf"^service {service} /z1_bootdiag {mode}\s*$", rc, re.M),
                 f"missing independent diagnostic service {service}")
         require(f"start {service}" in init_actions(rc).get(trigger, []), f"missing startup action {service}")
-    require(not re.search(r"^\s*start z1_usb_setup\s*$", rc, re.M),
-            "ADB helper competes with independent ACM for UDC")
+    check_ramdisk_usb_ownership(files)
     require("z1_bootdiag" in files and files["z1_bootdiag"][0][1] & 0o111,
             "missing executable /z1_bootdiag")
     return text("init.z1.network.rc")
@@ -198,9 +273,24 @@ def verify(args):
         helper.write_bytes(files["z1_bootdiag"][1])
         arm_elf(helper)
         require("INTERP" not in run(["readelf", "-l", str(helper)]).stdout, "diagnostic helper needs /system")
+        helper_manifest = json.loads(args.helper_manifest.read_text())
+        helper_source = ROOT / "tools/z1_android9_bootdiag.c"
+        require(isinstance(helper_manifest, dict), "helper build manifest must be a JSON object")
+        require(helper_manifest.get("source") == "tools/z1_android9_bootdiag.c",
+                "helper build manifest names an unexpected source")
+        source_hash = helper_manifest.get("source_sha256")
+        require(isinstance(source_hash, str) and re.fullmatch(r"[0-9a-f]{64}", source_hash) and
+                source_hash == sha(helper_source),
+                "helper source hash differs from repository source")
+        binary_hash = helper_manifest.get("binary_sha256")
+        require(isinstance(binary_hash, str) and re.fullmatch(r"[0-9a-f]{64}", binary_hash) and
+                binary_hash == sha(helper),
+                "ramdisk helper hash differs from helper build manifest")
+        require(helper_manifest.get("target") == "ARMv7-A EABI5 hard-float; static ELF32",
+                "helper build manifest has an unexpected target")
         manifest = json.loads(args.module_manifest.read_text())
         modules = check_module_manifest(manifest, module_rc)
-        report["checks"].append("boot payload, DT initrd, independent ACM/logcat and ordered module RC")
+        report["checks"].append("boot payload, DT initrd, ACM-only ramdisk ownership, helper source/binary hashes, logcat relay and ordered module RC")
         with args.system.open("rb") as stream:
             stream.seek(1080)
             require(stream.read(2) == b"\x53\xef", "system input is not raw ext4 (sparse images rejected)")
@@ -211,6 +301,17 @@ def verify(args):
         require(re.search(r"^namespace.default.isolated\s*=\s*false\s*$", loader, re.M) and
                 "/system/${LIB}" in loader and "/vendor/${LIB}" in loader,
                 "ELF search assumptions require the legacy system/vendor linker namespace")
+        build_props = image.get("build.prop").read_text()
+        require(re.findall(r"^ro\.hardware\.egl=(.*)$", build_props, re.M) == ["mesa"],
+                "mainline system property must select Mesa EGL")
+        require(re.findall(r"^persist\.sys\.usb\.config=(.*)$", build_props, re.M) == ["none"],
+                "Android USB must default to none so ramdisk ACM retains UDC ownership")
+        mesa_gles = "lib/egl/libGLES_mesa.so"
+        gallium_dri = "lib/dri/gallium_dri.so"
+        image.get(mesa_gles)
+        dri_module = image.get(gallium_dri)
+        require(b"lima\0" in dri_module.read_bytes(),
+                "installed Gallium DRI module does not contain the Lima driver marker")
         xml = ET.parse(image.get("vendor/etc/vintf/manifest.xml"))
         hals = {hal.findtext("name"): hal for hal in xml.getroot().findall("hal")}
         for name, version in (("health", "2.0"), ("audio", "2.0"), ("audio.effect", "2.0"), ("keymaster", "3.0"),
@@ -235,7 +336,8 @@ def verify(args):
         for obsolete in ("etc/init/healthd.rc", "vendor/etc/init/android.hardware.health@2.0-service.rc",
                          "vendor/etc/init/android.hardware.health@1.0-service.rc"):
             image.require_absent(obsolete)
-        roots = ["bin/surfaceflinger", "bin/audioserver", "bin/netd"]
+        roots = ["bin/surfaceflinger", "bin/audioserver", "bin/netd", "bin/logcat",
+                 mesa_gles, gallium_dri]
         for service in SERVICES:
             roots.append(f"vendor/bin/hw/{service}")
             rc = image.get(f"vendor/etc/init/{service}.rc").read_text()
@@ -275,9 +377,11 @@ def verify(args):
             report["checks"].append("M6 calibrated-temperature guard, legacy FUSE backend, route/XFRM config")
         report["elf_closure"] = check_elf_closure(image, roots)
         report["verified_image_files"] = image.checked
-        report["checks"].append("clean ext4, image/tree HAL hashes, ARM ELF dependency closure and module hashes")
+        report["checks"].append("Mesa EGL/GLES and Lima DRI artifacts, logcat and HAL ARM ELF dependency closure, clean ext4 and module hashes")
+        report["checks"].append("ACM-only system USB default and ACM helper UDC ownership configuration")
         report["inputs"] = {name: {"path": str(getattr(args, name)), "sha256": sha(getattr(args, name))}
-                            for name in ("boot", "system", "zimage", "dtb", "ramdisk", "module_manifest")}
+                            for name in ("boot", "system", "zimage", "dtb", "ramdisk", "module_manifest",
+                                         "helper_manifest")}
         report["status"] = "STATIC_ARTIFACT_PASS"
     return report
 
@@ -288,6 +392,8 @@ def main():
         parser.add_argument("--" + option, type=Path, required=True)
     parser.add_argument("--module-manifest", type=Path,
                         default=ROOT / "android9/device/jiabo/z1/network/modules.json")
+    parser.add_argument("--helper-manifest", type=Path, required=True,
+                        help="build_z1_bootdiag.sh manifest for the helper injected into the ramdisk")
     parser.add_argument("--report", type=Path)
     parser.add_argument("--m6", action="store_true", help="require M6 temperature/storage fixes")
     parser.add_argument("--kernel-config", type=Path)

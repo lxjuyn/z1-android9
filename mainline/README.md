@@ -20,9 +20,11 @@ Apply `patches/0001` and `patches/0002` to the matching kernel source/config. Ap
 
 The kernel-side `tools/z1_make_bootimg.sh` is a separate legacy Linux/CONNSYS path. Its default input is `out/ramdisk_mainline_connsys.gz`, an MTK ROOTFS busybox ramdisk. The inspected existing copy has a `/dev/ttyGS0` ACM shell/getty, but no `/z1_bootdiag`, `init.z1.rc`, or Android log relay. Its previously built `boot_mainline_connsys.img` also records the old `console=tty0 console=ttyS0,115200n8` header command line. Do not treat this rescue image as an Android 9 candidate; apply `0004` before using the legacy packer again. The patch retains the ramdisk's existing USB ACM shell and does not add or remove ramdisk files.
 
-The Android 9 path uses `scripts/z1_make_android9_bootimg.py`. It takes an MTK ROOTFS ramdisk and the appended-DTB inputs, copies `/chosen/bootargs` into the boot header, and rejects a DTB with tty0 or missing Z1 UART/earlycon. The rootdir's default `z1_usb_setup` service configures ADB only. `scripts/z1_add_bootdiag.py` must explicitly transform the LOS gzip-cpio ramdisk with a supplied static ARM32 helper and `--usb-acm --logcat-relay`; this adds the ACM and logcat services and removes the competing ADB-only gadget setup action/service in that ramdisk. The candidate verifier reads back the final MTK ramdisk and fails unless the helper and both services are present.
+The Android 9 path uses `scripts/z1_make_android9_bootimg.py`. It takes an MTK ROOTFS ramdisk and the appended-DTB inputs, copies `/chosen/bootargs` into both boot-header command-line fields, and rejects a DTB with tty0 or missing Z1 UART/earlycon. `scripts/z1_add_bootdiag.py` must explicitly transform the LOS gzip-cpio ramdisk with a supplied static ARM32 helper and `--usb-acm --logcat-relay`; it adds the ACM and logcat services, removes the generic `init.usb*.rc` imports and files, and strips the legacy Z1 ADB gadget setup. Android 9 loads persisted USB properties after the early init actions, so setting `persist.sys.usb.config=none` alone is insufficient if generic USB rules remain. The injector, boot packer, and candidate verifier independently reject those imports, files, triggers, ADB services, and gadget owners. USB ACM enumeration and operation still require board testing.
 
-`build_z1.sh` still does not inject the ACM logger or package the Android boot image. The helper source is `tools/z1_android9_bootdiag.c`; build a fresh static ARMv7 hard-float binary with the repository script. The script checks ELF32/ARM/ET_EXEC, hard-float ABI, and absence of `PT_INTERP` or shared-library dependencies, then writes a source/compiler/binary hash manifest beside the ignored output artifact. Linux7 init must invoke only `--acm` and `--logcat`; the helper also contains separate stock-only modes.
+`build_z1.sh` still does not inject the ACM logger or package the Android boot image. The helper source is `tools/z1_android9_bootdiag.c`; build a fresh static ARMv7 hard-float binary with the repository script. The script checks ELF32/ARM/ET_EXEC, hard-float ABI, and absence of `PT_INTERP` or shared-library dependencies, then writes a source/compiler/binary hash manifest beside the ignored output artifact. Linux7 init must invoke only `--acm` and `--logcat`; the helper also contains separate stock-only modes. Pass that manifest to the candidate verifier so it can match the injected ramdisk helper hash and the checked-in C source hash.
+
+The Linux 7 Mesa Android makefiles install `libGLES_mesa` at `system/lib/egl/libGLES_mesa.so` and the Gallium DRI target at `system/lib/dri/gallium_dri.so`. The candidate verifier requires `ro.hardware.egl=mesa`, both installed artifacts, a Lima driver marker in the Gallium module, and includes the Mesa libraries plus `/system/bin/logcat` in the ARM ELF dependency closure. This confirms package contents only; it does not prove Lima rendering or display performance on the Z1 board.
 
 Use this gated sequence with paths from one build:
 
@@ -33,7 +35,9 @@ PRODUCT_OUT="$LOS_ROOT/out/target/product/z1"
 KERNEL=/path/to/fork_linux
 OUT=/path/to/new-linux7-candidate-dir
 Z1_BOOTDIAG="$REPO/out/z1_bootdiag"
-SYSTEM_TREE=/path/to/unpacked-system-tree-matching-system.img
+Z1_BOOTDIAG_MANIFEST="$Z1_BOOTDIAG.manifest.json"
+SYSTEM_RAW="$OUT/system.raw.img"
+SYSTEM_TREE="$PRODUCT_OUT/system"
 
 "$REPO/scripts/build_z1_bootdiag.sh" "$Z1_BOOTDIAG"
 python3 "$REPO/scripts/z1_add_bootdiag.py" \
@@ -46,16 +50,18 @@ python3 "$REPO/scripts/z1_make_android9_bootimg.py" \
   "$OUT/mtk-inputs/ramdisk-mtk.img" "$OUT/boot.img" \
   --zimage "$KERNEL/arch/arm/boot/zImage" \
   --dtb "$OUT/mtk-inputs/mt6572-z1.dtb"
+"$LOS_ROOT/out/host/linux-x86/bin/simg2img" "$PRODUCT_OUT/system.img" "$SYSTEM_RAW"
 python3 "$REPO/scripts/z1_verify_linux7_candidate.py" \
-  --boot "$OUT/boot.img" --system "$PRODUCT_OUT/system.img" \
+  --boot "$OUT/boot.img" --system "$SYSTEM_RAW" \
   --system-tree "$SYSTEM_TREE" \
   --zimage "$KERNEL/arch/arm/boot/zImage" \
   --dtb "$OUT/mtk-inputs/mt6572-z1.dtb" \
   --ramdisk "$OUT/mtk-inputs/ramdisk-mtk.img" \
   --module-manifest "$REPO/network/modules.json" \
+  --helper-manifest "$Z1_BOOTDIAG_MANIFEST" \
   --report "$OUT/verification.json"
 ```
 
-Only `STATIC_ARTIFACT_PASS` from the final verifier establishes that this exact ramdisk contains the executable helper, ACM/logger services, and expected boot arguments. It does not establish successful board boot or working hardware.
+Only `STATIC_ARTIFACT_PASS` from the final verifier establishes that this exact ramdisk contains the manifest-matched executable helper, ACM/logger services, expected boot arguments, and the required system files. It does not establish successful board boot, USB ACM operation, Lima GPU rendering, or working hardware.
 
-At the 2026-10-05 audit, the local LOS product output had `system.img` but no `ramdisk.img`; therefore the helper build and static checks could run, but this sequence could not yet produce a new boot image. Do not substitute the separate legacy BusyBox ramdisk or a stale helper binary.
+Use the `ramdisk.img`, sparse `system.img`, and `system/` staging tree from the same LOS build. The verifier consumes a raw ext4 conversion of `system.img` and checks it against that staging tree. Do not substitute the separate legacy BusyBox ramdisk or a stale helper binary.

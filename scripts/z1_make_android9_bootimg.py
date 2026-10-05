@@ -25,6 +25,12 @@ BOOT_LIMIT = 6 * 1024 * 1024
 MTK_MAGIC = b"\x88\x16\x88\x58"
 MTK_HEADER_SIZE = 512
 PAGE_SIZE = 2048
+BOOT_ARGS_SIZE = 512
+BOOT_EXTRA_ARGS_SIZE = 1024
+# build/mtkbootimg/bootimg.h v0 layout: magic, ten 32-bit header fields,
+# board name, cmdline, eight-word ID, then the supplemental cmdline.
+BOOT_CMDLINE_OFFSET = 8 + 10 * 4 + 16
+BOOT_EXTRA_CMDLINE_OFFSET = BOOT_CMDLINE_OFFSET + BOOT_ARGS_SIZE + 8 * 4
 
 
 def fail(message):
@@ -44,10 +50,118 @@ def dt_cell(dtb, name):
 
 def dt_bootargs(dtb):
     result = subprocess.run(
-        ["fdtget", "-t", "s", str(dtb), "/chosen", "bootargs"],
-        check=True, capture_output=True, text=True,
+        ["fdtget", "-t", "r", str(dtb), "/chosen", "bootargs"],
+        check=True, capture_output=True,
     )
-    return result.stdout.strip()
+    # Raw mode preserves embedded NULs. fdtget adds one newline after the
+    # property bytes; remove only that delimiter:
+    # strip() would silently change a valid (if unusual) leading/trailing space.
+    output = result.stdout
+    if not output.endswith(b"\n"):
+        fail("fdtget did not return /chosen/bootargs property bytes")
+    property_bytes = output[:-1]
+    if not property_bytes.endswith(b"\x00"):
+        fail("DTB /chosen/bootargs is not NUL-terminated")
+    bootargs = property_bytes[:-1]
+    if b"\x00" in bootargs or b"\n" in bootargs or b"\r" in bootargs:
+        fail("DTB /chosen/bootargs contains an ambiguous NUL or line break")
+    try:
+        return bootargs.decode("utf-8")
+    except UnicodeDecodeError:
+        fail("DTB /chosen/bootargs is not valid UTF-8")
+
+
+def check_boot_header_cmdline(blob, expected_cmdline):
+    """Check both legacy v0 command-line fields against the exact DTB string.
+
+    The repository's MTK mkbootimg writer stores up to 511 bytes plus a NUL
+    in cmdline, then stores any remainder in extra_cmdline (1024 bytes).
+    Its struct is zero-initialized, so the unused bytes in both fields must
+    also remain zero. This parser is deliberately pure for static validation.
+    """
+    if isinstance(expected_cmdline, str):
+        expected = expected_cmdline.encode("utf-8")
+    elif isinstance(expected_cmdline, bytes):
+        expected = expected_cmdline
+    else:
+        fail("expected boot command line must be str or bytes")
+    if b"\x00" in expected:
+        fail("expected boot command line contains an embedded NUL")
+    if len(expected) > BOOT_ARGS_SIZE + BOOT_EXTRA_ARGS_SIZE - 2:
+        fail("DTB boot command line exceeds the MTK v0 header capacity")
+
+    extra_end = BOOT_EXTRA_CMDLINE_OFFSET + BOOT_EXTRA_ARGS_SIZE
+    if len(blob) < extra_end:
+        fail("boot image is too short to contain the MTK v0 command-line fields")
+
+    main_expected = expected[:BOOT_ARGS_SIZE - 1].ljust(
+        BOOT_ARGS_SIZE - 1, b"\x00") + b"\x00"
+    extra_expected = expected[BOOT_ARGS_SIZE - 1:].ljust(
+        BOOT_EXTRA_ARGS_SIZE, b"\x00")
+    main_actual = blob[BOOT_CMDLINE_OFFSET:BOOT_CMDLINE_OFFSET + BOOT_ARGS_SIZE]
+    extra_actual = blob[BOOT_EXTRA_CMDLINE_OFFSET:extra_end]
+    if main_actual != main_expected:
+        fail("boot header cmdline field differs from DTB /chosen/bootargs")
+    if extra_actual != extra_expected:
+        fail("boot header extra_cmdline field differs from DTB /chosen/bootargs")
+
+
+def canonical_ramdisk_path(name):
+    while name.startswith(b"./"):
+        name = name[2:]
+    while name.startswith(b"/"):
+        name = name[1:]
+    return name.decode()
+
+
+def check_android_init_rcs(index):
+    """Reject stale Android USB init rules from the final packaged ramdisk."""
+    if "init.rc" not in index:
+        fail("final Android ramdisk lacks root init.rc")
+    root_fields, _ = index["init.rc"]
+    if not stat.S_ISREG(root_fields[1]):
+        fail("final Android ramdisk root init.rc is not a regular file")
+
+    generic_usb_rcs = {"init.usb.rc", "init.usb.configfs.rc"}
+    for path in index:
+        if path.rsplit("/", 1)[-1] in generic_usb_rcs:
+            fail(f"final Android ramdisk must not contain generic USB rc {path}")
+
+    forbidden_gadget_markers = (
+        b"/config/usb_gadget/", b"/sys/kernel/config/usb_gadget/",
+        b"/sys/class/android_usb/", b"/dev/usb-ffs/", b"functionfs",
+        b"ffs.adb",
+    )
+    forbidden_rc = re.compile(
+        rb"^\s*(?:service\s+adbd(?:\s|$)|start\s+adbd(?:\s|$)|"
+        rb"setprop\s+ctl\.start\s+adbd(?:\s|$))|"
+        rb"^\s*on\b[^\n]*\bproperty:(?:persist\.)?sys\.usb\.", re.M,
+    )
+    for path, (_, data) in index.items():
+        if not path.endswith(".rc"):
+            continue
+        # init treats '#' as a comment marker; scan active text only.
+        active = b"\n".join(line.split(b"#", 1)[0]
+                             for line in data.splitlines())
+        if forbidden_rc.search(active):
+            fail(f"final Android ramdisk has an ADB/sys.usb init rule in {path}")
+        if any(marker in active for marker in forbidden_gadget_markers):
+            fail(f"final Android ramdisk has an Android gadget binding in {path}")
+        if re.search(rb"\budc\b", active, re.I):
+            fail(f"final Android ramdisk references a USB UDC in {path}")
+
+        for line in active.splitlines():
+            fields = line.split()
+            if fields and fields[0] == b"import" and len(fields) >= 2:
+                if b"init.usb" in fields[1]:
+                    fail(f"final Android ramdisk imports a generic USB rc in {path}")
+            if len(fields) >= 2 and fields[0] == b"setprop":
+                prop = fields[1]
+                value = fields[2] if len(fields) >= 3 else b""
+                if prop == b"sys.usb.configfs":
+                    fail(f"final Android ramdisk selects configfs in {path}")
+                if prop in (b"sys.usb.config", b"persist.sys.usb.config") and value != b"none":
+                    fail(f"final Android ramdisk enables a generic USB config in {path}")
 
 
 def check_android_diagnostics(body):
@@ -59,10 +173,11 @@ def check_android_diagnostics(body):
         fail("Android ramdisk body must be gzip or xz cpio")
     index = {}
     for name, fields, data in entries(archive):
-        key = name.decode().removeprefix("./")
+        key = canonical_ramdisk_path(name)
         if key in index:
             fail(f"duplicate Android ramdisk path: {key}")
         index[key] = (fields, data)
+    check_android_init_rcs(index)
     rc = index.get("init.z1.rc", (None, None))[1]
     if rc is None:
         fail("Android ramdisk lacks init.z1.rc; inject ACM diagnostics before MTK wrapping")
@@ -122,7 +237,7 @@ def check_ramdisk(path, require_android_logging=True):
     return blob, body_size
 
 
-def check_image(blob, kernel, ramdisk):
+def check_image(blob, kernel, ramdisk, expected_cmdline=None):
     if len(blob) > BOOT_LIMIT:
         fail(f"image is {len(blob)} bytes; boot partition limit is {BOOT_LIMIT}")
     if blob[:8] != b"ANDROID!":
@@ -132,6 +247,8 @@ def check_image(blob, kernel, ramdisk):
         struct.unpack_from("<9I", blob, 8)
     if page_size != PAGE_SIZE or second_size or dt_size:
         fail("output is not the expected v0 layout with appended DTB")
+    if expected_cmdline is not None:
+        check_boot_header_cmdline(blob, expected_cmdline)
     if (kernel_addr, ramdisk_addr, second_addr, tags_addr) != (
             0x10008000, 0x11000000, 0x10F00000, 0x10000100):
         fail("output boot header has unexpected load addresses")
@@ -185,9 +302,16 @@ def main():
         if "console=tty0" in tokens:
             fail("Android candidate must not route printk to the shared display framebuffer")
     kernel = args.zimage.read_bytes() + args.dtb.read_bytes()
-    mkbootimg = ROOT / "build/mtkbootimg/mkbootimg"
-    if not mkbootimg.is_file():
-        fail(f"missing mkbootimg: {mkbootimg}")
+    mkbootimg = ROOT / "out/host/bin/mtkbootimg"
+    mkbootimg_source = ROOT / "build/mtkbootimg/mkbootimg.c"
+    mkbootimg_header = ROOT / "build/mtkbootimg/bootimg.h"
+    mkbootimg_builder = ROOT / "build/mtkbootimg/build_host.sh"
+    if not mkbootimg_source.is_file() or not mkbootimg_header.is_file() or not mkbootimg_builder.is_file():
+        fail("missing repository-owned MTK mkbootimg source or host build script")
+    if (not mkbootimg.is_file() or
+            max(mkbootimg_source.stat().st_mtime_ns, mkbootimg_header.stat().st_mtime_ns,
+                mkbootimg_builder.stat().st_mtime_ns) > mkbootimg.stat().st_mtime_ns):
+        subprocess.run([str(mkbootimg_builder), str(mkbootimg)], check=True)
 
     with tempfile.TemporaryDirectory(prefix="z1-android9-boot-") as tempdir:
         appended = Path(tempdir) / "zImage-appended-dtb"
@@ -203,7 +327,7 @@ def main():
                 "--mtk", "1", "--cmdline", bootargs, "-o", str(temporary_output),
             ], check=True)
             image = temporary_output.read_bytes()
-            check_image(image, kernel, ramdisk)
+            check_image(image, kernel, ramdisk, bootargs)
             os.link(temporary_output, args.output)
         finally:
             temporary_output.unlink(missing_ok=True)

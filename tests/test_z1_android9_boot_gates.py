@@ -25,8 +25,11 @@ def entry(name, mode, data=b"", magic=b"070701", checksum=0):
 
 def archive(init_mode=0o100755, init_data=b"#!/bin/sh\n", crc=False):
     magic = b"070702" if crc else b"070701"
+    root_rc = b"import /init.z1.rc\n"
     return (entry("init", init_mode, init_data, magic,
                   sum(init_data) if crc else 0) +
+            entry("init.rc", 0o100644, root_rc, magic,
+                  sum(root_rc) if crc else 0) +
             entry("TRAILER!!!", 0, magic=magic))
 
 
@@ -54,6 +57,7 @@ def diagnostic_archive(helper=None, conflict=False):
     if conflict:
         rc += b"\nservice z1_usb_setup /system/bin/sh /system/bin/z1_usb_setup.sh\n"
     cpio = entry("init", 0o100755, b"#!/bin/sh\n")
+    cpio += entry("init.rc", 0o100644, b"import /init.z1.rc\n")
     cpio += entry("init.z1.rc", 0o100644, rc)
     if helper is not None:
         cpio += entry("z1_bootdiag", 0o100755, helper)
@@ -116,6 +120,7 @@ class RamdiskGateTests(unittest.TestCase):
             check_android_diagnostics(gzip.compress(archive()))
         with self.assertRaisesRegex(ValueError, "ACM logger and logcat relay"):
             cpio = (entry("init", 0o100755, b"#!/bin/sh\n") +
+                    entry("init.rc", 0o100644, b"import /init.z1.rc\n") +
                     entry("init.z1.rc", 0o100644, b"") +
                     entry("TRAILER!!!", 0))
             check_android_diagnostics(gzip.compress(cpio))
