@@ -6,7 +6,7 @@ import sys
 import tempfile
 import unittest
 
-SOURCE = Path(__file__).resolve().parents[1] / "z1_android9_bootdiag.c"
+SOURCE = Path(__file__).resolve().parents[1] / "tools/z1_android9_bootdiag.c"
 
 
 def records(data, label):

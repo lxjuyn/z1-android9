@@ -5,14 +5,19 @@ This only packages and checks an image. It never writes to the device.
 """
 
 import argparse
+import gzip
+import lzma
 import os
 from pathlib import Path
+import re
+import stat
 import struct
 import subprocess
 import sys
 import tempfile
 import hashlib
 from z1_prepare_android9_ramdisk import INITRD_START, check_cpio
+from z1_add_bootdiag import entries
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -45,7 +50,63 @@ def dt_bootargs(dtb):
     return result.stdout.strip()
 
 
-def check_ramdisk(path):
+def check_android_diagnostics(body):
+    if body.startswith(b"\x1f\x8b"):
+        archive = gzip.decompress(body)
+    elif body.startswith(b"\xfd7zXZ\x00"):
+        archive = lzma.decompress(body)
+    else:
+        fail("Android ramdisk body must be gzip or xz cpio")
+    index = {}
+    for name, fields, data in entries(archive):
+        key = name.decode().removeprefix("./")
+        if key in index:
+            fail(f"duplicate Android ramdisk path: {key}")
+        index[key] = (fields, data)
+    rc = index.get("init.z1.rc", (None, None))[1]
+    if rc is None:
+        fail("Android ramdisk lacks init.z1.rc; inject ACM diagnostics before MTK wrapping")
+    required_rc = (
+        b"on init\n    start z1_acm_log\n",
+        b"service z1_acm_log /z1_bootdiag --acm\n"
+        b"    class core\n    user root\n    group root\n"
+        b"    disabled\n    seclabel u:r:init:s0\n",
+        b"on post-fs-data\n    start z1_logcat_relay\n",
+        b"service z1_logcat_relay /z1_bootdiag --logcat\n"
+        b"    class core\n    user root\n    group log\n"
+        b"    disabled\n    seclabel u:r:init:s0\n",
+    )
+    if any(rc.count(fragment) != 1 for fragment in required_rc):
+        fail("Android ramdisk must start the USB ACM logger and logcat relay exactly once")
+    if (re.search(rb"^\s*start z1_usb_setup\s*$", rc, re.M) or
+            re.search(rb"^service z1_usb_setup(?:\s|$)", rc, re.M)):
+        fail("Android ramdisk still has the competing ADB gadget setup service")
+    helper = index.get("z1_bootdiag")
+    if helper is None:
+        fail("Android ramdisk lacks /z1_bootdiag")
+    fields, data = helper
+    if (not stat.S_ISREG(fields[1]) or fields[1] != (stat.S_IFREG | 0o755) or
+            fields[2] != 0 or fields[3] != 0 or fields[4] != 1):
+        fail("/z1_bootdiag must be a root-owned regular 0755 single-link file")
+    if (len(data) < 52 or data[:6] != b"\x7fELF\x01\x01" or data[6] != 1 or
+            struct.unpack_from("<H", data, 16)[0] != 2 or
+            struct.unpack_from("<H", data, 18)[0] != 40):
+        fail("/z1_bootdiag must be a little-endian ARM32 ELF")
+    phoff = struct.unpack_from("<I", data, 28)[0]
+    if struct.unpack_from("<I", data, 20)[0] != 1:
+        fail("/z1_bootdiag has an invalid ELF version")
+    phsize, phnum = struct.unpack_from("<HH", data, 42)
+    if phoff < 52 or phsize < 32 or not phnum or phoff + phsize * phnum > len(data):
+        fail("/z1_bootdiag has an invalid ELF program header table")
+    ph_types = [struct.unpack_from("<I", data, phoff + i * phsize)[0]
+                for i in range(phnum)]
+    if 2 in ph_types or 3 in ph_types:
+        fail("/z1_bootdiag must be static and work before /system")
+    if 1 not in ph_types:
+        fail("/z1_bootdiag has no PT_LOAD segment")
+
+
+def check_ramdisk(path, require_android_logging=True):
     blob = path.read_bytes()
     if len(blob) <= MTK_HEADER_SIZE or blob[:4] != MTK_MAGIC:
         fail("ramdisk needs a 512-byte MTK ROOTFS header")
@@ -56,6 +117,8 @@ def check_ramdisk(path):
         fail("MTK ramdisk payload is not named ROOTFS")
     body = blob[MTK_HEADER_SIZE:]
     check_cpio(body)
+    if require_android_logging:
+        check_android_diagnostics(body)
     return blob, body_size
 
 
@@ -104,7 +167,8 @@ def main():
     if args.output.exists():
         fail(f"output already exists: {args.output}")
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    ramdisk, body_size = check_ramdisk(args.ramdisk)
+    ramdisk, body_size = check_ramdisk(args.ramdisk,
+                                      require_android_logging=not args.linux_diagnostic)
     start = dt_cell(args.dtb, "linux,initrd-start")
     end = dt_cell(args.dtb, "linux,initrd-end")
     if start != INITRD_START:

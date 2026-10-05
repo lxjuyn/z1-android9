@@ -22,14 +22,16 @@ bash stock/build_mount_guard.sh out/mount_guard/z1_stock_mount_guard
 
 ## 本仓最终stock打包接口
 
+先用`bash scripts/build_z1_bootdiag.sh out/z1_bootdiag`从本仓`tools/z1_android9_bootdiag.c`构建静态ARMv7 hard-float诊断helper；脚本会记录源码、编译器和产物SHA256。Linux7只调用`--acm`与`--logcat`，原内核init调用`--acm-stock`及原厂诊断模式。
+
 `python3 scripts/z1_make_stock_android9.py`默认从本仓源码临时编译guard，验证static ARM及marker，放入最终cpio的`/z1_stock_mount_guard`并确保0755。可选`--mount-guard FILE`复用已生成static ARM guard；报告区分预编译与本仓编译来源，并记录源码与ELF SHA256。预编译marker检查不等于证明任意传入binary匹配当前源码，优先用默认从源编译。
 
-A7/factory原内核boot、LOS gzip-cpio ramdisk、已有静态诊断helper和policy26是外部输入；本仓不包含用户数据、NVRAM或厂商镜像。示例以INPUT_DIR指向你提供的物料：
+A7/factory原内核boot、LOS gzip-cpio ramdisk和policy26是外部输入；本仓不包含用户数据、NVRAM或厂商镜像。示例以INPUT_DIR指向你提供的物料：
 
 ```sh
 python3 scripts/z1_make_stock_android9.py \
   --a7-boot "$INPUT_DIR/a7-boot.img" --factory-boot "$INPUT_DIR/factory-boot.img" \
-  --ramdisk "$INPUT_DIR/ramdisk.img" --helper "$INPUT_DIR/z1_bootdiag" \
+  --ramdisk "$INPUT_DIR/ramdisk.img" --helper out/z1_bootdiag \
   --policy "$INPUT_DIR/sepolicy" --output out/stock.boot.img
 ```
 

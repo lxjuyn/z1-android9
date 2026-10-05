@@ -1,0 +1,41 @@
+diff --git a/tools/z1_make_bootimg.sh b/tools/z1_make_bootimg.sh
+--- a/tools/z1_make_bootimg.sh
++++ b/tools/z1_make_bootimg.sh
+@@ -43,3 +43,3 @@
+-CMDLINE=${Z1_CMDLINE:-"console=tty0 console=ttyS0,115200n8 root=/dev/ram panic=0 ignore_loglevel clk_ignore_unused rdinit=/init"}
++CMDLINE=${Z1_CMDLINE:-"console=ttyS0,921600n8 root=/dev/ram panic=10 loglevel=7 clk_ignore_unused regulator_ignore_unused oops=panic sysrq_always_enabled rdinit=/init earlycon=mtk8250,0x11005000 androidboot.hardware=z1 androidboot.selinux=permissive"}
+ APPENDED=/tmp/zImage_appended_z1ver
+ MAX_BOOT=6291456   # Z1 bootimg 分区 6MB
+@@ -69,0 +70,32 @@
++# Guard both the mkbootimg header command line and DT chosen args. The Z1
++# framebuffer is also tty0, so console=tty0 would let printk overwrite Android.
++python3 - "$DTB" "$CMDLINE" <<'PY'
++import shutil, subprocess, sys
++
++def fail(message):
++    print("ERROR: serial command-line guard: " + message, file=sys.stderr)
++    raise SystemExit(1)
++
++fdtget = shutil.which("fdtget")
++if not fdtget:
++    fail("fdtget is required to validate the selected DTB")
++result = subprocess.run([fdtget, "-t", "s", sys.argv[1], "/chosen", "bootargs"],
++                        capture_output=True, text=True, check=False)
++if result.returncode:
++    fail("cannot read /chosen/bootargs from the selected DTB")
++expected_console = "console=ttyS0,921600n8"
++expected_earlycon = "earlycon=mtk8250,0x11005000"
++def check(label, args):
++    if "console=tty0" in args:
++        fail(f"{label} must not route printk to tty0")
++    consoles = [arg for arg in args if arg.startswith("console=")]
++    if consoles != [expected_console]:
++        fail(f"{label} must have only {expected_console}; got {consoles!r}")
++    earlycons = [arg for arg in args if arg == "earlycon" or arg.startswith("earlycon=")]
++    if earlycons != [expected_earlycon]:
++        fail(f"{label} must have only {expected_earlycon}; got {earlycons!r}")
++check("mkbootimg CMDLINE", sys.argv[2].split())
++check("DTB /chosen/bootargs", result.stdout.split())
++print("[OK] mkbootimg CMDLINE and DTB retain ttyS0 921600n8 + MTK earlycon; tty0 is absent")
++PY
++
