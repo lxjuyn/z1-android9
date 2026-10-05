@@ -13,15 +13,19 @@ to `F6`. The touchscreen map separately maps capacitive navigation codes
 158/102/139 to Back/Home/Recent Apps. This prevents Android's generic fallback
 map from treating code 102 as `MOVE_HOME` and code 139 as Menu.
 
-The factory `/system/usr/keylayout/virtual-touch-keys.kl` is empty. The FuQuan
-ROM is used only as a reference for separating per-device maps; its keylayout
-files and event assignments are not copied. Android's software navigation
-bar is hidden with `qemu.hw.mainkeys=1`.
+The original factory system image contains `mtk-kpd.kl` (158=Back, 102=Home,
+139=Menu, 250–255=READ_T1–READ_T6), but contains neither
+`virtual-touch-keys.kl` nor `mtk-tpd.kl`. The bottom-touch map is therefore a
+candidate mapping for the registered `mtk-tpd` device, not an original
+factory mapping. The FuQuan ROM is used only as a reference for separating
+per-device maps; its keylayout files and event assignments are not copied.
+Android's software navigation bar is hidden with `qemu.hw.mainkeys=1`.
 
 ## Runtime evidence still needed
 
 Kernel registration is present in existing logs, but captured key-down events
 are not. On the Z1, run `getevent -lt` while pressing each bottom and physical
 key to confirm which device emits each code. Then check Back, Home, Recent
-Apps, direction/confirm, volume, playback and F1–F6 behavior. Both maps have
-factory-keycode provenance but still need a board-level functional check.
+Apps, direction/confirm, volume, playback and F1–F6 behavior. Only the
+physical keypad codes have factory-layout evidence; both maps still need a
+board-level functional check.
