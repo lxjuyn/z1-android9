@@ -1,6 +1,6 @@
 # Stock packer：关键 ramdisk 可执行文件检查
 
-适用于 `scripts/z1_make_stock_android9.py`；这里只覆盖 `/init` 和 `/z1_stock_mount_guard` 的最终 newc 元数据与内容保护。不改变 device.mk、build_z1.sh 或 board init。
+适用于 `scripts/z1_make_stock_android9.py`；这里只说明 `/init` 和 `/z1_stock_mount_guard` 的最终 newc 元数据与内容保护。stock 构建包装脚本会先编译 guard，`device.mk` 再将它复制进 LOS ramdisk；最终 packer 仍会读回验证 guard，并负责加入 ACM helper 和最终板级 init 内容。
 
 ## 输入与最终读回要求
 

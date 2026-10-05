@@ -37,7 +37,9 @@ python3 scripts/z1_make_stock_android9.py \
 
 Packer沿用本仓stock board RC、显示脚本和真实factory kernel；guard必须在post-fs第一段，WMT段不被替换。原kernel hash及6MiB限制继续检查。它支持已固定stock import的旧ramdisk输入，不要求修改其它代理的native路径补丁。
 
-**构建接口边界：** `scripts/build_z1.sh`产生LOS目标；普通`m ramdisk/bootimage`不自动调用本MTK packer，也不自动提供guard。最终交付stock boot必须经过上述packer。仅使用带gate的普通LOS ramdisk会停在等待，不能发布为完成的stock boot。make bootimage防漏hook由构建脚本负责人接入；本次不改device.mk或build_z1.sh。需要的环境仅Z1_GUARD_CC，需要的步骤是最终stock packer调用，无需预先在共享工作区构建guard。
+**构建接口边界：** stock 构建必须通过 `scripts/build_z1.sh`。包装脚本先从本仓源码构建静态 mount guard，并把 `Z1_STOCK_MOUNT_GUARD` 传给产品配置；`device.mk` 将它复制进 LOS ramdisk。直接运行 `m` 而不经过包装脚本会因缺少 guard 而停止。普通 LOS `ramdisk`/`bootimage` 目标仍不会调用本 MTK packer，也不会加入 ACM logger；交付的 stock `boot.img` 必须再经过 `scripts/z1_make_stock_android9.py`。packer 会把 `init.z1.rc`、ACM helper 和重新构建的 guard 写入最终 ramdisk，并读回检查服务及可执行文件。中间 ramdisk 不等于可刷写 boot 镜像。`Z1_GUARD_CC` 可指定交叉编译器；默认从当前源码编译 guard。
+
+Linux 7 路线不执行 stock mount gate。两条路线都保留 DT 中的 `console=ttyS0,921600n8` 与 MTK earlycon；对应的最终 boot packer 会检查串口参数。源码检查不能替代设备上的 ACM 枚举和串口日志验证。
 
 ## 精简验证与限制
 

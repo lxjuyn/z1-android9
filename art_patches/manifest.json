@@ -1,0 +1,40 @@
+{
+  "schema": 1,
+  "patches": [
+    {
+      "patch": "0001-art-oat-host-paths.patch",
+      "targets": [
+        {
+          "file": "art/runtime/gc/space/image_space.cc",
+          "base_sha256": "0b941557b2bcf674211b2f60dc1b40dee67f4609799e52cacac935b4e95bb47d",
+          "result_sha256": "1de802ed461adb419d407ed6ddd5c879c0fce5a731705ec04fc120e0d66db8db"
+        },
+        {
+          "file": "art/dex2oat/dex2oat.cc",
+          "base_sha256": "cf75c115c0332d7aa1a1f29f00c49f1d9aceb78f374cced5469b93cc5256a0d2",
+          "result_sha256": "c00a3c4fb3e5c858e4981a3bcb94d91e6ff8a78b867f293a601a59121c3f60b6"
+        },
+        {
+          "file": "art/dex2oat/dex2oat_options.cc",
+          "base_sha256": "eeb9ada682f61f9c7b19b19149c2a6a7fcc022bd69061714a8f1f1455e2391e9",
+          "result_sha256": "79dcc6a5c82ecaee34ea16eb57e6730e77382aed7ba8ccdd18caa8236534cd20"
+        },
+        {
+          "file": "art/dex2oat/dex2oat_options.def",
+          "base_sha256": "8ef66673a4058c4b73a1f55a01f7b241cfaa92e7db016be45b6fe43e1989cdca",
+          "result_sha256": "c0324594ab4c63c188931c469919b9951d5f4f6fc4f44be8c9c37eee4d8c8706"
+        }
+      ]
+    },
+    {
+      "patch": "0002-build-make-oat-host-paths.patch",
+      "targets": [
+        {
+          "file": "build/make/core/dex_preopt_odex_install.mk",
+          "base_sha256": "be91a261abbf3b62c18a34560fc9452d342eb42dd79fc1bb81cf41141c2db2d7",
+          "result_sha256": "7ea448dcd0950e32539e8967347bafa7708c04575b3031542eedb4d2745096c9"
+        }
+      ]
+    }
+  ]
+}

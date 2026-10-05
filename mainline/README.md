@@ -16,7 +16,7 @@ Apply `patches/0001` and `patches/0002` to the matching kernel source/config. Ap
 
 ## Keep the two boot packaging paths separate
 
-`scripts/build_z1.sh` prepares the LOS environment and runs `m` with the requested targets. `BoardConfig.mk` sets `TARGET_NO_KERNEL := true`: LOS supplies the Android system and ramdisk, while a separate project packer creates the MTK boot image. The build wrapper does not call `z1_add_bootdiag.py`, `z1_make_android9_bootimg.py`, or `z1_verify_linux7_candidate.py`.
+`scripts/build_z1.sh` prepares the LOS environment and runs `m` with the requested targets. `BoardConfig.mk` sets `TARGET_NO_KERNEL := true`: LOS supplies the Android system and ramdisk, while a separate project packer creates the MTK boot image. The build wrapper does not call `z1_add_bootdiag.py`, `z1_make_android9_bootimg.py`, or `z1_verify_linux7_candidate.py`. Both kernel variants share the same LOS output directory, so the wrapper takes a per-checkout lock and the stock/Linux 7 image builds must run one at a time.
 
 The kernel-side `tools/z1_make_bootimg.sh` is a separate legacy Linux/CONNSYS path. Its default input is `out/ramdisk_mainline_connsys.gz`, an MTK ROOTFS busybox ramdisk. The inspected existing copy has a `/dev/ttyGS0` ACM shell/getty, but no `/z1_bootdiag`, `init.z1.rc`, or Android log relay. Its previously built `boot_mainline_connsys.img` also records the old `console=tty0 console=ttyS0,115200n8` header command line. Do not treat this rescue image as an Android 9 candidate; apply `0004` before using the legacy packer again. The patch retains the ramdisk's existing USB ACM shell and does not add or remove ramdisk files.
 

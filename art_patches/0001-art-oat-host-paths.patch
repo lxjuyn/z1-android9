@@ -1,0 +1,85 @@
+diff --git a/art/dex2oat/dex2oat.cc b/art/dex2oat/dex2oat.cc
+index 609b806..0b8e311 100644
+--- a/art/dex2oat/dex2oat.cc
++++ b/art/dex2oat/dex2oat.cc
+@@ -372,6 +372,7 @@ NO_RETURN static void Usage(const char* fmt, ...) {
+   UsageError("");
+   UsageError("  --avoid-storing-invocation: Avoid storing the invocation args in the key value");
+   UsageError("      store. Used to test determinism with different args.");
++  UsageError("  --avoid-storing-host-paths: Do not store host image paths in OAT metadata.");
+   UsageError("");
+   UsageError("  --runtime-arg <argument>: used to specify various arguments for the runtime,");
+   UsageError("      such as initial heap size, maximum heap size, and verbose output.");
+@@ -646,6 +647,7 @@ class Dex2Oat FINAL {
+       opened_dex_files_(),
+       no_inline_from_dex_files_(),
+       avoid_storing_invocation_(false),
++      avoid_storing_host_paths_(false),
+       swap_fd_(kInvalidFd),
+       app_image_fd_(kInvalidFd),
+       profile_file_fd_(kInvalidFd),
+@@ -1244,6 +1246,7 @@ class Dex2Oat FINAL {
+ 
+     AssignTrueIfExists(args, M::Host, &is_host_);
+     AssignTrueIfExists(args, M::AvoidStoringInvocation, &avoid_storing_invocation_);
++    AssignTrueIfExists(args, M::AvoidStoringHostPaths, &avoid_storing_host_paths_);
+     AssignTrueIfExists(args, M::MultiImage, &multi_image_);
+     AssignIfExists(args, M::CopyDexFiles, &copy_dex_files_);
+ 
+@@ -1595,7 +1598,9 @@ class Dex2Oat FINAL {
+           image_filenames.push_back(image_space->GetImageFilename());
+         }
+         std::string image_file_location = android::base::Join(image_filenames, ':');
+-        if (!image_file_location.empty()) {
++        // This metadata is not used when loading app OAT files. Host dexpreopt otherwise records
++        // absolute build-tree filenames here; the boot-image checksum remains in fixed header fields.
++        if (!image_file_location.empty() && !avoid_storing_host_paths_) {
+           key_value_store_->Put(OatHeader::kImageLocationKey, image_file_location);
+         }
+       } else {
+@@ -2943,6 +2948,7 @@ class Dex2Oat FINAL {
+   std::vector<const DexFile*> no_inline_from_dex_files_;
+ 
+   bool avoid_storing_invocation_;
++  bool avoid_storing_host_paths_;
+   std::string swap_file_name_;
+   int swap_fd_;
+   size_t min_dex_files_for_swap_ = kDefaultMinDexFilesForSwap;
+diff --git a/art/dex2oat/dex2oat_options.cc b/art/dex2oat/dex2oat_options.cc
+index 5843691..4bb8122 100644
+--- a/art/dex2oat/dex2oat_options.cc
++++ b/art/dex2oat/dex2oat_options.cc
+@@ -228,6 +228,8 @@ static Parser CreateArgumentParser() {
+           .IntoKey(M::Host)
+       .Define("--avoid-storing-invocation")
+           .IntoKey(M::AvoidStoringInvocation)
++      .Define("--avoid-storing-host-paths")
++          .IntoKey(M::AvoidStoringHostPaths)
+       .Define("--very-large-app-threshold=_")
+           .WithType<unsigned int>()
+           .IntoKey(M::VeryLargeAppThreshold)
+diff --git a/art/dex2oat/dex2oat_options.def b/art/dex2oat/dex2oat_options.def
+index 1a913a9..b952e21 100644
+--- a/art/dex2oat/dex2oat_options.def
++++ b/art/dex2oat/dex2oat_options.def
+@@ -76,6 +76,7 @@ DEX2OAT_OPTIONS_KEY (Unit,                           DumpPasses)
+ DEX2OAT_OPTIONS_KEY (Unit,                           DumpStats)
+ DEX2OAT_OPTIONS_KEY (CopyOption,                     CopyDexFiles)
+ DEX2OAT_OPTIONS_KEY (Unit,                           AvoidStoringInvocation)
++DEX2OAT_OPTIONS_KEY (Unit,                           AvoidStoringHostPaths)
+ DEX2OAT_OPTIONS_KEY (std::string,                    SwapFile)
+ DEX2OAT_OPTIONS_KEY (int,                            SwapFileFd)
+ DEX2OAT_OPTIONS_KEY (unsigned int,                   SwapDexSizeThreshold)
+diff --git a/art/runtime/gc/space/image_space.cc b/art/runtime/gc/space/image_space.cc
+index fa68481..f2955c7 100644
+--- a/art/runtime/gc/space/image_space.cc
++++ b/art/runtime/gc/space/image_space.cc
+@@ -1854,7 +1854,7 @@ std::string ImageSpace::GetMultiImageBootClassPath(
+     size_t image_last_sep = (image_last_slash == std::string::npos)
+                                 ? image_last_at
+                                 : (image_last_at == std::string::npos)
+-                                      ? std::string::npos
++                                      ? image_last_slash
+                                       : std::max(image_last_slash, image_last_at);
+     // Note: whenever image_last_sep == npos, +1 overflow means using the full string.
+ 

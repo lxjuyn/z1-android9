@@ -1,0 +1,16 @@
+diff --git a/build/make/core/dex_preopt_odex_install.mk b/build/make/core/dex_preopt_odex_install.mk
+index ce91759..2ba326c 100644
+--- a/build/make/core/dex_preopt_odex_install.mk
++++ b/build/make/core/dex_preopt_odex_install.mk
+@@ -349,6 +349,11 @@ endif
+ # during the build, as opposed to compiled on the device.
+ LOCAL_DEX_PREOPT_FLAGS += --compilation-reason=prebuilt
+ 
++# Z1's host dexpreopt must not embed local build paths in app OAT metadata.
++ifeq ($(TARGET_PRODUCT),lineage_z1)
++LOCAL_DEX_PREOPT_FLAGS += --avoid-storing-invocation --avoid-storing-host-paths
++endif
++
+ $(built_odex): PRIVATE_DEX_PREOPT_FLAGS := $(LOCAL_DEX_PREOPT_FLAGS)
+ $(built_vdex): $(built_odex)
+ $(built_art): $(built_odex)

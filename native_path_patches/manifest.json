@@ -1,0 +1,14 @@
+[
+  {
+    "file": "external/protobuf/src/google/protobuf/compiler/cpp/cpp_file.cc",
+    "patch": "0001-protobuf-relative-line-directive.patch",
+    "base_sha256": "a1f81636cf4ea05aff6a57e65fb2eb565a024bd6ccca32305e95dd54f790e4f9",
+    "result_sha256": "ec41efedcba4ef2834119c490edb4c30f9e174f2f986aa5fece30481d4f65b33"
+  },
+  {
+    "file": "external/libchrome/libchrome_tools/include_generator.py",
+    "patch": "0002-libchrome-relative-line-directive.patch",
+    "base_sha256": "f1a2b39ad6d546655421dc22844899dcb269b316ea506e16204b66dd6f587cce",
+    "result_sha256": "94b3ece05b4ccafac5dee1c692bab7207c8c9ef134eaea59a003a01b8dfb2ee1"
+  }
+]

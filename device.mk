@@ -5,17 +5,29 @@ PRODUCT_SOONG_NAMESPACES += $(DEVICE_PATH)
 # content under /system/vendor and does not impose Treble launch requirements.
 PRODUCT_SHIPPING_API_LEVEL := 19
 
+# Keep absolute build-tree paths out of the Z1 boot OAT metadata.
+PRODUCT_DEX_PREOPT_BOOT_FLAGS += --avoid-storing-invocation --avoid-storing-host-paths
+
 # Android 9 uses a classic root ramdisk on this device. The kernel's DT
 # bootargs must provide androidboot.hardware=z1 so init imports init.z1.rc.
 ifeq ($(Z1_KERNEL_VARIANT),stock)
 Z1_MT6572_RADIO := $(DEVICE_PATH)/proprietary/mt6572
 Z1_MT6572_AUDIO := $(DEVICE_PATH)/proprietary/mt6572/audio
 Z1_MT6572_BLUETOOTH := $(DEVICE_PATH)/proprietary/mt6572/bluetooth
+# The stock mount gate runs from ramdisk before Android services. Require the
+# wrapper-built static ARM helper so this init action cannot be packaged alone.
+ifeq ($(strip $(Z1_STOCK_MOUNT_GUARD)),)
+$(error Z1_STOCK_MOUNT_GUARD is required for stock builds; use scripts/build_z1.sh)
+endif
+ifeq ($(wildcard $(Z1_STOCK_MOUNT_GUARD)),)
+$(error stock mount guard not found at '$(Z1_STOCK_MOUNT_GUARD)'; build it with stock/build_mount_guard.sh)
+endif
 PRODUCT_COPY_FILES += \
     $(DEVICE_PATH)/stock/init.z1.rc:root/init.z1.rc \
     $(DEVICE_PATH)/stock/fstab.z1:root/fstab.z1 \
     $(DEVICE_PATH)/stock/ueventd.z1.rc:root/ueventd.z1.rc \
     $(DEVICE_PATH)/stock/z1_fbcon_takeover.sh:root/z1_fbcon_takeover.sh \
+    $(Z1_STOCK_MOUNT_GUARD):root/z1_stock_mount_guard \
     $(Z1_MT6572_RADIO)/bin/wmt_loader:$(TARGET_COPY_OUT_SYSTEM)/bin/wmt_loader \
     $(Z1_MT6572_RADIO)/bin/6620_launcher:$(TARGET_COPY_OUT_SYSTEM)/bin/6620_launcher \
     $(Z1_MT6572_RADIO)/etc/firmware/WMT_SOC.cfg:$(TARGET_COPY_OUT_SYSTEM)/etc/firmware/WMT_SOC.cfg \
