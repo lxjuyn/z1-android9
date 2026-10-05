@@ -12,8 +12,10 @@ endif
 
 # The original Z1 kernel exposes Binder protocol 7, but no hwbinder context or
 # scatter/gather transactions. Keep passthrough libraries for clients and omit
-# the remote HIDL server processes in this profile. BatteryService polls the
-# stock power_supply sysfs directly. Linux7 keeps the standard service set.
+# remote HIDL server processes in this profile. The generic healthd also
+# publishes a remote Health HIDL and is critical; without hwbinder it crash-loops
+# and can reboot the device. BatteryService polls stock power_supply sysfs.
+# Linux7 keeps the standard service set.
 ifeq ($(Z1_KERNEL_VARIANT),stock)
 Z1_STOCK_REMOTE_HIDL_SERVERS := \
     android.hardware.audio@2.0-service \
@@ -28,6 +30,9 @@ Z1_STOCK_REMOTE_HIDL_SERVERS := \
     android.hardware.media.omx@1.0-service \
     vndservicemanager
 PRODUCT_PACKAGES_REMOVE += $(Z1_STOCK_REMOTE_HIDL_SERVERS)
+# The Android 9 healthd fallback also tries to register Health HIDL. The stock
+# product supplies battery telemetry through the patched BatteryService path.
+PRODUCT_PACKAGES_REMOVE += healthd
 endif
 
 TARGET_SCREEN_WIDTH := 240

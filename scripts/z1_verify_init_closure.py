@@ -173,6 +173,8 @@ def verify(args):
         names = [s['name'] for s in definitions]
         require(len(names) == len(set(names)), 'duplicate service definitions')
         if args.stock:
+            require('healthd' not in names,
+                    'stock image contains critical healthd without a hwbinder device')
             for service in definitions:
                 exe = service['executable']
                 unsupported = (service['name'] in ('hwservicemanager', 'vndservicemanager', 'hidl_memory', 'media.codec')
