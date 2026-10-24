@@ -5,7 +5,43 @@ import tempfile
 import unittest
 
 
-SCRIPT = Path(__file__).resolve().parents[1] / "stock/z1_fbcon_takeover.sh"
+ROOT = Path(__file__).resolve().parents[1]
+SCRIPT = ROOT / "stock/z1_fbcon_takeover.sh"
+
+
+class MainlineDisplayTakeoverTests(unittest.TestCase):
+    def test_mainline_profile_copies_both_scripts_to_ramdisk_root(self):
+        makefile = (ROOT / "device.mk").read_text()
+        mainline = makefile.split("else\nPRODUCT_COPY_FILES += \\", 1)[1]
+        mainline = mainline.split("endif", 1)[0]
+        for script in ("z1_display_takeover.sh", "z1_fbcon_takeover.sh"):
+            self.assertIn(
+                f"$(DEVICE_PATH)/stock/{script}:root/{script}", mainline)
+
+    def test_mainline_runs_synchronously_after_system_mount_before_boot(self):
+        init_rc = (ROOT / "rootdir/init.z1.rc").read_text()
+        fs_action = init_rc.split("on fs\n", 1)[1].split("\non ", 1)[0]
+        self.assertIn("mount_all /fstab.z1", fs_action)
+        post_fs_data = init_rc.split("on post-fs-data\n", 1)[1]
+        # Pie triggers boot after post-fs-data; boot starts core/main services,
+        # including SurfaceFlinger. Unlike a service or exec_background, exec
+        # completes this takeover before the later class starts.
+        self.assertEqual(post_fs_data.count(
+            "    exec u:r:init:s0 root root -- "
+            "/system/bin/sh /z1_display_takeover.sh\n"), 1)
+
+    def test_existing_wrapper_uses_graphics_mode_then_fbcon_fallback(self):
+        display_script = (ROOT / "stock/z1_display_takeover.sh").read_text()
+        graphics_mode = "/z1_bootdiag --graphics-mode"
+        fbcon_fallback = "/system/bin/sh /z1_fbcon_takeover.sh"
+        self.assertIn(graphics_mode, display_script)
+        self.assertIn(fbcon_fallback, display_script)
+        self.assertLess(display_script.index(graphics_mode),
+                        display_script.index(fbcon_fallback))
+        helper_source = (ROOT / "tools/z1_android9_bootdiag.c").read_text()
+        self.assertIn(
+            'if (argc == 2 && !strcmp(argv[1], "--graphics-mode")) '
+            'return graphics_mode();', helper_source)
 
 
 class FbconTakeoverTests(unittest.TestCase):

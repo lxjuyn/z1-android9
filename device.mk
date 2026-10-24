@@ -76,7 +76,9 @@ PRODUCT_COPY_FILES += \
     $(DEVICE_PATH)/rootdir/init.z1.rc:root/init.z1.rc \
     $(DEVICE_PATH)/rootdir/fstab.z1:root/fstab.z1 \
     $(DEVICE_PATH)/rootdir/init.z1.network.rc:root/init.z1.network.rc \
-    $(DEVICE_PATH)/rootdir/ueventd.z1.rc:root/ueventd.z1.rc
+    $(DEVICE_PATH)/rootdir/ueventd.z1.rc:root/ueventd.z1.rc \
+    $(DEVICE_PATH)/stock/z1_fbcon_takeover.sh:root/z1_fbcon_takeover.sh \
+    $(DEVICE_PATH)/stock/z1_display_takeover.sh:root/z1_display_takeover.sh
 PRODUCT_PROPERTY_OVERRIDES += ro.hardware.egl=mesa
 PRODUCT_PACKAGES += libGLES_mesa gallium_dri
 endif
