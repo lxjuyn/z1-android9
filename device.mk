@@ -97,6 +97,8 @@ PRODUCT_PROPERTY_OVERRIDES += \
     ro.vold.z1_fuse=true \
     ro.sys.sdcardfs=false
 
+$(call inherit-product, $(LOCAL_PATH)/graphics/wallpaper/default.mk)
+
 # FB_SIMPLE exposes Z1's 240x320 RGB565 display through /dev/fb0. The
 # board gralloc allocates ashmem-backed buffers; HWC1 asks SurfaceFlinger to
 # compose in software and posts completed scan lines into the padded fbdev.

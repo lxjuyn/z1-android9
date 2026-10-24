@@ -224,6 +224,19 @@ def patch_ramdisk(original_body):
     return gzip.compress(archive, compresslevel=9, mtime=0), added, changed
 
 
+def update_ramdisk_records(body, updates):
+    before = records(gzip.decompress(body))
+    out = []
+    for record in before:
+        if record.name in updates:
+            out.append(encode(record.name, record.fields, updates[record.name]))
+        else:
+            out.append(record.raw)
+    archive = b"".join(out)
+    archive += bytes(-len(archive) % 512)
+    return gzip.compress(archive, compresslevel=9, mtime=0)
+
+
 def normalized_dts(path):
     result = subprocess.run(["dtc", "--quiet", "-I", "dtb", "-O", "dts", str(path)],
                             check=True, capture_output=True)
@@ -253,7 +266,7 @@ def patch_dtb(original, body_size, directory):
     return updated, end
 
 
-def repair(input_path, output_dir, expected_sha256=None):
+def repair(input_path, output_dir, expected_sha256=None, restorecon_etc=False):
     if not input_path.is_file() or output_dir.exists() or not output_dir.parent.is_dir():
         raise ValueError("input must exist; output directory must be new with an existing parent")
     base_data = input_path.read_bytes()
@@ -266,6 +279,18 @@ def repair(input_path, output_dir, expected_sha256=None):
         old_rd_path.write_bytes(base.ramdisk)
         check_ramdisk(old_rd_path, require_android_logging=True)
         body, added, changed = patch_ramdisk(base.ramdisk[MTK_HEADER_SIZE:])
+        if restorecon_etc:
+            rc_index = ramdisk_index([(r.name, r.fields, r.data) for r in records(gzip.decompress(body))])
+            defaults = rc_index.get("default.prop")
+            if defaults is None or b"selinux.restorecon_recursive=" in defaults[2]:
+                raise ValueError("cannot safely select /system/etc for init SELinux restore")
+            body = update_ramdisk_records(body, {b"default.prop": defaults[2] + b"selinux.restorecon_recursive=/system/etc\n"})
+            changed.append("default.prop")
+        final_index = ramdisk_index([(r.name, r.fields, r.data) for r in records(gzip.decompress(body))])
+        if restorecon_etc:
+            expected_defaults = rc_index["default.prop"][2] + b"selinux.restorecon_recursive=/system/etc\n"
+            if final_index["default.prop"][2] != expected_defaults:
+                raise ValueError("SELinux restore property readback differs")
         dtb, end = patch_dtb(base.dtb, len(body), work)
         kernel_header = bytearray(base.kernel[:MTK_HEADER_SIZE])
         struct.pack_into("<I", kernel_header, 4, len(base.zimage) + len(dtb))
@@ -318,6 +343,7 @@ def repair(input_path, output_dir, expected_sha256=None):
                 "new_rootfs_body_bytes": len(body),
                 "watchdog_configuration": "unchanged",
                 "dexopt_changes": False,
+                "selinux_restorecon_recursive": "/system/etc" if restorecon_etc else None,
             },
             "ramdisk_changes": {
                 "added": added, "modified": changed, "removed": [],
@@ -342,8 +368,9 @@ def main():
     parser.add_argument("original_boot", type=Path, help="pristine R9 boot.img, not a fix3 derivative")
     parser.add_argument("output_dir", type=Path, help="new directory for boot.img, DTB, ROOTFS and manifest")
     parser.add_argument("--expected-sha256", help="optionally pin the exact original R9 input hash")
+    parser.add_argument("--restorecon-etc", action="store_true", help="let Android init label /system/etc additions from existing file_contexts")
     args = parser.parse_args()
-    repair(args.original_boot, args.output_dir, args.expected_sha256)
+    repair(args.original_boot, args.output_dir, args.expected_sha256, args.restorecon_etc)
 
 
 if __name__ == "__main__":

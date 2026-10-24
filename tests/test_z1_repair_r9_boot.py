@@ -130,6 +130,17 @@ class RepairR9BootTests(unittest.TestCase):
             self.assertFalse(manifest["flashing_performed"])
             self.assertFalse(manifest["preserved"]["dexopt_changes"])
 
+    def test_selinux_restore_is_opt_in_and_preserved(self):
+        with tempfile.TemporaryDirectory(prefix="z1-r9-restorecon-") as temp:
+            output = Path(temp) / "candidate"
+            manifest = repair.repair(R9, output, EXPECTED_R9, restorecon_etc=True)
+            candidate = repair.parse_boot((output / "boot.img").read_bytes())
+            index = ramdisk_index([(r.name, r.fields, r.data) for r in repair.records(gzip.decompress(candidate.ramdisk[512:]))])
+            self.assertEqual(index["default.prop"][2], self.before["default.prop"][2] + b"selinux.restorecon_recursive=/system/etc\n")
+            self.assertEqual(sorted(manifest["ramdisk_changes"]["modified"]), ["default.prop", "init.z1.rc"])
+            self.assertEqual(manifest["preserved"]["selinux_restorecon_recursive"], "/system/etc")
+            self.assertIn(b"selinux.restorecon_recursive=/system/etc\n", index["default.prop"][2])
+
     def test_rejects_existing_output_and_wrong_baseline(self):
         with self.assertRaisesRegex(ValueError, "output directory must be new"):
             repair.repair(R9, self.output, EXPECTED_R9)
