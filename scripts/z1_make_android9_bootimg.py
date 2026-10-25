@@ -114,7 +114,10 @@ def canonical_ramdisk_path(name):
     return name.decode()
 
 
-def check_android_init_rcs(index):
+ADB_DEBUG_BLOCK = b"""\n# Debug-only ADB beside the independent diagnostic ACM. No ADB keys are added.\non init\n    mkdir /dev/usb-ffs 0755 root root\n    mkdir /dev/usb-ffs/adb 0770 shell shell\n    mount functionfs adb /dev/usb-ffs/adb uid=2000,gid=2000,rmode=0770,fmode=0660\n    start adbd\n\nservice adbd /system/bin/adbd\n    class core\n    socket adbd stream 660\n    user shell\n    group shell\n    disabled\n    seclabel u:r:adbd:s0\n\n"""
+
+
+def check_android_init_rcs(index, allow_adb=False):
     """Reject stale Android USB init rules from the final packaged ramdisk."""
     if "init.rc" not in index:
         fail("final Android ramdisk lacks root init.rc")
@@ -141,6 +144,10 @@ def check_android_init_rcs(index):
         if not path.endswith(".rc"):
             continue
         # init treats '#' as a comment marker; scan active text only.
+        if path == "init.z1.rc" and allow_adb:
+            if data.count(ADB_DEBUG_BLOCK) != 1:
+                fail("ADB debug exception requires exactly one approved init block")
+            data = data.replace(ADB_DEBUG_BLOCK, b"\n", 1)
         active = b"\n".join(line.split(b"#", 1)[0]
                              for line in data.splitlines())
         if forbidden_rc.search(active):
@@ -164,7 +171,7 @@ def check_android_init_rcs(index):
                     fail(f"final Android ramdisk enables a generic USB config in {path}")
 
 
-def check_android_diagnostics(body):
+def check_android_diagnostics(body, allow_adb=False):
     if body.startswith(b"\x1f\x8b"):
         archive = gzip.decompress(body)
     elif body.startswith(b"\xfd7zXZ\x00"):
@@ -177,7 +184,7 @@ def check_android_diagnostics(body):
         if key in index:
             fail(f"duplicate Android ramdisk path: {key}")
         index[key] = (fields, data)
-    check_android_init_rcs(index)
+    check_android_init_rcs(index, allow_adb=allow_adb)
     rc = index.get("init.z1.rc", (None, None))[1]
     if rc is None:
         fail("Android ramdisk lacks init.z1.rc; inject ACM diagnostics before MTK wrapping")
@@ -221,7 +228,7 @@ def check_android_diagnostics(body):
         fail("/z1_bootdiag has no PT_LOAD segment")
 
 
-def check_ramdisk(path, require_android_logging=True):
+def check_ramdisk(path, require_android_logging=True, allow_adb=False):
     blob = path.read_bytes()
     if len(blob) <= MTK_HEADER_SIZE or blob[:4] != MTK_MAGIC:
         fail("ramdisk needs a 512-byte MTK ROOTFS header")
@@ -233,7 +240,7 @@ def check_ramdisk(path, require_android_logging=True):
     body = blob[MTK_HEADER_SIZE:]
     check_cpio(body)
     if require_android_logging:
-        check_android_diagnostics(body)
+        check_android_diagnostics(body, allow_adb=allow_adb)
     return blob, body_size
 
 

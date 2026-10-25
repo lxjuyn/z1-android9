@@ -136,10 +136,11 @@ class RepairR9BootTests(unittest.TestCase):
             manifest = repair.repair(R9, output, EXPECTED_R9, restorecon_etc=True)
             candidate = repair.parse_boot((output / "boot.img").read_bytes())
             index = ramdisk_index([(r.name, r.fields, r.data) for r in repair.records(gzip.decompress(candidate.ramdisk[512:]))])
-            self.assertEqual(index["default.prop"][2], self.before["default.prop"][2] + b"selinux.restorecon_recursive=/system/etc\n")
-            self.assertEqual(sorted(manifest["ramdisk_changes"]["modified"]), ["default.prop", "init.z1.rc"])
+            self.assertIn(b"    restorecon_recursive /system/etc\n    exec u:r:init:s0 root root -- /system/bin/sh /z1_display_takeover.sh\n", index["init.z1.rc"][2])
+            self.assertNotIn(b"selinux.restorecon_recursive", index["default.prop"][2])
+            self.assertEqual(manifest["ramdisk_changes"]["modified"], ["init.z1.rc"])
             self.assertEqual(manifest["preserved"]["selinux_restorecon_recursive"], "/system/etc")
-            self.assertIn(b"selinux.restorecon_recursive=/system/etc\n", index["default.prop"][2])
+            self.assertIn(b"restorecon_recursive /system/etc\n", index["init.z1.rc"][2])
 
     def test_driver_evidence_requires_complete_opt_in(self):
         with tempfile.TemporaryDirectory(prefix="z1-touch-gate-") as temp:

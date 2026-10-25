@@ -21,7 +21,7 @@ trap 'rm -f -- "$TEMP"' EXIT
 SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-0} "$CC" \
     "${FLAGS[@]}" -o "$TEMP" "$SOURCE"
 
-HEADER=$("$READELF" -h "$TEMP")
+HEADER=$(LC_ALL=C "$READELF" -h "$TEMP")
 grep -Eq 'Class:[[:space:]]+ELF32' <<<"$HEADER" || {
     echo "helper is not ELF32" >&2; exit 1;
 }
@@ -35,7 +35,7 @@ if "$READELF" -l "$TEMP" | grep -q 'INTERP'; then
     echo "helper must not depend on /system/bin/linker" >&2
     exit 1
 fi
-ATTRIBUTES=$("$READELF" -A "$TEMP")
+ATTRIBUTES=$(LC_ALL=C "$READELF" -A "$TEMP")
 grep -Eq 'Tag_CPU_arch:[[:space:]]+v7' <<<"$ATTRIBUTES" || {
     echo "helper must target ARMv7-A" >&2; exit 1;
 }

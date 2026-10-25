@@ -114,6 +114,7 @@ static void ext4magic(const char *path)
 /* The ACM path deliberately depends only on ramdisk and kernel interfaces. */
 #define GADGET_ROOT "/config/usb_gadget"
 #define DIAG_GADGET GADGET_ROOT "/z1diag"
+#define ADB_EP0 "/dev/usb-ffs/adb/ep0"
 #define HISTORY_SIZE (2U * 1024U * 1024U)
 #ifndef DIAG_FIFO
 #define DIAG_FIFO "/dev/z1_diag_stream"
@@ -447,6 +448,8 @@ static int folder(const char *path)
     return -1;
 }
 
+static int enable_composite_adb = 1;
+
 static int attribute(const char *name, const char *value)
 {
     char path[512];
@@ -495,7 +498,8 @@ static int setup_acm(void)
 {
     static const char *const dirs[] = {
         DIAG_GADGET, DIAG_GADGET "/strings/0x409", DIAG_GADGET "/configs/c.1",
-        DIAG_GADGET "/configs/c.1/strings/0x409", DIAG_GADGET "/functions/acm.usb0"
+        DIAG_GADGET "/configs/c.1/strings/0x409", DIAG_GADGET "/functions/acm.usb0",
+        DIAG_GADGET "/functions/ffs.adb"
     };
     char udc[256] = "", ours[256], target[512];
     DIR *dir;
@@ -508,7 +512,12 @@ static int setup_acm(void)
     busy = bound_gadget(ours, sizeof(ours));
     if (busy < 0) return -1;
     if (busy) { errno = EBUSY; return -1; }
-    if (ours[0]) return 0;
+    if (ours[0] && !enable_composite_adb) return 0;
+    if (enable_composite_adb) {
+        struct stat adb_ep;
+        if (stat(ADB_EP0, &adb_ep) < 0) { errno = ENODEV; return -1; }
+        if (!S_ISCHR(adb_ep.st_mode)) { errno = ENODEV; return -1; }
+    }
     dir = opendir("/sys/class/udc");
     if (!dir) return -1;
     while ((entry = readdir(dir))) {
@@ -520,13 +529,14 @@ static int setup_acm(void)
     closedir(dir);
     if (!udc[0]) { errno = ENODEV; return -1; }
     for (i = 0; i < sizeof(dirs) / sizeof(dirs[0]); ++i)
-        if (folder(dirs[i]) < 0) return -1;
+        if (!enable_composite_adb && strstr(dirs[i], "ffs.adb")) continue;
+        else if (folder(dirs[i]) < 0) return -1;
     if (attribute("idVendor", "0x0e8d") || attribute("idProduct", "0x2006") ||
         attribute("bcdUSB", "0x0200") || attribute("bcdDevice", "0x0100") ||
         attribute("strings/0x409/serialnumber", "Z1DIAG20261001") ||
         attribute("strings/0x409/manufacturer", "Z1") ||
-        attribute("strings/0x409/product", "Z1 Android9 diagnostic ACM") ||
-        attribute("configs/c.1/strings/0x409/configuration", "Kernel log") ||
+        attribute("strings/0x409/product", enable_composite_adb ? "Z1 Android9 ACM and ADB" : "Z1 Android9 diagnostic ACM") ||
+        attribute("configs/c.1/strings/0x409/configuration", enable_composite_adb ? "ACM and ADB" : "Kernel log") ||
         attribute("configs/c.1/MaxPower", "100")) return -1;
     if (symlink(DIAG_GADGET "/functions/acm.usb0", DIAG_GADGET "/configs/c.1/acm.usb0") < 0) {
         ssize_t n;
@@ -536,11 +546,17 @@ static int setup_acm(void)
         target[n] = 0;
         if (strcmp(target, DIAG_GADGET "/functions/acm.usb0")) { errno = EEXIST; return -1; }
     }
+    if (enable_composite_adb) {
+        struct stat adb_ep;
+        if (stat(ADB_EP0, &adb_ep) < 0) { errno = ENODEV; return -1; }
+        if (!S_ISCHR(adb_ep.st_mode)) { errno = ENODEV; return -1; }
+        if (symlink(DIAG_GADGET "/functions/ffs.adb", DIAG_GADGET "/configs/c.1/ffs.adb") < 0 && errno != EEXIST) return -1;
+    }
     /* Recheck ownership just before binding; kernel also refuses a busy UDC. */
     busy = bound_gadget(ours, sizeof(ours));
-    if (busy || ours[0]) { errno = EBUSY; return -1; }
+    if (busy || (ours[0] && !enable_composite_adb)) { errno = EBUSY; return -1; }
     if (attribute("UDC", udc) < 0) return -1;
-    acmlog("ACM bound; connect device USB after boot", 0);
+    acmlog(enable_composite_adb ? "ACM and ADB bound; connect device USB after adbd opens FunctionFS" : "ACM bound; connect device USB after boot", 0);
     return 0;
 }
 

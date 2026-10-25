@@ -25,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from z1_add_bootdiag import encode
 from z1_make_android9_bootimg import (
     BOOT_LIMIT, MTK_HEADER_SIZE, check_boot_header_cmdline, check_image,
-    check_ramdisk, dt_bootargs, dt_cell,
+    check_ramdisk, dt_bootargs, dt_cell, ADB_DEBUG_BLOCK,
 )
 from z1_make_stock_android9 import ramdisk_index, ramdisk_key
 from z1_prepare_android9_ramdisk import INITRD_START, check_newc
@@ -266,7 +266,7 @@ def patch_dtb(original, body_size, directory):
     return updated, end
 
 
-def repair(input_path, output_dir, expected_sha256=None, restorecon_etc=False, touch_probe=None, touch_module=None, touch_script=None):
+def repair(input_path, output_dir, expected_sha256=None, restorecon_etc=False, touch_probe=None, touch_module=None, touch_script=None, bootdiag=None, enable_adb=False):
     if touch_probe or touch_module:
         raise ValueError("large driver payloads belong in the system attachment, not the boot partition; use only --touch-script here")
     if not input_path.is_file() or output_dir.exists() or not output_dir.parent.is_dir():
@@ -281,18 +281,38 @@ def repair(input_path, output_dir, expected_sha256=None, restorecon_etc=False, t
         old_rd_path.write_bytes(base.ramdisk)
         check_ramdisk(old_rd_path, require_android_logging=True)
         body, added, changed = patch_ramdisk(base.ramdisk[MTK_HEADER_SIZE:])
+        if enable_adb:
+            if not bootdiag or not Path(bootdiag).is_file():
+                raise ValueError("composite ACM+ADB requires a rebuilt static bootdiag helper")
+            helper = Path(bootdiag).read_bytes()
+            if helper[:4] != b"\x7fELF" or helper[18:20] != b"\x28\x00" or b"PT_INTERP" in helper:
+                raise ValueError("composite bootdiag must be a static ARM32 ELF")
+            if b"ffs.adb" not in helper or b"ACM and ADB bound" not in helper:
+                raise ValueError("bootdiag lacks the composite ACM+ADB implementation")
+            current = ramdisk_index([(r.name, r.fields, r.data) for r in records(gzip.decompress(body))])
+            if b"service adbd " in current["init.z1.rc"][2]:
+                raise ValueError("ADB service is already configured")
+            rc_data = current["init.z1.rc"][2]
+            block = ADB_DEBUG_BLOCK
+            if rc_data.endswith(b"\n") is False:
+                raise ValueError("init.z1.rc has no final newline")
+            body = update_ramdisk_records(body, {b"init.z1.rc": rc_data + block, b"z1_bootdiag": helper})
+            changed.append("z1_bootdiag")
+            if ramdisk_index([(r.name, r.fields, r.data) for r in records(gzip.decompress(body))])["z1_bootdiag"][2] != helper:
+                raise ValueError("composite bootdiag readback differs")
         if restorecon_etc:
             rc_index = ramdisk_index([(r.name, r.fields, r.data) for r in records(gzip.decompress(body))])
-            defaults = rc_index.get("default.prop")
-            if defaults is None or b"selinux.restorecon_recursive=" in defaults[2]:
-                raise ValueError("cannot safely select /system/etc for init SELinux restore")
-            body = update_ramdisk_records(body, {b"default.prop": defaults[2] + b"selinux.restorecon_recursive=/system/etc\n"})
-            changed.append("default.prop")
+            rc_data = rc_index["init.z1.rc"][2]
+            command = b"    restorecon_recursive /system/etc\n"
+            marker = TAKEOVER_COMMAND + b"\n"
+            if rc_data.count(marker) != 1 or b"restorecon_recursive" in rc_data:
+                raise ValueError("cannot insert the init SELinux restore command")
+            body = update_ramdisk_records(body, {b"init.z1.rc": rc_data.replace(marker, command + marker, 1)})
         final_index = ramdisk_index([(r.name, r.fields, r.data) for r in records(gzip.decompress(body))])
         if restorecon_etc:
-            expected_defaults = rc_index["default.prop"][2] + b"selinux.restorecon_recursive=/system/etc\n"
-            if final_index["default.prop"][2] != expected_defaults:
-                raise ValueError("SELinux restore property readback differs")
+            expected_rc = rc_index["init.z1.rc"][2].replace(TAKEOVER_COMMAND + b"\n", b"    restorecon_recursive /system/etc\n" + TAKEOVER_COMMAND + b"\n", 1)
+            if final_index["init.z1.rc"][2] != expected_rc:
+                raise ValueError("SELinux restore init command readback differs")
         if touch_script:
             if not Path(touch_script).is_file():
                 raise ValueError("touch evidence script is missing")
@@ -325,7 +345,7 @@ def repair(input_path, output_dir, expected_sha256=None, restorecon_etc=False, t
         ramdisk = bytes(rd_header) + body
         rd_path = work / "ramdisk-mtk.img"
         rd_path.write_bytes(ramdisk)
-        check_ramdisk(rd_path, require_android_logging=True)
+        check_ramdisk(rd_path, require_android_logging=True, allow_adb=enable_adb)
         header = bytearray(base.data[:base.page])
         struct.pack_into("<I", header, 8, len(kernel))
         struct.pack_into("<I", header, 16, len(ramdisk))
@@ -370,6 +390,7 @@ def repair(input_path, output_dir, expected_sha256=None, restorecon_etc=False, t
                 "dexopt_changes": False,
                 "selinux_restorecon_recursive": "/system/etc" if restorecon_etc else None,
                 "touch_evidence": {"manual_only": True, "target": "i2c1/0x15", "node_enabled": False, "automatic_probe": False} if touch_script else None,
+                "adb_debug": {"enabled": bool(enable_adb), "composite_acm": bool(enable_adb), "secure_authentication_retained": True, "keys_added": False},
             },
             "ramdisk_changes": {
                 "added": added, "modified": changed, "removed": [],
@@ -398,8 +419,10 @@ def main():
     parser.add_argument("--touch-probe", type=Path, help="prebuilt static ARM32 i2cprobe; opt-in driver evidence")
     parser.add_argument("--touch-module", type=Path, help="R9-matching edt-ft5x06.ko; packaged, never auto-loaded")
     parser.add_argument("--touch-script", type=Path, help="manual targeted evidence script")
+    parser.add_argument("--enable-adb", action="store_true", help="enable ADB beside diagnostic ACM; requires --bootdiag")
+    parser.add_argument("--bootdiag", type=Path, help="rebuilt static composite ACM+ADB helper")
     args = parser.parse_args()
-    repair(args.original_boot, args.output_dir, args.expected_sha256, args.restorecon_etc, args.touch_probe, args.touch_module, args.touch_script)
+    repair(args.original_boot, args.output_dir, args.expected_sha256, args.restorecon_etc, args.touch_probe, args.touch_module, args.touch_script, args.bootdiag, args.enable_adb)
 
 
 if __name__ == "__main__":
