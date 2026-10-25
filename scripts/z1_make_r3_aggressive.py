@@ -12,6 +12,10 @@ R3 layers, on top of the already device-verified R1R2 boot image:
     transport bring-up; everything it needs already lives on the R9 system).
   - Composite ACM+ADB bootdiag helper (rebuilt static binary) with an
     ACM-only fallback if adbd's FunctionFS endpoint never appears.
+  - R3d --extra-module: optional additional out-of-tree modules (first user:
+    z1_gpio_hunt, runtime GPIO scan for the touch I2C hunt) packed root:root
+    0644 before the cpio TRAILER; --dtb replaces the appended DTB wholesale
+    (R3d: corrected bootargs) with initrd-end still recomputed.
 
 The zImage, appended DTB (except linux,initrd-end), boot cmdline and all
 other ramdisk records stay byte-identical to the flashed R1R2 baseline.
@@ -47,10 +51,15 @@ R1R2_SHA256 = "4299527db26c644cf4d9ec682fd54aacbb222594b793a14ca2a123ce6d77c5d7"
 POST_FS_BLOCK = b"""
 # R3: never suspend (no wakeup source on this DT; suspend kills USB ACM and
 # freezes userspace behind the MCU panel's static GRAM frame).
+# R3d: display takeover also runs early (idempotent, background) so the fbcon
+# '_' cursor is gone within seconds of /system mounting instead of surviving
+# until boot_completed minutes later; the boot_completed exec remains as the
+# second, verifying pass.
 on post-fs
     write /sys/power/wake_lock z1diag
     start z1_heartbeat
     start z1_logpersist
+    exec_background u:r:init:s0 root root -- /system/bin/sh /z1_display_takeover.sh
     exec_background u:r:init:s0 root root -- /system/bin/sh /system/bin/z1_linux7_radio_init.sh
     exec_background u:r:init:s0 root root -- /system/bin/sh /z1_radio_finish.sh
     exec_background u:r:init:s0 root root -- /system/bin/sh /z1_touch_load.sh
@@ -155,7 +164,8 @@ def patch_default_prop(prop, with_low_ram):
     return prop + b"ro.config.low_ram=true\n"
 
 
-def rebuild_ramdisk(body, module_path, bootdiag_path, with_adb, with_low_ram):
+def rebuild_ramdisk(body, module_path, bootdiag_path, with_adb, with_low_ram,
+                    extra_modules=()):
     before = records(gzip.decompress(body))
     index = ramdisk_index([(r.name, r.fields, r.data) for r in before])
 
@@ -173,6 +183,20 @@ def rebuild_ramdisk(body, module_path, bootdiag_path, with_adb, with_low_ram):
     module = module_path.read_bytes()
     if VERMAGIC not in module:
         raise ValueError("z1_cst836u.ko vermagic does not match the R9 kernel")
+
+    # R3d --extra-module: additional out-of-tree modules (e.g. z1_gpio_hunt)
+    # packed the same way as the touch module: root:root 0644 via new_record,
+    # inserted before TRAILER!!!, vermagic asserted against the R9 kernel.
+    extra_blobs = []
+    seen = {MODULE_NAME}
+    for path in extra_modules:
+        blob = path.read_bytes()
+        if VERMAGIC not in blob:
+            raise ValueError(f"{path.name} vermagic does not match the R9 kernel")
+        if path.name.encode() in seen:
+            raise ValueError(f"duplicate extra module name: {path.name}")
+        seen.add(path.name.encode())
+        extra_blobs.append((path.name.encode(), blob))
 
     # Replace (not just update) the records whose content AND metadata change:
     # the R1R2 baseline shipped the helper and scripts owned by uid/gid 1000.
@@ -192,6 +216,9 @@ def rebuild_ramdisk(body, module_path, bootdiag_path, with_adb, with_low_ram):
         (b"z1_logpersist.sh", (ROOT / "stock/z1_logpersist.sh").read_bytes(), 0o755),
         (b"z1_radio_finish.sh", (ROOT / "stock/z1_radio_finish.sh").read_bytes(), 0o755),
     ]
+    # Extra modules join the additions list (all landed root:root 0644/0755 by
+    # new_record, all emitted before the TRAILER!!! record).
+    additions += [(name, blob, 0o644) for name, blob in extra_blobs]
     names = [r.name for r in listing]
     for name, _, _ in additions:
         if name in names:
@@ -218,10 +245,15 @@ def rebuild_ramdisk(body, module_path, bootdiag_path, with_adb, with_low_ram):
     return gzip.compress(raw, compresslevel=9, mtime=0), additions
 
 
-def build(base: Boot, module_path, bootdiag_path, directory, with_adb, with_low_ram):
+def build(base: Boot, module_path, bootdiag_path, directory, with_adb, with_low_ram, dtb_override=None, extra_modules=()):
     body, additions = rebuild_ramdisk(base.ramdisk[MTK_HEADER_SIZE:], module_path,
-                                      bootdiag_path, with_adb, with_low_ram)
-    dtb, end = patch_dtb(base.dtb, len(body), directory)
+                                      bootdiag_path, with_adb, with_low_ram,
+                                      extra_modules=extra_modules)
+    # dtb_override arrives as a Path (argparse); patch_dtb() takes bytes.
+    # R3d fix: the feature had never been exercised and crashed on
+    # write_bytes(Path) before this read.
+    source_dtb = dtb_override.read_bytes() if dtb_override is not None else base.dtb
+    dtb, end = patch_dtb(source_dtb, len(body), directory)
 
     kernel_header = bytearray(base.kernel[:MTK_HEADER_SIZE])
     struct.pack_into("<I", kernel_header, 4, len(base.zimage) + len(dtb))
@@ -268,6 +300,12 @@ def build(base: Boot, module_path, bootdiag_path, directory, with_adb, with_low_
             raise ValueError(f"ramdisk readback missing {key}")
     if VERMAGIC not in verify["z1_cst836u.ko"][2]:
         raise ValueError("module vermagic missing from final ramdisk")
+    for path in extra_modules:
+        key = path.name
+        if key not in verify:
+            raise ValueError(f"ramdisk readback missing extra module {key}")
+        if VERMAGIC not in verify[key][2]:
+            raise ValueError(f"extra module {key} vermagic missing from final ramdisk")
     if (b"ro.config.low_ram=true" in verify["default.prop"][2]) != with_low_ram:
         raise ValueError("default.prop low_ram state does not match the requested mode")
     if b"ro.product.cpu.abilist32=armeabi-v7a,armeabi\n" not in verify["default.prop"][2]:
@@ -292,6 +330,16 @@ def main():
     parser.add_argument("--low-ram", action="store_true",
                         help="set ro.config.low_ram=true (R3 device suspect "
                              "for the boot_completed/display regression)")
+    parser.add_argument("--dtb", type=Path, default=None,
+                        help="replace the appended DTB wholesale (initrd-end "
+                             "still patched); its /chosen bootargs must equal "
+                             "the baseline cmdline byte for byte")
+    parser.add_argument("--extra-module", type=Path, action="append", default=[],
+                        metavar="KO",
+                        help="additional out-of-tree module to pack into the "
+                             "ramdisk as root:root 0644 before the TRAILER "
+                             "(repeatable); its vermagic must match the R9 "
+                             "kernel (R3d: z1_gpio_hunt)")
     args = parser.parse_args()
 
     data = args.input.read_bytes()
@@ -304,7 +352,9 @@ def main():
         work = Path(temp)
         image, ramdisk, dtb, end, _ = build(base, args.module, args.bootdiag, work,
                                             with_adb=args.composite_adb,
-                                            with_low_ram=args.low_ram)
+                                            with_low_ram=args.low_ram,
+                                            dtb_override=args.dtb,
+                                            extra_modules=args.extra_module)
 
     outputs = {"boot.img": image, "ramdisk-mtk.img": ramdisk, "mt6572-z1.dtb": dtb}
     for name, blob in outputs.items():
@@ -313,12 +363,15 @@ def main():
     manifest = {
         "status": "HOST_PACKAGE_PASS_NOT_DEVICE_VERIFIED",
         "input_baseline": {"name": args.input.name, "sha256": sha(data)},
+        "dtb_override": {"sha256": sha(args.dtb.read_bytes())} if args.dtb else None,
         "outputs": {n: {"bytes": len(b), "sha256": sha(b)} for n, b in outputs.items()},
         "new_initrd_end": f"{end:#x}",
         "initrd_start": f"{INITRD_START:#x}",
         "ramdisk_body_bytes": len(ramdisk) - MTK_HEADER_SIZE,
         "module": {"name": "z1_cst836u.ko", "sha256": sha(args.module.read_bytes()),
                    "driver": "polled CST836U (FT6206 protocol) @0x15, no IRQ dependency"},
+        "extra_modules": [{"name": p.name, "sha256": sha(p.read_bytes())}
+                          for p in args.extra_module],
         "bootdiag": {"sha256": sha(args.bootdiag.read_bytes()),
                      "composite": args.composite_adb,
                      "acm_only": not args.composite_adb},

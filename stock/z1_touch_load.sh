@@ -2,12 +2,33 @@
 # R3: load the polled z1_cst836u touch driver. The module instantiates its
 # own i2c client at 0x15 on whichever adapter ACKs, so this only loads it,
 # reports the outcome, and dumps the evidence needed to recalibrate axes.
+# R3d: the runtime GPIO hunter (z1_gpio_hunt) is loaded FIRST; it scans for
+# the touch I2C GPIO muxing during its 5-minute kernel-side window and
+# self-exits. Its failure is deliberately non-blocking: the touch driver
+# below must still load on any pre-R3d ramdisk or a broken hunt module.
 
 log() { printf '<6>[z1touch] %s\n' "$*" > /dev/kmsg 2>/dev/null || true; }
 filelog() { printf '%s %s\n' "$(date '+%H:%M:%S')" "$*" >> /data/local/z1diag/touch.log 2>/dev/null; \
             printf '%s %s\n' "$(date '+%H:%M:%S')" "$*" >> /cache/z1diag/touch.log 2>/dev/null; true; }
 
-log "R3c touch load starting (kernel $(cat /proc/sys/kernel/osrelease 2>/dev/null))"
+# R3d GPIO hunt: before anything touch-related. Same R3b lesson applies (no
+# /tmp redirections on the initramfs; capture via command substitution).
+if [ -d /sys/module/z1_gpio_hunt ]; then
+    log "gpio hunt already loaded"
+elif [ -f /z1_gpio_hunt.ko ]; then
+    herr=$(insmod /z1_gpio_hunt.ko 2>&1)
+    if [ $? -eq 0 ]; then
+        log "z1_gpio_hunt insmod OK (5-minute scan window running)"
+        filelog "gpio hunt insmod OK"
+    else
+        log "z1_gpio_hunt insmod FAILED (non-blocking): $herr"
+        filelog "gpio hunt insmod FAILED: $herr"
+    fi
+else
+    log "/z1_gpio_hunt.ko not on this ramdisk; gpio hunt skipped (non-blocking)"
+fi
+
+log "R3d touch load starting (kernel $(cat /proc/sys/kernel/osrelease 2>/dev/null))"
 
 # Retry: an early post-fs run can race slower boot-class work.
 # NOTE: capture insmod output via command substitution - /tmp does not exist
