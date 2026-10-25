@@ -52,6 +52,7 @@ on post-fs
     start z1_heartbeat
     start z1_logpersist
     exec_background u:r:init:s0 root root -- /system/bin/sh /system/bin/z1_linux7_radio_init.sh
+    exec_background u:r:init:s0 root root -- /system/bin/sh /z1_radio_finish.sh
     exec_background u:r:init:s0 root root -- /system/bin/sh /z1_touch_load.sh
 
 service z1_heartbeat /system/bin/sh /z1_heartbeat.sh
@@ -73,7 +74,7 @@ HEARTBEAT_MARKER = b"z1_heartbeat"
 RADIO_MARKER = b"z1_linux7_radio_init.sh"
 WAKELOCK_MARKER = b"/sys/power/wake_lock"
 PM_GUARD_EXEC = (
-    b"    exec u:r:init:s0 root root -- /system/bin/sh /z1_pm_guard.sh\n"
+    b"    exec_background u:r:init:s0 root root -- /system/bin/sh /z1_pm_guard.sh\n"
 )
 TOUCH_EXEC = (
     b"    exec u:r:init:s0 root root -- /system/bin/sh /z1_touch_load.sh\n"
@@ -101,9 +102,12 @@ def patch_init_z1_rc(rc, with_adb):
         raise ValueError("baseline init.z1.rc already has an adbd service")
 
     # 1. Rewrite the touch exec line and add the pm guard right after it.
+    #    exec_background from R3c on: a blocking exec in a boot_completed
+    #    action stalls the init main loop (service restarts, property sets)
+    #    for the whole script runtime.
     if TOUCH_EXEC not in rc:
         raise ValueError("baseline init.z1.rc lacks the R1R2 touch exec line")
-    rc = rc.replace(TOUCH_EXEC, TOUCH_EXEC + PM_GUARD_EXEC, 1)
+    rc = rc.replace(TOUCH_EXEC, PM_GUARD_EXEC, 1)
 
     # 2. Append the post-fs block; ADB block only in composite mode (R3
     # device evidence: composite never bound and left the board USB-blind).
@@ -122,6 +126,26 @@ def patch_default_prop(prop, with_low_ram):
     if b"ro.adb.secure=1" not in prop:
         raise ValueError("baseline default.prop lacks ro.adb.secure=1 to replace")
     prop = prop.replace(b"ro.adb.secure=1", b"ro.adb.secure=0", 1)
+
+    # R3b device evidence: a restarted zygote aborted with an EMPTY
+    # ro.product.cpu.abilist32 even though /system/build.prop carries the
+    # full set. Setting them here (earliest property source) removes the
+    # whole failure class: app_process can never see them unset again.
+    for line in (b"ro.product.cpu.abi=armeabi-v7a",
+                 b"ro.product.cpu.abi2=armeabi",
+                 b"ro.product.cpu.abilist=armeabi-v7a,armeabi",
+                 b"ro.product.cpu.abilist32=armeabi-v7a,armeabi"):
+        if line + b"\n" in prop:
+            raise ValueError(f"default.prop already contains {line.decode()}")
+    prop += (b"ro.product.cpu.abi=armeabi-v7a\n"
+             b"ro.product.cpu.abi2=armeabi\n"
+             b"ro.product.cpu.abilist=armeabi-v7a,armeabi\n"
+             b"ro.product.cpu.abilist32=armeabi-v7a,armeabi\n")
+
+    # Cap the dex2oat heap: 512m on 1 GiB RAM invites memory-pressure kills
+    # during background dexopt (crash-restart window around minute 6).
+    prop = prop.replace(b"dalvik.vm.dex2oat-Xmx=512m", b"dalvik.vm.dex2oat-Xmx=256m", 1)
+
     if not with_low_ram:
         return prop
     if b"ro.config.low_ram" in prop:
@@ -166,6 +190,7 @@ def rebuild_ramdisk(body, module_path, bootdiag_path, with_adb, with_low_ram):
         (b"z1_pm_guard.sh", (ROOT / "stock/z1_pm_guard.sh").read_bytes(), 0o755),
         (b"z1_heartbeat.sh", (ROOT / "stock/z1_heartbeat.sh").read_bytes(), 0o755),
         (b"z1_logpersist.sh", (ROOT / "stock/z1_logpersist.sh").read_bytes(), 0o755),
+        (b"z1_radio_finish.sh", (ROOT / "stock/z1_radio_finish.sh").read_bytes(), 0o755),
     ]
     names = [r.name for r in listing]
     for name, _, _ in additions:
@@ -226,7 +251,8 @@ def build(base: Boot, module_path, bootdiag_path, directory, with_adb, with_low_
     verify = ramdisk_index([(r.name, r.fields, r.data) for r in records(gzip.decompress(final.ramdisk[MTK_HEADER_SIZE:]))])
     rc = verify["init.z1.rc"][2]
     markers = [HEARTBEAT_MARKER, RADIO_MARKER, WAKELOCK_MARKER, b"z1_pm_guard.sh",
-               b"z1_logpersist.sh", b"exec_background u:r:init:s0 root root -- /system/bin/sh /z1_touch_load.sh"]
+               b"z1_logpersist.sh", b"z1_radio_finish.sh",
+               b"exec_background u:r:init:s0 root root -- /system/bin/sh /z1_touch_load.sh"]
     if with_adb:
         markers.append(b"functionfs")
     for marker in markers:
@@ -236,13 +262,18 @@ def build(base: Boot, module_path, bootdiag_path, directory, with_adb, with_low_
         raise ValueError("z1_touch_load.sh readback does not load the polled module")
     if "edt-ft5x06.ko" in verify:
         raise ValueError("superseded edt-ft5x06.ko still present")
-    for key in ("z1_cst836u.ko", "z1_pm_guard.sh", "z1_heartbeat.sh", "z1_logpersist.sh"):
+    for key in ("z1_cst836u.ko", "z1_pm_guard.sh", "z1_heartbeat.sh",
+                "z1_logpersist.sh", "z1_radio_finish.sh"):
         if key not in verify:
             raise ValueError(f"ramdisk readback missing {key}")
     if VERMAGIC not in verify["z1_cst836u.ko"][2]:
         raise ValueError("module vermagic missing from final ramdisk")
     if (b"ro.config.low_ram=true" in verify["default.prop"][2]) != with_low_ram:
         raise ValueError("default.prop low_ram state does not match the requested mode")
+    if b"ro.product.cpu.abilist32=armeabi-v7a,armeabi\n" not in verify["default.prop"][2]:
+        raise ValueError("default.prop abilist insurance missing")
+    if b"dex2oat-Xmx=512m" in verify["default.prop"][2]:
+        raise ValueError("dex2oat Xmx still 512m")
 
     return image, ramdisk, dtb, end, verify
 

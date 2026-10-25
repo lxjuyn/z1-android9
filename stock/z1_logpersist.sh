@@ -4,12 +4,19 @@
 # cycle, tiny beat log with rotation. Runs forever; init restarts on exit.
 
 D=/data/local/z1diag
-mkdir -p "$D" 2>/dev/null || exit 0
-echo "=== logpersist start uptime=$(cut -d. -f1 /proc/uptime 2>/dev/null)s $(date) ===" >> "$D/beats.txt"
+C=/cache/z1diag
+mkdir -p "$D" 2>/dev/null || true
+mkdir -p "$C" 2>/dev/null || true
+[ -d "$D" ] || [ -d "$C" ] || exit 0
+echo "=== logpersist start uptime=$(cut -d. -f1 /proc/uptime 2>/dev/null)s $(date) ===" >> "$D/beats.txt" 2>/dev/null
+echo "=== logpersist start uptime=$(cut -d. -f1 /proc/uptime 2>/dev/null)s $(date) ===" >> "$C/beats.txt" 2>/dev/null
 i=0
 while :; do
     up=$(cut -d. -f1 /proc/uptime 2>/dev/null)
-    dmesg > "$D/dmesg.txt.new" 2>/dev/null && mv "$D/dmesg.txt.new" "$D/dmesg.txt"
+    for dir in "$D" "$C"; do
+        [ -d "$dir" ] || continue
+        dmesg > "$dir/dmesg.txt.new" 2>/dev/null && mv "$dir/dmesg.txt.new" "$dir/dmesg.txt"
+    done
 
     if [ $((i % 3)) -eq 0 ]; then
         {
