@@ -990,6 +990,8 @@ static int acm_main(int stock)
     uint64_t warning_target = 0;
     unsigned retry = 0;
     uint64_t identity_deadline = 0;
+    /* Composite ADB is opportunistic: never let a dead adbd blind the ACM log. */
+    unsigned adb_missing_cycles = 0;
     if (stock) { stock_history = history; stock_history_end = &end; }
     acmlog("starting independent ramdisk ACM log relay; send R to replay", 0);
     for (;;) {
@@ -1051,6 +1053,12 @@ static int acm_main(int stock)
             if (!(stock ? setup_stock_acm() : setup_acm())) { configured = 1; previous_error = -1; }
             else {
                 int error = errno;
+                struct stat adb_ep;
+                if (!stock && enable_composite_adb && error == ENODEV &&
+                    stat(ADB_EP0, &adb_ep) < 0 && ++adb_missing_cycles >= 12) {
+                    enable_composite_adb = 0;
+                    acmlog("adbd FunctionFS ep0 never appeared; falling back to ACM-only gadget", 0);
+                }
                 if (error != previous_error) acmlog(stock ? "waiting for stock android_usb ACM" : "waiting for configfs/free MUSB UDC", error);
                 previous_error = error;
                 retry = 25; /* 5 seconds, no retry spin. */
