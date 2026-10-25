@@ -151,26 +151,17 @@ def records(archive):
 def add_takeover_command(rc):
     if b"/z1_display_takeover.sh" in rc or b"/z1_fbcon_takeover.sh" in rc:
         raise ValueError("input is not pristine R9: display takeover is already referenced")
-    lines = rc.splitlines(keepends=True)
-    matches = [i for i, line in enumerate(lines)
-               if re.match(rb"^on[ \t]+post-fs-data[ \t]*\r?\n$", line)]
-    if not matches:
-        raise ValueError("init.z1.rc has no literal 'on post-fs-data' action")
-    start = matches[0]
-    end = len(lines)
-    for i in range(start + 1, len(lines)):
-        if re.match(rb"^(?:on|service)[ \t]+", lines[i]):
-            end = i
-            break
-    insertion = end
-    while insertion > start + 1 and not lines[insertion - 1].strip():
-        insertion -= 1
-    newline = b"\r\n" if lines[start].endswith(b"\r\n") else b"\n"
-    lines.insert(insertion, TAKEOVER_COMMAND + newline)
-    updated = b"".join(lines)
-    action = updated.splitlines(keepends=True)[start:end + 1]
-    if sum(line.strip() == TAKEOVER_COMMAND.strip() for line in action) != 1:
-        raise ValueError("failed to insert the synchronous takeover command")
+    # Insert at the end of the file, in a new on property:sys.boot_completed=1 block.
+    # This ensures /system is fully mounted and Android is running before takeover.
+    # The old post-fs-data insertion was too early and could race with /system mount.
+    if not rc.endswith(b"\n"):
+        rc += b"\n"
+    block = (b"\n# Display takeover after Android is fully up; avoids racing /system mount.\n"
+             b"on property:sys.boot_completed=1\n"
+             b"    exec u:r:init:s0 root root -- /system/bin/sh /z1_display_takeover.sh\n")
+    updated = rc + block
+    if updated.count(b"/z1_display_takeover.sh") != 1:
+        raise ValueError("failed to insert the takeover command")
     return updated
 
 
@@ -303,16 +294,32 @@ def repair(input_path, output_dir, expected_sha256=None, restorecon_etc=False, t
         if restorecon_etc:
             rc_index = ramdisk_index([(r.name, r.fields, r.data) for r in records(gzip.decompress(body))])
             rc_data = rc_index["init.z1.rc"][2]
-            command = b"    restorecon_recursive /system/etc\n"
-            marker = TAKEOVER_COMMAND + b"\n"
-            if rc_data.count(marker) != 1 or b"restorecon_recursive" in rc_data:
-                raise ValueError("cannot insert the init SELinux restore command")
-            body = update_ramdisk_records(body, {b"init.z1.rc": rc_data.replace(marker, command + marker, 1)})
+            if b"restorecon_recursive" in rc_data:
+                raise ValueError("init.z1.rc already has a restorecon_recursive command")
+            # Insert into the on post-fs-data block, after swapon_all.
+            # This ensures /system/etc is relabeled before any service reads it.
+            lines = rc_data.splitlines(keepends=True)
+            matches = [i for i, line in enumerate(lines)
+                       if re.match(rb"^on[ \t]+post-fs-data[ \t]*\r?\n$", line)]
+            if not matches:
+                raise ValueError("init.z1.rc has no literal 'on post-fs-data' action")
+            start = matches[0]
+            end = len(lines)
+            for i in range(start + 1, len(lines)):
+                if re.match(rb"^(?:on|service)[ \t]+", lines[i]):
+                    end = i
+                    break
+            insertion = end
+            while insertion > start + 1 and not lines[insertion - 1].strip():
+                insertion -= 1
+            newline = b"\r\n" if lines[start].endswith(b"\r\n") else b"\n"
+            lines.insert(insertion, b"    restorecon_recursive /system/etc" + newline)
+            updated = b"".join(lines)
+            body = update_ramdisk_records(body, {b"init.z1.rc": updated})
         final_index = ramdisk_index([(r.name, r.fields, r.data) for r in records(gzip.decompress(body))])
         if restorecon_etc:
-            expected_rc = rc_index["init.z1.rc"][2].replace(TAKEOVER_COMMAND + b"\n", b"    restorecon_recursive /system/etc\n" + TAKEOVER_COMMAND + b"\n", 1)
-            if final_index["init.z1.rc"][2] != expected_rc:
-                raise ValueError("SELinux restore init command readback differs")
+            if b"restorecon_recursive /system/etc" not in final_index["init.z1.rc"][2]:
+                raise ValueError("SELinux restore init command missing from final ramdisk")
         if touch_script:
             if not Path(touch_script).is_file():
                 raise ValueError("touch evidence script is missing")

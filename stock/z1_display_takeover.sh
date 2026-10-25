@@ -7,6 +7,7 @@ fi
 
 # z1_bootdiag reports whether KD_GRAPHICS was verified on the active VT.
 # Keep the fbcon sysfs detach as a fallback even when VT mode is unavailable.
+# Never fail the boot: log the error and continue.
 /z1_bootdiag --graphics-mode
 graphics_status=$?
 
@@ -14,6 +15,9 @@ graphics_status=$?
 fbcon_status=$?
 
 if [ "$graphics_status" -ne 0 ]; then
-    exit "$graphics_status"
+    echo "z1_bootdiag --graphics-mode failed: $graphics_status" > /dev/kmsg 2>/dev/null || true
 fi
-exit "$fbcon_status"
+if [ "$fbcon_status" -ne 0 ]; then
+    echo "z1_fbcon_takeover failed: $fbcon_status" > /dev/kmsg 2>/dev/null || true
+fi
+exit 0
