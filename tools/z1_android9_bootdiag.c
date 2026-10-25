@@ -448,7 +448,12 @@ static int folder(const char *path)
     return -1;
 }
 
-static int enable_composite_adb = 1;
+/* R3 device evidence: composite binding never completed with adbd in the
+ * loop, leaving the board with no diagnostic USB at all for a whole boot.
+ * Ship ACM-only (the R1R2-proven configuration) until adbd's FunctionFS
+ * behaviour is understood from logs; the fallback path below is kept for
+ * the round that re-enables it. */
+static int enable_composite_adb = 0;
 
 static int attribute(const char *name, const char *value)
 {

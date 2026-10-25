@@ -50,12 +50,21 @@ POST_FS_BLOCK = b"""
 on post-fs
     write /sys/power/wake_lock z1diag
     start z1_heartbeat
+    start z1_logpersist
     exec_background u:r:init:s0 root root -- /system/bin/sh /system/bin/z1_linux7_radio_init.sh
+    exec_background u:r:init:s0 root root -- /system/bin/sh /z1_touch_load.sh
 
 service z1_heartbeat /system/bin/sh /z1_heartbeat.sh
     class core
     user root
     group root
+    disabled
+    seclabel u:r:init:s0
+
+service z1_logpersist /system/bin/sh /z1_logpersist.sh
+    class core
+    user root
+    group root system sdcard_rw
     disabled
     seclabel u:r:init:s0
 """
@@ -85,10 +94,10 @@ def new_record(name, data, mode, inode):
     return Record(name, fields, data, encode_record(name, fields, data))
 
 
-def patch_init_z1_rc(rc):
+def patch_init_z1_rc(rc, with_adb):
     if HEARTBEAT_MARKER in rc or RADIO_MARKER in rc or WAKELOCK_MARKER in rc:
         raise ValueError("baseline init.z1.rc already carries R3 additions")
-    if b"service adbd " in rc:
+    if b"service adbd " in rc and with_adb:
         raise ValueError("baseline init.z1.rc already has an adbd service")
 
     # 1. Rewrite the touch exec line and add the pm guard right after it.
@@ -96,20 +105,25 @@ def patch_init_z1_rc(rc):
         raise ValueError("baseline init.z1.rc lacks the R1R2 touch exec line")
     rc = rc.replace(TOUCH_EXEC, TOUCH_EXEC + PM_GUARD_EXEC, 1)
 
-    # 2. Append the post-fs wake_lock/heartbeat/radio block and the approved
-    # composite-ADB block verbatim (check_ramdisk allows exactly this block).
+    # 2. Append the post-fs block; ADB block only in composite mode (R3
+    # device evidence: composite never bound and left the board USB-blind).
     if not rc.endswith(b"\n"):
         rc += b"\n"
-    return rc + POST_FS_BLOCK + ADB_DEBUG_BLOCK
+    rc = rc + POST_FS_BLOCK
+    if with_adb:
+        rc = rc + ADB_DEBUG_BLOCK
+    return rc
 
 
-def patch_default_prop(prop):
+def patch_default_prop(prop, with_low_ram):
     # Replace in place rather than append: init must see exactly one value.
     if b"ro.adb.secure=0" in prop:
         raise ValueError("default.prop already has ro.adb.secure=0")
     if b"ro.adb.secure=1" not in prop:
         raise ValueError("baseline default.prop lacks ro.adb.secure=1 to replace")
     prop = prop.replace(b"ro.adb.secure=1", b"ro.adb.secure=0", 1)
+    if not with_low_ram:
+        return prop
     if b"ro.config.low_ram" in prop:
         raise ValueError("default.prop already sets ro.config.low_ram")
     if not prop.endswith(b"\n"):
@@ -117,20 +131,21 @@ def patch_default_prop(prop):
     return prop + b"ro.config.low_ram=true\n"
 
 
-def rebuild_ramdisk(body, module_path, bootdiag_path):
+def rebuild_ramdisk(body, module_path, bootdiag_path, with_adb, with_low_ram):
     before = records(gzip.decompress(body))
     index = ramdisk_index([(r.name, r.fields, r.data) for r in before])
 
     # Content updates only; ownership stays as packed for these two.
     updates = {}
-    updates[b"init.z1.rc"] = patch_init_z1_rc(index["init.z1.rc"][2])
-    updates[b"default.prop"] = patch_default_prop(index["default.prop"][2])
+    updates[b"init.z1.rc"] = patch_init_z1_rc(index["init.z1.rc"][2], with_adb)
+    updates[b"default.prop"] = patch_default_prop(index["default.prop"][2], with_low_ram)
     body = update_ramdisk_records(body, updates)
 
     bootdiag = bootdiag_path.read_bytes()
-    if bootdiag[:4] != b"\x7fELF" or b"ffs.adb" not in bootdiag or \
-            b"falling back to ACM-only gadget" not in bootdiag:
-        raise ValueError("composite bootdiag binary failed its allowlist checks")
+    if bootdiag[:4] != b"\x7fELF" or b"falling back to ACM-only gadget" not in bootdiag:
+        raise ValueError("bootdiag binary failed its allowlist checks")
+    if with_adb and b"ACM and ADB bound" not in bootdiag:
+        raise ValueError("composite bootdiag lacks the ADB-bound marker")
     module = module_path.read_bytes()
     if VERMAGIC not in module:
         raise ValueError("z1_cst836u.ko vermagic does not match the R9 kernel")
@@ -138,19 +153,19 @@ def rebuild_ramdisk(body, module_path, bootdiag_path):
     # Replace (not just update) the records whose content AND metadata change:
     # the R1R2 baseline shipped the helper and scripts owned by uid/gid 1000.
     listing = records(gzip.decompress(body))
-    replacements = {}
-    for name, data, mode in (
-        (b"z1_bootdiag", bootdiag, 0o755),
-        (b"z1_touch_load.sh", (ROOT / "stock/z1_touch_load.sh").read_bytes(), 0o755),
-    ):
+    replacements = {
+        b"z1_bootdiag": bootdiag,
+        b"z1_touch_load.sh": (ROOT / "stock/z1_touch_load.sh").read_bytes(),
+    }
+    for name in replacements:
         if name not in [r.name for r in listing]:
             raise ValueError(f"baseline ramdisk lacks {name.decode()} to replace")
-        replacements[name] = data
 
     additions = [
         (MODULE_NAME, module, 0o644),
         (b"z1_pm_guard.sh", (ROOT / "stock/z1_pm_guard.sh").read_bytes(), 0o755),
         (b"z1_heartbeat.sh", (ROOT / "stock/z1_heartbeat.sh").read_bytes(), 0o755),
+        (b"z1_logpersist.sh", (ROOT / "stock/z1_logpersist.sh").read_bytes(), 0o755),
     ]
     names = [r.name for r in listing]
     for name, _, _ in additions:
@@ -178,8 +193,9 @@ def rebuild_ramdisk(body, module_path, bootdiag_path):
     return gzip.compress(raw, compresslevel=9, mtime=0), additions
 
 
-def build(base: Boot, module_path, bootdiag_path, directory):
-    body, additions = rebuild_ramdisk(base.ramdisk[MTK_HEADER_SIZE:], module_path, bootdiag_path)
+def build(base: Boot, module_path, bootdiag_path, directory, with_adb, with_low_ram):
+    body, additions = rebuild_ramdisk(base.ramdisk[MTK_HEADER_SIZE:], module_path,
+                                      bootdiag_path, with_adb, with_low_ram)
     dtb, end = patch_dtb(base.dtb, len(body), directory)
 
     kernel_header = bytearray(base.kernel[:MTK_HEADER_SIZE])
@@ -202,26 +218,31 @@ def build(base: Boot, module_path, bootdiag_path, directory):
     check_image(image, base.zimage + dtb, ramdisk, base.cmdline)
     rd_path = directory / "ramdisk-mtk.img"
     rd_path.write_bytes(ramdisk)
-    check_ramdisk(rd_path, require_android_logging=True, allow_adb=True)
+    check_ramdisk(rd_path, require_android_logging=True, allow_adb=with_adb)
     final = parse_boot(image)
     if final.zimage != base.zimage or final.cmdline != base.cmdline or final.initrd_end != end:
         raise ValueError("final readback differs from the baseline")
 
     verify = ramdisk_index([(r.name, r.fields, r.data) for r in records(gzip.decompress(final.ramdisk[MTK_HEADER_SIZE:]))])
     rc = verify["init.z1.rc"][2]
-    for marker in (HEARTBEAT_MARKER, RADIO_MARKER, WAKELOCK_MARKER,
-                   b"z1_pm_guard.sh", b"functionfs"):
+    markers = [HEARTBEAT_MARKER, RADIO_MARKER, WAKELOCK_MARKER, b"z1_pm_guard.sh",
+               b"z1_logpersist.sh", b"exec_background u:r:init:s0 root root -- /system/bin/sh /z1_touch_load.sh"]
+    if with_adb:
+        markers.append(b"functionfs")
+    for marker in markers:
         if marker not in rc:
             raise ValueError(f"init.z1.rc readback missing {marker.decode()}")
     if b"z1_cst836u.ko" not in verify["z1_touch_load.sh"][2]:
         raise ValueError("z1_touch_load.sh readback does not load the polled module")
     if "edt-ft5x06.ko" in verify:
         raise ValueError("superseded edt-ft5x06.ko still present")
-    for key in ("z1_cst836u.ko", "z1_pm_guard.sh", "z1_heartbeat.sh"):
+    for key in ("z1_cst836u.ko", "z1_pm_guard.sh", "z1_heartbeat.sh", "z1_logpersist.sh"):
         if key not in verify:
             raise ValueError(f"ramdisk readback missing {key}")
     if VERMAGIC not in verify["z1_cst836u.ko"][2]:
         raise ValueError("module vermagic missing from final ramdisk")
+    if (b"ro.config.low_ram=true" in verify["default.prop"][2]) != with_low_ram:
+        raise ValueError("default.prop low_ram state does not match the requested mode")
 
     return image, ramdisk, dtb, end, verify
 
@@ -233,6 +254,13 @@ def main():
     parser.add_argument("--module", required=True, type=Path)
     parser.add_argument("--bootdiag", required=True, type=Path)
     parser.add_argument("--output-dir", required=True, type=Path)
+    parser.add_argument("--composite-adb", action="store_true",
+                        help="bind the ACM+ADB composite gadget (R3 default; "
+                             "R3 device evidence says composite never bound, "
+                             "so plain builds ship ACM-only)")
+    parser.add_argument("--low-ram", action="store_true",
+                        help="set ro.config.low_ram=true (R3 device suspect "
+                             "for the boot_completed/display regression)")
     args = parser.parse_args()
 
     data = args.input.read_bytes()
@@ -243,7 +271,9 @@ def main():
     args.output_dir.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=".z1-r3-", dir=args.output_dir) as temp:
         work = Path(temp)
-        image, ramdisk, dtb, end, _ = build(base, args.module, args.bootdiag, work)
+        image, ramdisk, dtb, end, _ = build(base, args.module, args.bootdiag, work,
+                                            with_adb=args.composite_adb,
+                                            with_low_ram=args.low_ram)
 
     outputs = {"boot.img": image, "ramdisk-mtk.img": ramdisk, "mt6572-z1.dtb": dtb}
     for name, blob in outputs.items():
@@ -259,13 +289,18 @@ def main():
         "module": {"name": "z1_cst836u.ko", "sha256": sha(args.module.read_bytes()),
                    "driver": "polled CST836U (FT6206 protocol) @0x15, no IRQ dependency"},
         "bootdiag": {"sha256": sha(args.bootdiag.read_bytes()),
-                     "composite": True, "acm_only_fallback": True},
+                     "composite": args.composite_adb,
+                     "acm_only": not args.composite_adb},
         "ramdisk_delta": [
-            "init.z1.rc: +wake_lock/heartbeat/radio-init/adbd blocks, +pm_guard exec",
-            "default.prop: +ro.adb.secure=0 +ro.config.low_ram=true",
-            "z1_bootdiag: composite ACM+ADB rebuild",
-            "z1_touch_load.sh: rewritten for the polled driver",
-            "+z1_cst836u.ko +z1_pm_guard.sh +z1_heartbeat.sh",
+            "init.z1.rc: +wake_lock/heartbeat/logpersist/radio-init blocks, "
+            "+early touch exec (post-fs) +pm_guard exec"
+            + (", +approved ADB block" if args.composite_adb else ""),
+            "default.prop: ro.adb.secure=1->0"
+            + (" +ro.config.low_ram=true" if args.low_ram else ""),
+            "z1_bootdiag: rebuild"
+            + (" (composite ACM+ADB)" if args.composite_adb else " (ACM-only, R1R2-proven)"),
+            "z1_touch_load.sh: rewritten for the polled driver, retrying loader",
+            "+z1_cst836u.ko +z1_pm_guard.sh +z1_heartbeat.sh +z1_logpersist.sh",
             "-edt-ft5x06.ko (superseded: cannot probe without IRQ GPIO)",
         ],
         "device_boot_verified": False,

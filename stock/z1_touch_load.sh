@@ -5,18 +5,23 @@
 
 log() { printf '<6>[z1touch] %s\n' "$*" > /dev/kmsg 2>/dev/null || true; }
 
-log "R3 touch load starting (kernel $(cat /proc/sys/kernel/osrelease 2>/dev/null))"
+log "R3b touch load starting (kernel $(cat /proc/sys/kernel/osrelease 2>/dev/null))"
 
-if [ -d /sys/module/z1_cst836u ]; then
-    log "module already loaded"
-else
-    if insmod /z1_cst836u.ko 2>/tmp/z1_touch_insmod.err; then
-        log "z1_cst836u insmod OK"
-    else
-        log "z1_cst836u insmod FAILED: $(cat /tmp/z1_touch_insmod.err 2>/dev/null)"
-        exit 0
+# Retry: an early post-fs run can race slower boot-class work.
+try=0
+while [ $try -lt 10 ]; do
+    if [ -d /sys/module/z1_cst836u ]; then
+        log "module already loaded"
+        break
     fi
-fi
+    if insmod /z1_cst836u.ko 2>/tmp/z1_touch_insmod.err; then
+        log "z1_cst836u insmod OK (try $try)"
+        break
+    fi
+    log "z1_cst836u insmod FAILED (try $try): $(cat /tmp/z1_touch_insmod.err 2>/dev/null)"
+    sleep 3
+    try=$((try + 1))
+done
 
 sleep 3
 
