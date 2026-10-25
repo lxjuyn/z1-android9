@@ -1,0 +1,105 @@
+diff --git a/arch/arm/boot/dts/mediatek/mt6572-z1.dts b/arch/arm/boot/dts/mediatek/mt6572-z1.dts
+index 9877558c6..78fa4f52f 100644
+--- a/arch/arm/boot/dts/mediatek/mt6572-z1.dts
++++ b/arch/arm/boot/dts/mediatek/mt6572-z1.dts
+@@ -34,7 +34,7 @@ chosen {
+ 		 * console= wins /dev/console, so ttyS0 last gives the serial
+ 		 * port both the kernel log tail and the final console getty.
+ 		 */
+-		bootargs = "console=tty0 console=ttyS0,921600n8 root=/dev/ram panic=10 loglevel=7 clk_ignore_unused regulator_ignore_unused oops=panic sysrq_always_enabled rdinit=/init earlycon=mtk8250,0x11005000 androidboot.hardware=z1 androidboot.selinux=permissive";
++		bootargs = "console=ttyS0,921600n8 root=/dev/ram panic=10 loglevel=7 clk_ignore_unused regulator_ignore_unused oops=panic sysrq_always_enabled rdinit=/init earlycon=mtk8250,0x11005000 androidboot.hardware=z1 androidboot.selinux=permissive firmware_class.path=/system/etc/firmware";
+ 		/*
+ 		 * Z1 LK relocates the MTK ROOTFS payload to 0x84100000.  Its
+ 		 * ATAG_INITRD2 handoff is not present at runtime, so provide the
+@@ -410,6 +410,19 @@ &mt6323_vusb_reg {
+ 	regulator-always-on;
+ };
+ 
++/*
++ * Touch AVDD28 root-cause fix (r3d, 2026-10-26): the CST836U@0x15 analog
++ * rail is VGP1 (the placeholder touch node below references it and the
++ * MT6580 sister-board vendor config points here too).  Board evidence
++ * 2026-07-20: four in-circuit measurements all read vgp1 raw=0x0000
++ * sw_en=0 -- the rail never came up while VIO18 was alive, which is the
++ * prime suspect for the touch chip never ACKing at 0x15.  Hold it on so
++ * the runtime hunt (z1_gpio_hunt / z1_cst836u) can see the controller.
++ */
++&mt6323_vgp1_reg {
++	regulator-always-on;
++};
++
+ /*
+  * PMIC power/home keys.  The MT6323 "home" key maps to KEY_VOLUMEDOWN (114)
+  * which duplicates the matrix keypad MATRIX_KEY(1, 0, KEY_VOLUMEDOWN) (see
+@@ -460,6 +473,25 @@ pins {
+ 		};
+ 	};
+ 
++	/*
++	 * I2C1 dual pin-group (r3d, 2026-10-26): CST836U@0x15 got no ACK on
++	 * the SCL_1_0/SDA_1_0 mux (113/114), so keep that group AND add the
++	 * alternate SCL_1_1/SDA_1_1 mux (89/90, MT6572 EINT14/15, completely
++	 * idle before) -- &i2c1 references BOTH groups in pinctrl-0, so the
++	 * runtime hunt (z1_gpio_hunt) can see which mux the touch controller
++	 * actually answers on.
++	 *
++	 * DO NOT add any bias property to i2c1_pins (113/114) or i2c0_pins
++	 * (105/106): PULLSEL and PUPD share mt6572_pin_pupd_range
++	 * (pinctrl-mt6572.c:203-217, share note at :259-260), which covers
++	 * 87-104 then jumps to 107-112 and 115-127 -- pins 105/106/113/114
++	 * have NO pull-register mapping, so a bias property fails pinconf
++	 * apply with -ENOTSUPP ("Invalid pull argument") and risks taking
++	 * the whole i2c default state down with it (ten-run forensic 5-2
++	 * re-check verdict).  89/90 sit inside the 87-104 window, so plain
++	 * bias-pull-up (no R1R0 argument) is legal there and needed: the
++	 * open-drain bus idles high through the pull-up.
++	 */
+ 	i2c1_pins: i2c1-pins {
+ 		pins {
+ 			pinmux = <MT6572_PIN_113_SCL_1_0__FUNC_SCL_1_0>,
+@@ -467,6 +499,27 @@ pins {
+ 		};
+ 	};
+ 
++	i2c1_pins_b: i2c1-pins-b {
++		pins {
++			pinmux = <MT6572_PIN_89_EINT14__FUNC_SCL_1_1>,
++				 <MT6572_PIN_90_EINT15__FUNC_SDA_1_1>;
++			bias-pull-up;
++		};
++	};
++
++	/*
++	 * I2C0 enable (r3d): second insurance path for the touch hunt.
++	 * SCL_0_0/SDA_0_0 mux on 105/106.  Pinmux only, deliberately NO
++	 * bias: 105/106 are outside the pupd/pullsel register map (see the
++	 * i2c1 note above), a bias property would -ENOTSUPP there.
++	 */
++	i2c0_pins: i2c0-pins {
++		pins {
++			pinmux = <MT6572_PIN_105_SCL_0_0__FUNC_SCL_0_0>,
++				 <MT6572_PIN_106_SDA_0_0__FUNC_SDA_0_0>;
++		};
++	};
++
+ 	mmc0_pins: mmc0-pins {
+ 
+ 		pins-clk {
+@@ -510,9 +563,16 @@ MATRIX_KEY(1, 0, KEY_VOLUMEDOWN)
+ 	>;
+ };
+ 
++&i2c0 {
++	status = "okay";
++	pinctrl-0 = <&i2c0_pins>;
++	pinctrl-names = "default";
++	clock-frequency = <400000>;
++};
++
+ &i2c1 {
+ 	status = "okay";
+-	pinctrl-0 = <&i2c1_pins>;
++	pinctrl-0 = <&i2c1_pins &i2c1_pins_b>;
+ 	pinctrl-names = "default";
+ 	clock-frequency = <400000>;
+ 
