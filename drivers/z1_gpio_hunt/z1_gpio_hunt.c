@@ -1,20 +1,32 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * z1_gpio_hunt — 佳伯 Z1（MT6572）触摸 IC 电源/复位脚猎人（R3d 版）
+ * z1_gpio_hunt — 佳伯 Z1（MT6572）触摸 IC 电源/复位脚猎人（R3d 版，三段式）
  *
  * 背景：CST836U 触摸挂在 i2c 从机地址 0x15，但对 i2c0/i2c1 的常规探测
- * 全部无 ACK。怀疑触摸板需要某个 GPIO 先拉高（电源使能/复位解除）才会上线。
- * 本模块逐脚做"拉高→探测→拉低→探测→恢复"实验：任何一次 0x15 ACK
- * 即判定该脚为触摸供电/复位脚，立刻锁存电平、停止扫描。
+ * 全部无 ACK。策略 = DTB 保险改动（VGP1 always-on）+ 本模块运行时扫描。
  *
- * R3d 版两大变更（相对 R3c 前身）：
- *  1. 探测一律用 I2C_SMBUS_BYTE 单字节【读】：
+ * 三段式按序执行，任一段拿到 0x15 ACK 即收手：
+ *  【第 0 段·基线探测】模块加载即对适配器 0/1 各做一次 0x15 单字节读探测
+ *      并记录 errno——dts 已给 VGP1 加 always-on（上电根因已修），芯片可能
+ *      直接就 ACK。ACK 则报告并收手，不动任何 GPIO。
+ *  【第 1 段·定向复位】GPIO145（BPI_BUS15）已被十路取证反汇编定案为触摸
+ *      复位脚（原厂序列：GPIO 模式+输出→拉低 20ms→拉高→等 50ms，上电
+ *      就绪 Tpor≥100ms）。request 成功后按此时序驱动（低 20ms→高→等
+ *      150ms 冗余），随后探测适配器 0/1；ACK 则打印"GPIO145 定向复位
+ *      成功，触摸应答（适配器 N）"，保持 145 输出高不释放，跳过盲扫。
+ *  【第 2 段·盲扫兜底】扫描线程每 500ms 一轮：遍历允许的 GPIO（禁扫清单
+ *      见 banned_ranges，145 已由第 1 段处理不重扫），request→记原方向→
+ *      输出高→等 60ms→对 i2c 适配器 0/1 各做一次 0x15 单字节读探测→无
+ *      ACK 则输出低→60ms→再探→都无 ACK 恢复原方向并 free→下一个脚。
+ *      任一 ACK：打印"GPIO N 点亮触摸（极性 X，适配器 Y）"，保持该脚
+ *      输出状态不再动，停止扫描。
+ *
+ * 探测一律用 I2C_SMBUS_BYTE 单字节【读】：
  *     i2c_smbus_xfer(adap, 0x15, 0, I2C_SMBUS_READ, 0, I2C_SMBUS_BYTE, &d)。
  *     I2C_SMBUS_QUICK 已定案禁用——len=0 消息在 i2c-mt65xx 的 DMA 缓冲
  *     分配处一律返回 -ENOMEM（drivers/i2c/busses/i2c-mt65xx.c:1140-1142
  *     → drivers/i2c/i2c-core-base.c:2651-2652 `msg->len == 0 → return NULL`），
  *     事务从未上过总线，历轮 quick 扫描结果全部无效。
- *  2. 禁扫清单按 2026-10-26 安全审计更新（见 banned_ranges 注释）。
  *
  * errno 判读（每轮汇总进 kmsg，命中时 dump 全轮 raw 序列作证据）：
  *    0         = ACK（命中）
@@ -33,24 +45,34 @@
  *     gpio_request 会把 mux 切到 GPIO 且 free 后不恢复，等于亲手拆总线。
  *  3. gpio_request 本身对已占用脚返回 -EBUSY（pinmux pin_request 兜底）。
  *
- * 注：89/90（SCL_1_1/SDA_1_1 候选，pinfunc.h:505/509 附近）当前 dts 未 mux
- * （i2c1_pins 用 113/114），作为普通空闲脚参与扫描；若后续 dts 改 mux 它们，
- * 本模块经闸门 2 自动让位。
+ * 注：89/90（SCL_1_1/SDA_1_1 候选）当前 dts 未 mux（i2c1_pins 用 113/114），
+ * 作为普通空闲脚参与扫描；若后续 dts 改 mux 它们，本模块经闸门 2 自动让位。
  *
- * API 依据（Linux 7.0-rc7 本树核实）：
- *  - legacy GPIO 可用：CONFIG_GPIOLIB_LEGACY=y（r9 kernel.config:2475）；
- *    gpio_request/gpio_free include/linux/gpio.h:53-54；
- *    gpio_direction_input/output/gpio_get_value include/linux/gpio.h:56-81
- *    内联经 gpio_to_desc（consumer.h:173）。
+ * API 依据（Linux 7.0-rc7 本树 /tmp/z1_r3d_mod 逐条核实）：
+ *  - legacy GPIO 可用：CONFIG_GPIOLIB_LEGACY=y（.config）；gpio_request/
+ *    gpio_free 为真函数（drivers/gpio/gpiolib-legacy.c:58/18，
+ *    EXPORT_SYMBOL_GPL:69/22）；gpio_direction_input/output/gpio_get_value/
+ *    gpio_set_value 为 include/linux/gpio.h:56-81 内联包装（走
+ *    gpiod_direction_input/gpiod_direction_output_raw/gpiod_get_raw_value/
+ *    gpiod_set_raw_value，gpiolib.c:2850/2997/3501/3854 全部导出）。
  *  - 方向读取：gpio_get_direction 已删，走 gpiod_get_direction(desc)
- *    （consumer.h:111，gpiolib.c:445 EXPORT_SYMBOL_GPL）。对 gpio_to_desc
- *    所得 desc 绝不能 gpiod_put——desc 归全局号空间所有，put 会打穿引用
- *    计数，本模块全程不持有额外引用。
+ *    （gpiolib.c:445，EXPORT_SYMBOL_GPL:486；返回 1=入 0=出）。
+ *    对 gpio_to_desc 所得 desc 绝不能 gpiod_put——desc 归全局号空间所有，
+ *    put 会打穿引用计数，本模块全程不持有额外引用。
+ *  - "GPIO 模式+输出" = gpio_request + gpio_direction_output：MTK
+ *    pinctrl-paris 的 gpiochip 设 chip->request = gpiochip_generic_request
+ *    （pinctrl-paris.c:948），request 即把 pinmux 切到 GPIO；direction_
+ *    output 先写 DO 再设 DIR 出（pinctrl-paris.c:892-901）。
  *  - 全局号不可假设 0 起：pinctrl-paris mtk_build_gpiochip 设
- *    chip->base = -1 动态分配，故运行时用 gpio_device_find() 按
- *    compatible "mediatek,mt6572-pinctrl" 解析（gpio/driver.h:628）。
- *  - i2c：i2c_get_adapter/i2c_put_adapter、i2c_smbus_xfer
- *    （include/linux/i2c.h:139）均导出。
+ *    chip->base = -1 动态分配（pinctrl-paris.c:964），故运行时用
+ *    gpio_device_find()（gpio/driver.h:628，gpiolib.c:1368 导出）按
+ *    compatible "mediatek,mt6572-pinctrl"（pinctrl-mt6572.c:385）解析。
+ *  - chip->ngpio = soc->npins = 154（pinctrl-mtk-mt6572.h 到 153 结束），
+ *    GPIO145（pinfunc.h:800 MT6572_PIN_145_BPI_BUS15__FUNC_GPIO145）在
+ *    范围内。
+ *  - i2c：i2c_get_adapter/i2c_put_adapter（i2c-core-base.c:2620/2631）、
+ *    i2c_smbus_xfer（i2c-core-smbus.c:552，签名 include/linux/i2c.h:139）
+ *    均导出。
  *
  * vermagic 目标：7.0.0-rc7-z1+（/tmp/z1_r3d_mod R9 配方编译树）。
  */
@@ -70,21 +92,34 @@
 
 #define TAG "[gpiohunt] "
 
-/* 扫描上界：pin 0..134。135-153 是 BPI/BSI/VM 射频脚，一律不动。
- *（驱动侧 pinctrl-mtk-mt6572.h 实有 154 脚，dt-bindings 只定义到 134，
- *  以 dt-bindings 为准。）
+/* 盲扫上界：pin 0..134（任务定案"其余 0-134 全扫"）。135-153 是 BPI/BSI/VM
+ * 射频脚，盲扫一律不动；GPIO145 是其中唯一例外——第 1 段按铁证定案单独
+ * 定向驱动，其余射频脚不碰。
+ *（驱动侧 pinctrl-mtk-mt6572.h 实有 154 脚（0..153），dt-bindings pinfunc
+ *  宏只定义到 134+，以 dt-bindings 为准做盲扫上界。）
  */
 #define HUNT_MAX_PIN	134
+
+/* 第 1 段定向复位参数（GPIO145 = BPI_BUS15，触摸复位脚） */
+#define RST_PIN			145	/* MT6572_PIN_145_BPI_BUS15__FUNC_GPIO145 */
+#define RST_LOW_MS		20	/* 原厂序列：拉低 20ms */
+#define RST_HIGH_WAIT_MS	150	/* 拉高后等 150ms（Tpor>=100ms 冗余） */
 
 /* 每 phase 电平保持时长与轮间隔 */
 #define HUNT_SETTLE_MS	60
 #define HUNT_ROUND_MS	500
 
+/* 命中来源 */
+#define HUNT_NONE	0	/* 未命中 */
+#define HUNT_BASELINE	1	/* 第 0 段：基线探测直接 ACK */
+#define HUNT_RESET145	2	/* 第 1 段：GPIO145 定向复位后 ACK */
+#define HUNT_BLIND	3	/* 第 2 段：盲扫某脚点亮 */
+
 /* errno 证据缓冲：一轮最多 106 允扫脚 × 2 相位 × 2 总线 = 424 条，512 封顶 */
 #define ERRNO_LOG_SZ	512
 
 struct probe_rec {
-	u8	pin;	/* 硬件脚号 0..134 */
+	u8	pin;	/* 硬件脚号 0..134（145 为第 1 段定向复位） */
 	u8	level;	/* 探测时该脚输出电平：1=高 0=低 */
 	u8	bus;	/* i2c 适配器编号 */
 	s32	err;	/* i2c_smbus_xfer 原始返回值 */
@@ -113,12 +148,14 @@ module_param(verbose, bool, 0644);
 MODULE_PARM_DESC(verbose, "详细日志（默认 1）");
 
 /* 扫描结果（只读导出，板上 cat /sys/module/z1_gpio_hunt/parameters/ 可查） */
-static int found_gpio = -1;
+static int found_gpio = -1;	/* 命中脚号（基线命中保持 -1） */
 module_param(found_gpio, int, 0444);
 static int found_bus = -1;
 module_param(found_bus, int, 0444);
-static int found_level = -1;
+static int found_level = -1;	/* 命中时锁存电平（基线命中 -1=未动 GPIO） */
 module_param(found_level, int, 0444);
+static int found_how = HUNT_NONE;	/* 1=基线 2=145复位 3=盲扫 */
+module_param(found_how, int, 0444);
 
 static struct gpio_chip *hunt_gc;	/* 仅作 can_use_line 的 chip 句柄；
 					 * MTK pinctrl 内建(=y)永不卸载，安全 */
@@ -126,7 +163,7 @@ static int hunt_base = -1;		/* MT6572 gpiochip 全局 base */
 static int hunt_rounds;
 static struct task_struct *hunt_task;
 
-/* 本轮 errno 证据环形缓冲（每轮开始清零） */
+/* 本轮 errno 证据环形缓冲（每轮开始清零；第 1 段记录也走这里） */
 static struct probe_rec errno_log[ERRNO_LOG_SZ];
 static unsigned int errno_log_n;
 
@@ -187,14 +224,14 @@ static void round_summary(void)
 	pr_cont("\n");
 }
 
-/* 命中时 dump 本轮全部 raw errno 序列（证据） */
-static void dump_errno_log(void)
+/* 命中时 dump 全部 raw errno 序列（证据） */
+static void dump_errno_log(const char *stage)
 {
 	char line[160];
 	int len, n;
 
-	pr_err(TAG "本轮 raw errno 序列（pin/相位L-H/总线=errno，%u 条）：\n",
-	       errno_log_n);
+	pr_err(TAG "%s raw errno 序列（pin/相位L-H/总线=errno，%u 条）：\n",
+	       stage, errno_log_n);
 	for (n = 0, len = 0; n < (int)errno_log_n; n++) {
 		len += scnprintf(line + len, sizeof(line) - len, "%u/%s/b%d=%d ",
 				 errno_log[n].pin,
@@ -221,6 +258,7 @@ static void dump_errno_log(void)
  *  - 105,106：i2c0 SCL_0_0/SDA_0_0（R3d dts 已启用，pinfunc.h:593-597）
  *  - 113,114：i2c1 SCL_1_0/SDA_1_0 在用（pinfunc.h:637-641）
  *  - 125    ：pinfunc 无此编号（124 CONN_RSTB 直接跳 126），防御性禁扫
+ *  其余 0-134 全扫；GPIO145 由第 1 段定向复位处理，不进盲扫。
  *  JTAG（JTMS/JTCK/JTDI/JTDO）经 pinfunc.h 查证无专用脚、仅 FUNC 复用
  *  （87/88/91/93/95/96/101/102/109/112 及 89/90 自身），GPIO 模式下扫描
  *  安全，且 89/90 正是本轮候选，故不因 JTAG 复用禁扫。
@@ -278,32 +316,16 @@ static int probe_bus(int bus)
 	return ret;
 }
 
-/*
- * 扫单个脚（pin 为 MT6572 硬件脚号 0..134）。
- * 流程（任务定案）：request→记原方向→输出高→60ms→对 i2c0/i2c1 各探一次
- * →无 ACK 则输出低→60ms→再探→都无 ACK 恢复原方向并 free→下一个脚。
- * 返回 1 = 命中（脚已锁存为输出、未释放、不再动）；
- *       0 = 未命中（已恢复原方向/原值并释放）；
- *       负值 = 跳过（禁扫/pinmux 占用/request 失败），未动电平。
- */
-static int scan_one_pin(int pin)
+/* 基础合法性/闸门检查，返回 0=可碰；负值=跳过原因（已打印） */
+static int pin_gate(int pin, int global, struct gpio_desc **desc_out)
 {
-	int global = hunt_base + pin;
 	struct gpio_desc *desc;
-	const char *why = NULL;
-	int orig_dir, orig_val = 0;
-	int ret, bus, level;
-
-	if (is_banned(pin, &why)) {
-		if (verbose)
-			pr_info(TAG "GPIO%d: 禁扫（%s），跳过\n", pin, why);
-		return -EPERM;
-	}
 
 	/* 全局号必须落在本 chip 范围内 */
 	if (!gpio_is_valid(global) || !hunt_gc ||
 	    pin >= (int)hunt_gc->ngpio) {
-		pr_info(TAG "GPIO%d: 超出 MT6572 gpiochip 范围，跳过\n", pin);
+		pr_info(TAG "GPIO%d: 超出 MT6572 gpiochip 范围（base=%d ngpio=%u），跳过\n",
+			pin, hunt_base, hunt_gc ? hunt_gc->ngpio : 0);
 		return -ERANGE;
 	}
 
@@ -321,6 +343,168 @@ static int scan_one_pin(int pin)
 		return -EBUSY;
 	}
 
+	*desc_out = desc;
+	return 0;
+}
+
+/* 尽力恢复某脚到 request 前的方向/电平（desc 由 gpio_to_desc 所得，不 put） */
+static void pin_restore(int global, struct gpio_desc *desc,
+			int orig_dir, int orig_val)
+{
+	if (orig_dir == GPIO_LINE_DIRECTION_IN)
+		gpio_direction_input(global);
+	else if (orig_dir == GPIO_LINE_DIRECTION_OUT)
+		gpio_direction_output(global, orig_val);
+	else
+		gpio_direction_input(global);	/* 读不到原方向则保守回输入 */
+}
+
+/* 记录某脚 request 前的方向/电平（供恢复） */
+static void pin_snapshot(int global, struct gpio_desc *desc,
+			 int *orig_dir, int *orig_val)
+{
+	*orig_dir = gpiod_get_direction(desc);
+	*orig_val = 0;
+	if (*orig_dir == GPIO_LINE_DIRECTION_OUT)
+		*orig_val = gpio_get_value(global);
+}
+
+/*
+ * 【第 0 段·基线探测】加载即做：对适配器 0/1 各一次 0x15 单字节读，
+ * errno 原样进 kmsg。dts 已给 VGP1 加 always-on（上电根因已修），芯片
+ * 可能直接就 ACK——ACK 则报告命中来源并收手，不动任何 GPIO。
+ * 返回 0 = 基线即 ACK（后续段全部跳过）；-1 = 无 ACK（继续第 1 段）。
+ */
+static int baseline_probe(void)
+{
+	int bus, ret;
+
+	pr_info(TAG "第 0 段·基线探测：dts VGP1 已 always-on，先直接试 0x%02x\n",
+		hunt_addr);
+
+	for (bus = 0; bus < 2; bus++) {
+		if (!want_bus(bus))
+			continue;
+		ret = probe_bus(bus);
+		pr_info(TAG "基线探测 i2c-%d @0x%02x: errno=%d"
+			"（0=ACK / -ENXIO=总线上NACK / -ETIMEDOUT=等不到完成中断）\n",
+			bus, hunt_addr, ret);
+
+		if (ret == 0) {
+			pr_err(TAG "************************************************\n");
+			pr_err(TAG "基线探测即命中：触摸 0x%02x 在 i2c-%d ACK"
+				"（VGP1 always-on 修复生效），无需复位/盲扫\n",
+				hunt_addr, bus);
+			pr_err(TAG "************************************************\n");
+			found_how = HUNT_BASELINE;
+			found_bus = bus;
+			found_level = -1;	/* 未动任何 GPIO */
+			return 0;
+		}
+	}
+	return -1;
+}
+
+/*
+ * 【第 1 段·定向复位】GPIO145（BPI_BUS15）铁证触摸复位脚：
+ * request（即切 GPIO 模式）→ 输出低 20ms → 拉高 → 等 150ms（Tpor≥100ms
+ * 冗余）→ 探测适配器 0/1。ACK 则打印"GPIO145 定向复位成功，触摸应答
+ * （适配器 N）"，保持 145 输出高不释放，跳过盲扫；无 ACK/不可 request
+ * 则恢复原方向并 free，转第 2 段盲扫。
+ * 返回 0 = 命中（已锁存）；-1 = 未命中或跳过（转盲扫）。
+ */
+static int targeted_reset_145(void)
+{
+	int global = hunt_base + RST_PIN;
+	struct gpio_desc *desc = NULL;
+	int orig_dir, orig_val = 0;
+	int ret, bus;
+
+	pr_info(TAG "第 1 段·定向复位：GPIO%d（BPI_BUS15，十路取证定案触摸"
+		"复位脚），序列=低%dms→高→等%dms\n",
+		RST_PIN, RST_LOW_MS, RST_HIGH_WAIT_MS);
+
+	ret = pin_gate(RST_PIN, global, &desc);
+	if (ret) {
+		pr_info(TAG "GPIO%d: 定向复位前置检查不过（%d），跳过复位转盲扫\n",
+			RST_PIN, ret);
+		return -1;
+	}
+
+	/* 闸门 3：request（GPIO 模式切换在此发生；被占则 -EBUSY 兜底） */
+	ret = gpio_request(global, "z1_gpio_hunt_rst145");
+	if (ret) {
+		pr_info(TAG "GPIO%d: request 失败 %d（在用），定向复位跳过，转盲扫\n",
+			RST_PIN, ret);
+		return -1;
+	}
+
+	pin_snapshot(global, desc, &orig_dir, &orig_val);
+
+	/* 原厂序列：GPIO 模式+输出（request+direction_output）→拉低 20ms
+	 * →拉高→等 150ms 冗余（规格 Tpor≥100ms）
+	 */
+	gpio_direction_output(global, 0);
+	msleep_interruptible(RST_LOW_MS);
+	gpio_set_value(global, 1);
+	msleep_interruptible(RST_HIGH_WAIT_MS);
+
+	for (bus = 0; bus < 2; bus++) {
+		if (!want_bus(bus))
+			continue;
+		ret = probe_bus(bus);
+		errno_log_add(RST_PIN, 1, bus, ret);	/* 证据进缓冲 */
+		if (ret == 0) {
+			pr_err(TAG "************************************************\n");
+			pr_err(TAG "GPIO145 定向复位成功，触摸应答（适配器 %d）\n",
+			       bus);
+			pr_err(TAG ">>> 触摸 0x%02x ACK，保持 GPIO%d 输出高"
+				"（不恢复不释放），跳过盲扫\n",
+				hunt_addr, RST_PIN);
+			dump_errno_log("第 1 段（GPIO145 复位后）");
+			pr_err(TAG "************************************************\n");
+			found_how = HUNT_RESET145;
+			found_gpio = RST_PIN;
+			found_bus = bus;
+			found_level = 1;
+			return 0;		/* 保持输出高，不 free */
+		}
+	}
+
+	/* 未命中：恢复原方向/原值并释放，转盲扫 */
+	pin_restore(global, desc, orig_dir, orig_val);
+	gpio_free(global);
+	pr_info(TAG "GPIO%d: 定向复位后仍无 ACK（errno 见第 1 段记录，"
+		"原dir=%d 原val=%d），已恢复释放，转第 2 段盲扫\n",
+		RST_PIN, orig_dir, orig_val);
+	return -1;
+}
+
+/*
+ * 【第 2 段·盲扫】扫单个脚（pin 为 MT6572 硬件脚号 0..134）。
+ * 流程（任务定案）：request→记原方向→输出高→60ms→对 i2c0/i2c1 各探一次
+ * →无 ACK 则输出低→60ms→再探→都无 ACK 恢复原方向并 free→下一个脚。
+ * 返回 1 = 命中（脚已锁存为输出、未释放、不再动）；
+ *       0 = 未命中（已恢复原方向/原值并释放）；
+ *       负值 = 跳过（禁扫/pinmux 占用/request 失败），未动电平。
+ */
+static int scan_one_pin(int pin)
+{
+	int global = hunt_base + pin;
+	struct gpio_desc *desc = NULL;
+	const char *why = NULL;
+	int orig_dir, orig_val = 0;
+	int ret, bus, level;
+
+	if (is_banned(pin, &why)) {
+		if (verbose)
+			pr_info(TAG "GPIO%d: 禁扫（%s），跳过\n", pin, why);
+		return -EPERM;
+	}
+
+	if (pin_gate(pin, global, &desc))
+		return -EINVAL;
+
 	/* 闸门 3：request（被占用的脚在这里 -EBUSY 兜底） */
 	ret = gpio_request(global, "z1_gpio_hunt");
 	if (ret) {
@@ -334,9 +518,7 @@ static int scan_one_pin(int pin)
 	 * gpiod_get_direction 返回 GPIO_LINE_DIRECTION_IN(1)/OUT(0)，
 	 * 负值=读失败。此处 desc 来自 gpio_to_desc，全程不可 gpiod_put。
 	 */
-	orig_dir = gpiod_get_direction(desc);
-	if (orig_dir == GPIO_LINE_DIRECTION_OUT)
-		orig_val = gpio_get_value(global);
+	pin_snapshot(global, desc, &orig_dir, &orig_val);
 
 	/* phase 高：输出高 → 60ms → 探测；phase 低：保持输出翻低 → 60ms → 探测 */
 	for (level = 1; level >= 0; level--) {
@@ -359,24 +541,19 @@ static int scan_one_pin(int pin)
 				pr_err(TAG ">>> 触摸 0x%02x 在 i2c-%d ACK，"
 					"锁存 GPIO%d 输出%s（不恢复不释放），停止扫描\n",
 				       hunt_addr, bus, pin, level ? "高" : "低");
-				dump_errno_log();	/* raw errno 序列证据 */
+				dump_errno_log("本轮盲扫");	/* raw errno 序列证据 */
 				pr_err(TAG "************************************************\n");
 				found_gpio = pin;
 				found_bus = bus;
 				found_level = level;
+				found_how = HUNT_BLIND;
 				return 1;	/* 保持输出电平，不 free */
 			}
 		}
 	}
 
 	/* 未命中：恢复原方向/原值并释放 */
-	if (orig_dir == GPIO_LINE_DIRECTION_IN)
-		gpio_direction_input(global);
-	else if (orig_dir == GPIO_LINE_DIRECTION_OUT)
-		gpio_direction_output(global, orig_val);
-	else
-		gpio_direction_input(global);	/* 读不到原方向则保守回输入 */
-
+	pin_restore(global, desc, orig_dir, orig_val);
 	gpio_free(global);
 
 	if (verbose)
@@ -389,8 +566,13 @@ static int hunt_thread_fn(void *unused)
 {
 	int pin, r;
 
+	/* 第 1 段·定向复位（一次性，优先于盲扫；基线已在 init 段做过） */
+	if (found_gpio < 0 && found_how == HUNT_NONE &&
+	    targeted_reset_145() == 0)
+		goto hit;
+
 	while (!kthread_should_stop()) {
-		if (found_gpio >= 0) {
+		if (found_gpio >= 0 || found_how != HUNT_NONE) {
 			/* 命中后挂起等 rmmod，电平保持不动 */
 			msleep_interruptible(HUNT_ROUND_MS);
 			continue;
@@ -414,6 +596,9 @@ static int hunt_thread_fn(void *unused)
 
 		msleep_interruptible(HUNT_ROUND_MS);
 	}
+hit:
+	while (!kthread_should_stop())
+		msleep_interruptible(HUNT_ROUND_MS);
 	return 0;
 }
 
@@ -464,10 +649,18 @@ static int __init z1_gpio_hunt_init(void)
 		gpio_device_put(gdev);
 	}
 
-	pr_info(TAG "启动：扫 pin 0..%d（禁扫 7-13/44-54/79-84/105-106/"
-		"113-114/125），BYTE-READ@0x%02x 于 i2c-%s%s，"
-		"相位保持 %dms，轮间隔 %dms\n",
-		HUNT_MAX_PIN, hunt_addr,
+	/* 第 0 段·基线探测：加载即做（i2c_smbus_xfer 可睡眠，init 上下文允许）。
+	 * ACK 则收手——连扫描线程都不起。
+	 */
+	if (baseline_probe() == 0) {
+		pr_info(TAG "基线即 ACK，不启动扫描线程；结果见 /sys/module/z1_gpio_hunt/parameters/found_*\n");
+		return 0;
+	}
+
+	pr_info(TAG "启动扫描线程：盲扫 pin 0..%d（禁扫 7-13/44-54/79-84/"
+		"105-106/113-114/125），先 GPIO%d 定向复位，"
+		"BYTE-READ@0x%02x 于 i2c-%s%s，相位保持 %dms，轮间隔 %dms\n",
+		HUNT_MAX_PIN, RST_PIN, hunt_addr,
 		scan_bus1 ? "0" : "", scan_bus2 ? "+1" : "",
 		HUNT_SETTLE_MS, HUNT_ROUND_MS);
 
@@ -484,17 +677,21 @@ static void __exit z1_gpio_hunt_exit(void)
 	if (hunt_task)
 		kthread_stop(hunt_task);
 
-	if (found_gpio >= 0)
+	if (found_how == HUNT_BASELINE)
+		pr_info(TAG "卸载（基线探测即命中，i2c-%d，未动任何 GPIO）\n",
+			found_bus);
+	else if (found_gpio >= 0)
 		pr_err(TAG "卸载：GPIO%d 仍锁存为输出%s（未恢复未释放，按设计；"
 			"重启或手动 gpio 操作才会改变）\n",
 			found_gpio, found_level ? "高" : "低");
 	else
-		pr_info(TAG "卸载（共 %d 轮，未发现 ACK）\n", hunt_rounds);
+		pr_info(TAG "卸载（共 %d 轮盲扫，未发现 ACK；GPIO145 复位未命中）\n",
+			hunt_rounds);
 }
 
 module_init(z1_gpio_hunt_init);
 module_exit(z1_gpio_hunt_exit);
 
 MODULE_LICENSE("GPL");
-MODULE_DESCRIPTION("Z1 (MT6572) 触摸电源/复位脚猎人：逐脚拉高拉低 + i2c 0x15 单字节读探测（QUICK 已禁用）");
+MODULE_DESCRIPTION("Z1 (MT6572) 触摸电源/复位脚猎人（三段式：基线探测→GPIO145 定向复位→盲扫；i2c 0x15 单字节读探测，QUICK 已禁用）");
 MODULE_AUTHOR("z1-mt6572-mainline bringup");
