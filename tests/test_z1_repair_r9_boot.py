@@ -141,6 +141,12 @@ class RepairR9BootTests(unittest.TestCase):
             self.assertEqual(manifest["preserved"]["selinux_restorecon_recursive"], "/system/etc")
             self.assertIn(b"selinux.restorecon_recursive=/system/etc\n", index["default.prop"][2])
 
+    def test_driver_evidence_requires_complete_opt_in(self):
+        with tempfile.TemporaryDirectory(prefix="z1-touch-gate-") as temp:
+            with self.assertRaisesRegex(ValueError, "system attachment"):
+                repair.repair(R9, Path(temp) / "partial", EXPECTED_R9, touch_probe=ROOT / "r9_extract/Linux7-20261006-r9/boot.img")
+            self.assertFalse((Path(temp) / "partial").exists())
+
     def test_rejects_existing_output_and_wrong_baseline(self):
         with self.assertRaisesRegex(ValueError, "output directory must be new"):
             repair.repair(R9, self.output, EXPECTED_R9)

@@ -266,7 +266,9 @@ def patch_dtb(original, body_size, directory):
     return updated, end
 
 
-def repair(input_path, output_dir, expected_sha256=None, restorecon_etc=False):
+def repair(input_path, output_dir, expected_sha256=None, restorecon_etc=False, touch_probe=None, touch_module=None, touch_script=None):
+    if touch_probe or touch_module:
+        raise ValueError("large driver payloads belong in the system attachment, not the boot partition; use only --touch-script here")
     if not input_path.is_file() or output_dir.exists() or not output_dir.parent.is_dir():
         raise ValueError("input must exist; output directory must be new with an existing parent")
     base_data = input_path.read_bytes()
@@ -291,6 +293,29 @@ def repair(input_path, output_dir, expected_sha256=None, restorecon_etc=False):
             expected_defaults = rc_index["default.prop"][2] + b"selinux.restorecon_recursive=/system/etc\n"
             if final_index["default.prop"][2] != expected_defaults:
                 raise ValueError("SELinux restore property readback differs")
+        if touch_script:
+            if not Path(touch_script).is_file():
+                raise ValueError("touch evidence script is missing")
+            script = Path(touch_script).read_bytes()
+            current = ramdisk_index([(r.name, r.fields, r.data) for r in records(gzip.decompress(body))])
+            if "z1_touch_evidence.sh" in current:
+                raise ValueError("touch evidence script already exists")
+            records_before = records(gzip.decompress(body))
+            inode = max(r.fields[0] for r in records_before) + 1
+            fields = [inode, stat.S_IFREG | 0o755, 0, 0, 1, 0, len(script), 0, 0, 0, 0, 0, 0]
+            addition = Record(b"z1_touch_evidence.sh", fields, script, encode(b"z1_touch_evidence.sh", fields, script))
+            archive = []
+            for record in records_before:
+                if record.name == b"TRAILER!!!":
+                    archive.append(addition.raw)
+                archive.append(record.raw)
+            raw = b"".join(archive)
+            raw += bytes(-len(raw) % 512)
+            body = gzip.compress(raw, compresslevel=9, mtime=0)
+            verify = ramdisk_index([(r.name, r.fields, r.data) for r in records(gzip.decompress(body))])
+            if verify.get("z1_touch_evidence.sh", (None, None, None))[2] != script:
+                raise ValueError("touch evidence script readback failed")
+            added.append("z1_touch_evidence.sh")
         dtb, end = patch_dtb(base.dtb, len(body), work)
         kernel_header = bytearray(base.kernel[:MTK_HEADER_SIZE])
         struct.pack_into("<I", kernel_header, 4, len(base.zimage) + len(dtb))
@@ -344,6 +369,7 @@ def repair(input_path, output_dir, expected_sha256=None, restorecon_etc=False):
                 "watchdog_configuration": "unchanged",
                 "dexopt_changes": False,
                 "selinux_restorecon_recursive": "/system/etc" if restorecon_etc else None,
+                "touch_evidence": {"manual_only": True, "target": "i2c1/0x15", "node_enabled": False, "automatic_probe": False} if touch_script else None,
             },
             "ramdisk_changes": {
                 "added": added, "modified": changed, "removed": [],
@@ -369,8 +395,11 @@ def main():
     parser.add_argument("output_dir", type=Path, help="new directory for boot.img, DTB, ROOTFS and manifest")
     parser.add_argument("--expected-sha256", help="optionally pin the exact original R9 input hash")
     parser.add_argument("--restorecon-etc", action="store_true", help="let Android init label /system/etc additions from existing file_contexts")
+    parser.add_argument("--touch-probe", type=Path, help="prebuilt static ARM32 i2cprobe; opt-in driver evidence")
+    parser.add_argument("--touch-module", type=Path, help="R9-matching edt-ft5x06.ko; packaged, never auto-loaded")
+    parser.add_argument("--touch-script", type=Path, help="manual targeted evidence script")
     args = parser.parse_args()
-    repair(args.original_boot, args.output_dir, args.expected_sha256, args.restorecon_etc)
+    repair(args.original_boot, args.output_dir, args.expected_sha256, args.restorecon_etc, args.touch_probe, args.touch_module, args.touch_script)
 
 
 if __name__ == "__main__":

@@ -7,6 +7,7 @@ the new PNG, so the unlabelled file is corrected at first boot using the
 existing /plat_file_contexts policy, not a guessed host-side label.
 """
 import argparse
+import gzip
 import hashlib
 import json
 from pathlib import Path
@@ -40,7 +41,22 @@ def main():
     p.add_argument("output_dir", type=Path)
     p.add_argument("--expected-sha256", default=EXPECTED)
     p.add_argument("--ramdisk-contexts", type=Path, help="plat_file_contexts extracted from the paired R9 boot ramdisk")
+    p.add_argument("--driver-probe-gz", type=Path, help="gzip-compressed static ARM32 i2cprobe, added under /system/etc/z1-driver-evidence")
+    p.add_argument("--driver-module-gz", type=Path, help="gzip-compressed R9-matching edt-ft5x06.ko, never auto-loaded")
     args = p.parse_args()
+    if bool(args.driver_probe_gz) != bool(args.driver_module_gz):
+        raise ValueError("driver probe and module attachments must be supplied together")
+    driver_inputs = []
+    if args.driver_probe_gz:
+        for path, name, expected_magic in [(args.driver_probe_gz, "i2cprobe.gz", b"\x7fELF"), (args.driver_module_gz, "edt-ft5x06.ko.gz", b"\x7fELF")]:
+            if not path.is_file():
+                raise ValueError("missing compressed driver attachment: " + str(path))
+            data = gzip.decompress(path.read_bytes())
+            if data[:4] != expected_magic or data[4] != 1 or data[18:20] != b"\x28\x00":
+                raise ValueError("driver attachment must be ARM32 ELF")
+            if name.startswith("edt") and b"vermagic=7.0.0-rc7-z1+" not in data:
+                raise ValueError("touch module vermagic mismatch")
+            driver_inputs.append((path, name, data))
     if args.output_dir.exists() or sha(args.base) != args.expected_sha256 or args.base.stat().st_size != SIZE:
         raise ValueError("input is not pristine R9 or output directory already exists")
     args.output_dir.mkdir(parents=True)
@@ -63,7 +79,18 @@ def main():
         raise ValueError("target already exists in base")
     png = ROOT / "graphics/wallpaper/z1_default.png"
     run(image, f"write {png} /etc/z1_wallpaper.png", True)
+    if args.driver_probe_gz:
+        run(image, "mkdir /etc/z1-driver-evidence", True)
+        if "Type: directory" not in run(image, "stat /etc/z1-driver-evidence"):
+            raise ValueError("driver attachment directory was not created")
     with tempfile.TemporaryDirectory(prefix="z1-wallpaper-verify-") as temp:
+        for path, name, data in driver_inputs:
+            run(image, f"write {path} /etc/z1-driver-evidence/{name}", True)
+            run(image, f"set_inode_field /etc/z1-driver-evidence/{name} mode 0100644", True)
+            verify = Path(temp) / name
+            run(image, f"dump /etc/z1-driver-evidence/{name} {verify}")
+            if gzip.decompress(verify.read_bytes()) != data:
+                raise ValueError("compressed driver readback differs: " + name)
         extracted = Path(temp) / "wallpaper.png"
         run(image, f"dump /etc/z1_wallpaper.png {extracted}")
         if extracted.read_bytes() != png.read_bytes():
@@ -92,10 +119,10 @@ def main():
         "base_sha256": EXPECTED,
         "output_sha256": sha(image),
         "bytes": SIZE,
-        "changes": ["/system/etc/z1_wallpaper.png", "/system/build.prop"],
+        "changes": ["/system/etc/z1_wallpaper.png", "/system/build.prop"] + (["/system/etc/z1-driver-evidence/i2cprobe.gz", "/system/etc/z1-driver-evidence/edt-ft5x06.ko.gz"] if driver_inputs else []),
         "property": "ro.config.wallpaper=/system/etc/z1_wallpaper.png",
         "selinux": "Paired boot ramdisk must run restorecon_recursive /system/etc after mount; no policy or /data changed.",
-        "notes": "Factory default only; existing /data wallpaper takes precedence. No device test.",
+        "notes": "Factory default only; existing /data wallpaper takes precedence. No device test. Driver attachments require manual unpacking; no probe, module insertion, GPIO or charging control runs automatically.",
     }
     (args.output_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     print(json.dumps(manifest, indent=2))
