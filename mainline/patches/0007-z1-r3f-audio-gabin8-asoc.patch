@@ -1,0 +1,3102 @@
+diff --git a/sound/soc/codecs/mt6323-accdet.c b/sound/soc/codecs/mt6323-accdet.c
+new file mode 100644
+index 000000000..5673b9927
+--- /dev/null
++++ b/sound/soc/codecs/mt6323-accdet.c
+@@ -0,0 +1,567 @@
++// SPDX-License-Identifier: GPL-2.0
++
++/* mt6323-accdet.c -- ALSA SoC mt6323 accdet driver
++ *
++ * Copyright (c) 2026 Roman Vivchar <rva333@protonmail.com>
++ */
++
++#include <linux/of.h>
++#include <linux/bitfield.h>
++#include <linux/input.h>
++#include <linux/kthread.h>
++#include <linux/io.h>
++#include <linux/sched/clock.h>
++#include <linux/delay.h>
++#include <linux/workqueue.h>
++#include <linux/jiffies.h>
++#include <linux/devm-helpers.h>
++#include <linux/module.h>
++#include <linux/platform_device.h>
++#include <linux/init.h>
++#include <linux/irqdomain.h>
++#include <linux/irq.h>
++#include <linux/regmap.h>
++#include <linux/iio/consumer.h>
++#include <sound/soc.h>
++#include <sound/jack.h>
++
++#include <linux/mfd/mt6397/core.h>
++#include <linux/mfd/mt6323/registers.h>
++
++#include "mt6323-accdet.h"
++
++#define REGISTER_VAL(x)	((x) - 1)
++
++#define TOP_CKPDN1_ACCDET		BIT(9)
++
++#define TOP_RST_CON_ACCDET		BIT(4)
++
++#define INT_CON1_ACCDET			BIT(2)
++
++#define ACCDET_CON0_1V9_MODE_OFF	0x1a10
++#define ACCDET_CON0_1V9_MODE_ON		0x1e10
++
++#define ACCDET_CON1_ENABLE		BIT(0)
++
++#define ACCDET_CON2_SWCTRL		GENMASK(2, 0)
++
++#define ACCDET_CON3_PWM_WIDTH		REGISTER_VAL(0x500)
++
++/* Threshold at the width: the mic bias is held steady rather than pulsed */
++#define ACCDET_CON4_PWM_THRESHOLD	ACCDET_CON3_PWM_WIDTH
++
++#define ACCDET_CON5_FALL_DELAY		BIT(15)
++#define ACCDET_CON5_RISE_DELAY		GENMASK(14, 0)
++#define ACCDET_CON5_RISE_DELAY_DEFAULT	0x03f0
++
++/* DEBOUNCE0 (state 00): long while detecting a plug, short for button taps */
++#define ACCDET_CON6_DEBOUNCE_DETECT	0x3000
++#define ACCDET_CON6_DEBOUNCE_BUTTON	0x0400
++/* DEBOUNCE1 (state 01): gates press detection */
++#define ACCDET_CON7_DEBOUNCE_DEFAULT	0x0800
++/* DEBOUNCE3 (state 11): long enough to ride out contacts breaking mid-insertion */
++#define ACCDET_CON9_DEBOUNCE_DEFAULT	0x0a00
++
++/* Power down timeout for spurious wakeups */
++#define ACCDET_SHUTDOWN_MS		1000
++
++/*
++ * Headphones without a mic have no buttons to watch and short the mic bias to
++ * ground. Power down once the plug has settled (a slow insertion may still
++ * turn out to be a headset); the EINT catches the unplug.
++ */
++#define ACCDET_HEADPHONE_SHUTDOWN_MS	5000
++
++/* A plug being pushed in or wiggled breaks contact; confirm removals after this */
++#define ACCDET_UNPLUG_CONFIRM_US	50000
++
++/* Button releases are polled rather than waited on as an interrupt */
++#define ACCDET_KEY_POLL_MS		60
++
++/* Settling time before the key voltage is sampled */
++#define ACCDET_KEY_SETTLE_US		400
++
++/* The block latches the clear on its own slow clock, so hold the bit */
++#define ACCDET_IRQ_CLR_US		100
++
++#define ACCDET_CON11_IRQ_CLR		BIT(8)
++#define ACCDET_CON11_IRQ_STA		BIT(0)
++
++#define ACCDET_CON13_STATE_MASK		GENMASK(7, 6)
++
++#define ACCDET_KEY_MEDIA_MAX_MV		90
++#define ACCDET_KEY_VOLUMEUP_MAX_MV	170
++#define ACCDET_KEY_VOLUMEDOWN_MAX_MV	560
++
++#define MT6323_ACCDET_JACK_MASK (SND_JACK_HEADPHONE | \
++				SND_JACK_HEADSET | \
++				SND_JACK_BTN_0 | \
++				SND_JACK_BTN_1 | \
++				SND_JACK_BTN_2)
++
++static const struct snd_soc_component_driver mt6323_accdet_soc_driver;
++
++enum mt6323_accdet_jack_type {
++	ACCDET_HEADPHONE,
++	ACCDET_HEADSET,
++	ACCDET_NO_DEVICE = 3
++};
++
++struct mt6323_accdet {
++	struct snd_soc_jack *jack;
++	struct device *dev;
++	struct regmap *regmap;
++	/* power status lock */
++	struct mutex lock;
++
++	int jack_type;
++	int btn_type;
++	bool powered;
++	struct delayed_work shutdown_work;
++	struct delayed_work key_work;
++	struct iio_channel *adc;
++};
++
++static int mt6323_accdet_get_jack_type(struct mt6323_accdet *accdet,
++                                       enum mt6323_accdet_jack_type *jack) {
++	int ret;
++	u32 val;
++
++	ret = regmap_read(accdet->regmap, MT6323_ACCDET_CON13, &val);
++	if (ret)
++		return ret;
++
++	*jack = FIELD_GET(ACCDET_CON13_STATE_MASK, val);
++	return 0;
++}
++
++static int mt6323_accdet_get_btn_type(struct mt6323_accdet *accdet)
++{
++	int ret, mv;
++
++	if (!accdet->adc)
++		return SND_JACK_BTN_0;
++
++	ret = regmap_write(accdet->regmap, MT6323_ACCDET_CON0,
++			   ACCDET_CON0_1V9_MODE_ON);
++	if (!ret) {
++		udelay(ACCDET_KEY_SETTLE_US);
++		ret = iio_read_channel_processed(accdet->adc, &mv);
++	}
++
++	regmap_write(accdet->regmap, MT6323_ACCDET_CON0,
++		     ACCDET_CON0_1V9_MODE_OFF);
++
++	if (ret) {
++		dev_warn(accdet->dev, "failed to read key voltage: %d\n", ret);
++		return SND_JACK_BTN_0;
++	}
++
++	dev_dbg(accdet->dev, "key voltage %d mV\n", mv);
++
++	if (mv < ACCDET_KEY_MEDIA_MAX_MV)
++		return SND_JACK_BTN_0;
++
++	if (mv < ACCDET_KEY_VOLUMEUP_MAX_MV)
++		return SND_JACK_BTN_2;
++
++	if (mv < ACCDET_KEY_VOLUMEDOWN_MAX_MV)
++		return SND_JACK_BTN_1;
++
++	return 0;
++}
++
++static void mt6323_accdet_jack_report(struct mt6323_accdet *accdet)
++{
++	if (!accdet->jack)
++		return;
++
++	snd_soc_jack_report(accdet->jack, accdet->jack_type | accdet->btn_type,
++	                    MT6323_ACCDET_JACK_MASK);
++}
++
++int mt6323_accdet_enable_jack_detect(struct snd_soc_component *component,
++				     struct snd_soc_jack *jack)
++{
++	struct mt6323_accdet *accdet =
++		snd_soc_component_get_drvdata(component);
++
++	snd_jack_set_key(jack->jack, SND_JACK_BTN_0, KEY_PLAYPAUSE);
++	snd_jack_set_key(jack->jack, SND_JACK_BTN_1, KEY_VOLUMEDOWN);
++	snd_jack_set_key(jack->jack, SND_JACK_BTN_2, KEY_VOLUMEUP);
++
++	accdet->jack = jack;
++
++	mt6323_accdet_jack_report(accdet);
++
++	return 0;
++}
++EXPORT_SYMBOL_GPL(mt6323_accdet_enable_jack_detect);
++
++static int mt6323_accdet_enable(struct mt6323_accdet *accdet) {
++	struct regmap *map = accdet->regmap;
++	int ret;
++
++	/* ungate clock */
++	ret = regmap_write(map, MT6323_TOP_CKPDN1_CLR, TOP_CKPDN1_ACCDET);
++	if (ret)
++		return ret;
++
++	/* enable software control */
++	ret = regmap_write(map, MT6323_ACCDET_CON2, ACCDET_CON2_SWCTRL);
++	if (ret)
++		return ret;
++
++	/* enable accdet */
++	ret = regmap_write(map, MT6323_ACCDET_CON1, ACCDET_CON1_ENABLE);
++	if (ret)
++		return ret;
++
++	accdet->powered = true;
++	return 0;
++}
++
++static int mt6323_accdet_disable(struct mt6323_accdet *accdet)
++{
++	struct regmap *map = accdet->regmap;
++	int ret;
++
++	/* disable accdet */
++	ret = regmap_write(map, MT6323_ACCDET_CON1, 0);
++	if (ret)
++		return ret;
++
++	/* disable software control */
++	ret = regmap_write(map, MT6323_ACCDET_CON2, 0);
++	if (ret)
++		return ret;
++
++	/* gate the clock */
++	ret = regmap_write(map, MT6323_TOP_CKPDN1_SET, TOP_CKPDN1_ACCDET);
++	if (ret)
++		return ret;
++
++	accdet->powered = false;
++	return 0;
++}
++
++/* Power up the accdet and schedule shutdown work. Caller must hold the mutex. */
++static void mt6323_accdet_wake(struct mt6323_accdet *accdet)
++{
++	if (mt6323_accdet_enable(accdet))
++		return;
++
++	schedule_delayed_work(&accdet->shutdown_work,
++			      msecs_to_jiffies(ACCDET_SHUTDOWN_MS));
++}
++
++static void mt6323_accdet_key_work(struct work_struct *work)
++{
++	struct mt6323_accdet *accdet =
++		container_of(work, struct mt6323_accdet, key_work.work);
++	enum mt6323_accdet_jack_type jack;
++
++	guard(mutex)(&accdet->lock);
++
++	if (!accdet->btn_type)
++		return;
++
++	if (mt6323_accdet_get_jack_type(accdet, &jack))
++		return;
++
++	if (jack == ACCDET_HEADPHONE) {
++		schedule_delayed_work(&accdet->key_work,
++				      msecs_to_jiffies(ACCDET_KEY_POLL_MS));
++		return;
++	}
++
++	accdet->btn_type = 0;
++	mt6323_accdet_jack_report(accdet);
++}
++
++/* Report jack or key events. Caller holds the lock. */
++static void mt6323_accdet_sync(struct mt6323_accdet *accdet)
++{
++	enum mt6323_accdet_jack_type jack;
++
++	if (mt6323_accdet_get_jack_type(accdet, &jack))
++		return;
++
++	if (jack == ACCDET_NO_DEVICE && accdet->jack_type) {
++		fsleep(ACCDET_UNPLUG_CONFIRM_US);
++
++		if (mt6323_accdet_get_jack_type(accdet, &jack))
++			return;
++	}
++
++	if (jack == ACCDET_NO_DEVICE) {
++		/*
++		 * If jack_type is not set to a real state, this is a spurious wakeup
++		 * and shutdown work will cleanup accdet state.
++		 */
++		if (!accdet->jack_type)
++			return;
++
++		accdet->jack_type = 0;
++		accdet->btn_type = 0;
++		mt6323_accdet_jack_report(accdet);
++
++		/* Set long debounce for the next jack insertion event */
++		regmap_write(accdet->regmap, MT6323_ACCDET_CON6,
++			     ACCDET_CON6_DEBOUNCE_DETECT);
++
++		schedule_delayed_work(&accdet->shutdown_work,
++				      msecs_to_jiffies(ACCDET_SHUTDOWN_MS));
++		return;
++	}
++
++	if (accdet->jack_type == SND_JACK_HEADSET) {
++		if (jack != ACCDET_HEADPHONE) {
++			accdet->btn_type = 0;
++		} else if (!accdet->btn_type) {
++			accdet->btn_type = mt6323_accdet_get_btn_type(accdet);
++
++			if (accdet->btn_type)
++				schedule_delayed_work(&accdet->key_work,
++						      msecs_to_jiffies(ACCDET_KEY_POLL_MS));
++		}
++	} else if (jack == ACCDET_HEADSET) {
++		/* Stay powered to see the buttons */
++		cancel_delayed_work(&accdet->shutdown_work);
++		accdet->jack_type = SND_JACK_HEADSET;
++		/* Set short debounce for key events */
++		regmap_write(accdet->regmap, MT6323_ACCDET_CON6,
++			     ACCDET_CON6_DEBOUNCE_BUTTON);
++	} else if (accdet->jack_type != SND_JACK_HEADPHONE) {
++		accdet->jack_type = SND_JACK_HEADPHONE;
++		mod_delayed_work(system_wq, &accdet->shutdown_work,
++				 msecs_to_jiffies(ACCDET_HEADPHONE_SHUTDOWN_MS));
++	}
++
++	mt6323_accdet_jack_report(accdet);
++}
++
++static void mt6323_accdet_shutdown_work(struct work_struct *work)
++{
++	struct mt6323_accdet *accdet =
++		container_of(work, struct mt6323_accdet, shutdown_work.work);
++
++	guard(mutex)(&accdet->lock);
++
++	/* Abort if already powered down, or a headset needs the buttons */
++	if (!accdet->powered || accdet->jack_type == SND_JACK_HEADSET)
++		return;
++
++	mt6323_accdet_sync(accdet);
++	if (accdet->jack_type == SND_JACK_HEADSET)
++		return;
++
++	mt6323_accdet_disable(accdet);
++}
++
++static int mt6323_accdet_init(struct mt6323_accdet *accdet) {
++	struct regmap *map = accdet->regmap;
++	int ret;
++
++	ret = regmap_write(map, MT6323_ACCDET_CON0, ACCDET_CON0_1V9_MODE_OFF);
++	if (ret)
++		return ret;
++
++	/* ungate clock */
++	ret = regmap_write(map, MT6323_TOP_CKPDN1_CLR, TOP_CKPDN1_ACCDET);
++	if (ret)
++		return ret;
++
++	/* reset */
++	ret = regmap_write(map, MT6323_TOP_RST_CON_SET, TOP_RST_CON_ACCDET);
++	if (ret)
++		return ret;
++
++	ret = regmap_write(map, MT6323_TOP_RST_CON_CLR, TOP_RST_CON_ACCDET);
++	if (ret)
++		return ret;
++
++	/* setup pwm */
++	ret = regmap_write(map, MT6323_ACCDET_CON3, ACCDET_CON3_PWM_WIDTH);
++	if (ret)
++		return ret;
++
++	ret = regmap_write(map, MT6323_ACCDET_CON4, ACCDET_CON4_PWM_THRESHOLD);
++	if (ret)
++		return ret;
++
++	ret = regmap_write(map, MT6323_ACCDET_CON2, ACCDET_CON2_SWCTRL);
++	if (ret)
++		return ret;
++
++	/* setup delay */
++	ret = regmap_write(map, MT6323_ACCDET_CON5,
++			   ACCDET_CON5_FALL_DELAY |
++			   FIELD_PREP(ACCDET_CON5_RISE_DELAY,
++				      ACCDET_CON5_RISE_DELAY_DEFAULT));
++	if (ret)
++		return ret;
++
++	/* setup debounce time */
++	ret = regmap_write(map, MT6323_ACCDET_CON6, ACCDET_CON6_DEBOUNCE_DETECT);
++	if (ret)
++		return ret;
++
++	ret = regmap_write(map, MT6323_ACCDET_CON7, ACCDET_CON7_DEBOUNCE_DEFAULT);
++	if (ret)
++		return ret;
++
++	ret = regmap_write(map, MT6323_ACCDET_CON9, ACCDET_CON9_DEBOUNCE_DEFAULT);
++	if (ret)
++		return ret;
++
++	/* clear irq if any: w1c */
++	ret = regmap_write(map, MT6323_ACCDET_CON11, ACCDET_CON11_IRQ_CLR);
++	if (ret)
++		return ret;
++
++	udelay(ACCDET_IRQ_CLR_US);
++
++	ret = regmap_write(map, MT6323_ACCDET_CON11, 0);
++	if (ret)
++		return ret;
++
++	/* enable interrupt */
++	return regmap_write(map, MT6323_INT_CON1_SET, INT_CON1_ACCDET);
++}
++
++/* PMIC interrupt handles key and unplug events */
++static irqreturn_t mt6323_accdet_pmic_irq(int irq, void *data)
++{
++	struct mt6323_accdet *accdet = data;
++
++	guard(mutex)(&accdet->lock);
++
++	/* ack the irq (write-1-to-clear pulse), else the PMIC line storms */
++	regmap_write(accdet->regmap, MT6323_ACCDET_CON11, ACCDET_CON11_IRQ_CLR);
++	udelay(ACCDET_IRQ_CLR_US);
++	regmap_write(accdet->regmap, MT6323_ACCDET_CON11, 0);
++
++	if (!accdet->powered)
++		return IRQ_HANDLED;
++
++	mt6323_accdet_sync(accdet);
++
++	return IRQ_HANDLED;
++}
++
++/* EINT interrupt wakes up accdet to check jack state */
++static irqreturn_t mt6323_accdet_eint_irq(int irq, void *data)
++{
++	struct mt6323_accdet *accdet = data;
++
++	guard(mutex)(&accdet->lock);
++
++	if (!accdet->powered)
++		mt6323_accdet_wake(accdet);
++	else
++		mt6323_accdet_sync(accdet);
++
++	return IRQ_HANDLED;
++}
++
++static int mt6323_accdet_probe(struct platform_device *pdev)
++{
++	struct mt6397_chip *mt6397 = dev_get_drvdata(pdev->dev.parent);
++	struct device *dev = &pdev->dev;
++	struct mt6323_accdet *accdet;
++	int ret, irq;
++
++	accdet = devm_kzalloc(&pdev->dev, sizeof(*accdet), GFP_KERNEL);
++	if (!accdet)
++		return -ENOMEM;
++
++	accdet->dev = dev;
++	accdet->regmap = mt6397->regmap;
++	if (IS_ERR(accdet->regmap))
++		return dev_err_probe(dev, PTR_ERR(accdet->regmap), "failed to get regmap\n");
++
++	ret = devm_mutex_init(dev, &accdet->lock);
++	if (ret)
++		return ret;
++
++	ret = devm_delayed_work_autocancel(dev, &accdet->shutdown_work,
++					   mt6323_accdet_shutdown_work);
++	if (ret)
++		return ret;
++
++	ret = devm_delayed_work_autocancel(dev, &accdet->key_work,
++					   mt6323_accdet_key_work);
++	if (ret)
++		return ret;
++
++	accdet->adc = devm_iio_channel_get(dev, "accdet");
++	if (IS_ERR(accdet->adc)) {
++		ret = PTR_ERR(accdet->adc);
++		if (ret == -EPROBE_DEFER)
++			return ret;
++
++		/* only the media button can be reported without it */
++		dev_warn(dev, "no accdet auxadc channel (%d), buttons limited\n",
++			 ret);
++		accdet->adc = NULL;
++	}
++
++	irq = platform_get_irq_byname(pdev, "eint");
++	if (irq < 0)
++		return dev_err_probe(dev, irq, "failed to get eint irq\n");
++
++	ret = devm_request_threaded_irq(&pdev->dev, irq,
++					NULL, mt6323_accdet_eint_irq,
++					IRQF_ONESHOT,
++					"accdet-eint", accdet);
++	if (ret)
++		return ret;
++
++	irq = platform_get_irq_byname(pdev, "pmic");
++	if (irq < 0)
++		return dev_err_probe(dev, irq, "failed to get pmic irq\n");
++
++	ret = devm_request_threaded_irq(&pdev->dev, irq,
++					NULL, mt6323_accdet_pmic_irq,
++					IRQF_TRIGGER_RISING | IRQF_TRIGGER_FALLING |
++					IRQF_ONESHOT, "accdet-pmic", accdet);
++	if (ret)
++		return ret;
++
++	platform_set_drvdata(pdev, accdet);
++
++	ret = devm_snd_soc_register_component(&pdev->dev,
++					      &mt6323_accdet_soc_driver,
++					      NULL, 0);
++	if (ret) {
++		dev_err(&pdev->dev, "failed to register component\n");
++		return ret;
++	}
++
++	mt6323_accdet_init(accdet);
++
++	guard(mutex)(&accdet->lock);
++	mt6323_accdet_wake(accdet);
++
++	return 0;
++}
++
++static const struct of_device_id mt6323_accdet_match[] = {
++	{ .compatible = "mediatek,mt6323-accdet" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, mt6323_accdet_match);
++
++static struct platform_driver mt6323_accdet_driver = {
++	.driver = {
++		.name = "mt6323-accdet",
++		.of_match_table = mt6323_accdet_match,
++	},
++	.probe = mt6323_accdet_probe,
++};
++
++module_platform_driver(mt6323_accdet_driver);
++
++MODULE_DESCRIPTION("MT6323 ALSA SoC accdet driver");
++MODULE_LICENSE("GPL");
+diff --git a/sound/soc/codecs/mt6323-accdet.h b/sound/soc/codecs/mt6323-accdet.h
+new file mode 100644
+index 000000000..312ba13ff
+--- /dev/null
++++ b/sound/soc/codecs/mt6323-accdet.h
+@@ -0,0 +1,13 @@
++/* SPDX-License-Identifier: GPL-2.0+ */
++/*
++ * Copyright (C) 2026 Roman Vichar <rva333@protonmail.com>
++ */
++
++#ifndef _MT6323_ACCDET_H_
++#define _MT6323_ACCDET_H_
++
++#include <sound/soc-component.h>
++
++int mt6323_accdet_enable_jack_detect(struct snd_soc_component *component,
++				     struct snd_soc_jack *jack);
++#endif
+diff --git a/sound/soc/codecs/mt6323.c b/sound/soc/codecs/mt6323.c
+index e22bfd2ff..62019adcd 100644
+--- a/sound/soc/codecs/mt6323.c
++++ b/sound/soc/codecs/mt6323.c
+@@ -1,219 +1,485 @@
+ // SPDX-License-Identifier: GPL-2.0
+ /*
+- * MT6323 ALSA SoC audio codec driver
++ * MediaTek MT6323 PMIC analog audio codec.
+  *
+- * Minimal mainline ASoC skeleton for the MT6323 PMIC audio codec as used
+- * on the MT6572 based Z1 (hearing-aid) device.
+- *
+- * NOTE ON THE Z1 PWRAP WRITE GATE
+- * -------------------------------
+- * The Z1 pwrap has a write-denial gate (CONFIG_MTK_PMIC_WRAP_Z1_WRITE_DENY)
+- * which currently rejects *all* MT6323 register writes. Every regmap write
+- * performed by this driver will therefore be refused on the Z1 until that
+- * gate is reworked on the pwrap side. This driver intentionally does NOT try
+- * to bypass the gate: the Z1 power-on audio sequence is a separate step and
+- * is left out here. As a result only a structure/compile-level skeleton is
+- * provided; nothing is expected to produce sound on the Z1 in its current
+- * state.
++ * The analog audio back-end (DAC, headphone driver, path to an external
++ * speaker amp) of the MT6323 PMIC, reached over the parent mt6397 MFD pwrap
++ * regmap. The SoC-side AFE and the sound card are separate drivers.
+  */
+ 
++#include <linux/bits.h>
++#include <linux/delay.h>
++#include <linux/mfd/mt6397/core.h>
+ #include <linux/module.h>
+-#include <linux/of.h>
+ #include <linux/platform_device.h>
+ #include <linux/regmap.h>
+-#include <linux/mfd/mt6397/core.h>
+-#include <linux/mfd/mt6323/registers.h>
++
++#include <sound/pcm.h>
+ #include <sound/soc.h>
++#include <sound/soc-dapm.h>
++#include <sound/tlv.h>
++
++#define MT6323_CODEC_RATES	SNDRV_PCM_RATE_8000_48000
++#define MT6323_CODEC_FORMATS	(SNDRV_PCM_FMTBIT_S16_LE | \
++				 SNDRV_PCM_FMTBIT_S24_LE | \
++				 SNDRV_PCM_FMTBIT_S32_LE)
++
++/*
++ * Audio registers in the PMIC 16-bit space: ABB_AFE<->PMIC bridge @ 0x4000,
++ * AUDTOP analog DAC/headphone/voice block @ 0x0700, internal class-D speaker
++ * amplifier control @ 0x0052 (SPK_CON).
++ */
++#define ABB_AFE_CON(n)		(0x4000 + (n) * 2)
++#define AUDTOP_CON(n)		(0x0700 + (n) * 2)
++#define SPK_CON(n)		(0x0052 + (n) * 2)
++/* Speaker clock gate lives in TOP_CKPDN1 (cleared to enable). */
++#define PMIC_RG_AUD_SPK_PDN	0x000e
++#define ABB_AFE_UP8X_FIFO_CFG0	0x401e
++#define ABB_AFE_PMIC_NEWIF_CFG0	0x4024
++#define ABB_AFE_PMIC_NEWIF_CFG1	0x4026
++#define ABB_AFE_PMIC_NEWIF_CFG2	0x4028
++#define ABB_AFE_PMIC_NEWIF_CFG3	0x402a
+ 
+-/* Same advanced-format set used by the other MediaTek PMIC codecs */
+-#define MT6323_SND_SOC_ADV_MT_FMTS \
+-	(SNDRV_PCM_FMTBIT_S16_LE | \
+-	 SNDRV_PCM_FMTBIT_S16_BE | \
+-	 SNDRV_PCM_FMTBIT_U16_LE | \
+-	 SNDRV_PCM_FMTBIT_U16_BE | \
+-	 SNDRV_PCM_FMTBIT_S24_LE | \
+-	 SNDRV_PCM_FMTBIT_S24_BE | \
+-	 SNDRV_PCM_FMTBIT_U24_LE | \
+-	 SNDRV_PCM_FMTBIT_U24_BE | \
+-	 SNDRV_PCM_FMTBIT_S32_LE | \
+-	 SNDRV_PCM_FMTBIT_S32_BE | \
+-	 SNDRV_PCM_FMTBIT_U32_LE | \
+-	 SNDRV_PCM_FMTBIT_U32_BE)
+-
+-#define MT6323_SOC_HIGH_USE_RATE \
+-	(SNDRV_PCM_RATE_CONTINUOUS | SNDRV_PCM_RATE_8000_192000)
+-
+-struct mt6323_priv {
++/* MT6323 audio clocks (TOP_CKPDN / TOP_CKCON). Atomic SET/CLR aliases. */
++#define MT6323_TOP_CKPDN0_SET	0x0104
++#define MT6323_TOP_CKPDN0_CLR	0x0106
++#define PMIC_RG_CLKSQ_EN_AUD	BIT(0)
++#define MT6323_TOP_CKPDN1_SET	0x010a
++#define MT6323_TOP_CKPDN1_CLR	0x010c
++#define PMIC_RG_AUD_26M_PDN	BIT(8)
++#define MT6323_TOP_CKCON1_SET	0x0128
++#define PMIC_CKCON1_AUD_BITS	GENMASK(13, 12)
++
++/*
++ * Output gain lives in the ZCD (zero-cross-detect) block. Each register packs
++ * the L channel at [4:0] and R at [11:7]; the 5-bit field encodes +8dB (0) ..
++ * 0dB (8) .. -10dB (18) .. -40dB (0x1f), -1dB per step (same layout as mt6358).
++ */
++#define ZCD_CON1		0x0802		/* lineout L/R gain */
++#define ZCD_CON2		0x0804		/* headphone L/R gain */
++#define ZCD_GAIN_0DB		8
++#define ZCD_GAIN_N10DB		18
++#define ZCD_GAIN_CTL_MAX	0x12		/* control range = +8dB .. -10dB */
++#define ZCD_GAIN_REG(g)		(((g) << 7) | (g))
++
++struct mt6323_codec_priv {
+ 	struct device *dev;
+-	struct regmap *regmap;
++	struct regmap *regmap;		/* borrowed from the parent MT6323 MFD */
+ };
+ 
+ /*
+- * DAPM widgets.
+- *
+- * The MT6323 audio register blocks are:
+- *   - SPK_CON0..12   (0x52..0x6a): speaker amplifier path
+- *   - AUDTOP_CON0..9 (0x700..0x712): audio top control
+- *   - TOP_CKPDN0..2  (0x102/0x108/0x10e): audio clock power-downs
+- *
+- * include/linux/mfd/mt6323/registers.h only provides the register *addresses*,
+- * not the bit fields, so every widget below is registered at SND_SOC_NOPM.
+- * TODO: once the MT6323 audio register bit semantics are mapped, replace the
+- * NOPM widgets with the real reg/shift pairs (e.g. DAC/ADC power-up bits in
+- * AUDTOP_CONx, SPK amp enable in SPK_CONx) and add the matching regmap
+- * power-up/down event handlers.
++ * Analog idle baseline from the stock power-on; the MT6323 audio fields are
++ * undocumented. Per the BSP: NEWIF_CFG0 = sample_rate << 12 | 0x330, and
++ * NEWIF_CFG2 = 0x302f selects the up8x receive-interface ADC voice mode.
++ */
++static const struct reg_sequence mt6323_codec_init[] = {
++	{ MT6323_TOP_CKCON1_SET, PMIC_CKCON1_AUD_BITS },	/* audio clock domain */
++	/* Analog AFE clock/format bridge to the codec. */
++	{ ABB_AFE_CON(1),  0x0009 },
++	{ ABB_AFE_CON(3),  0x0221 },
++	{ ABB_AFE_CON(4),  0x0255 },
++	{ ABB_AFE_CON(5),  0x0028 },
++	{ ABB_AFE_CON(6),  0x0218 },
++	{ ABB_AFE_CON(7),  0x0204 },
++	{ ABB_AFE_CON(10), 0x0001 },
++	/* Analog top: DAC, headphone buffer and bias -- idle baseline. */
++	{ AUDTOP_CON(0),   0x6010 },
++	{ AUDTOP_CON(1),   0x0140 },
++	{ AUDTOP_CON(2),   0x00c0 },
++	{ AUDTOP_CON(3),   0x0200 },
++	{ AUDTOP_CON(5),   0x0014 },
++	{ AUDTOP_CON(6),   0x37e2 },
++	{ AUDTOP_CON(8),   0x0200 },
++	{ AUDTOP_CON(9),   0x0008 },
++	/* PMIC NewIF serial link to the SoC AFE (up8x FIFO + DL/UL config). */
++	{ ABB_AFE_UP8X_FIFO_CFG0,  0x0001 },
++	{ ABB_AFE_PMIC_NEWIF_CFG0, 0x7330 },	/* DL: sample_rate << 12 | 0x330 */
++	{ ABB_AFE_PMIC_NEWIF_CFG1, 0x0018 },
++	{ ABB_AFE_PMIC_NEWIF_CFG2, 0x302f },	/* UL up8x rxif ADC voice mode */
++	{ ABB_AFE_PMIC_NEWIF_CFG3, 0xf872 },
++	/* Conservative default analog output gain: headphone 0dB, lineout -10dB. */
++	{ ZCD_CON2, ZCD_GAIN_REG(ZCD_GAIN_0DB) },
++	{ ZCD_CON1, ZCD_GAIN_REG(ZCD_GAIN_N10DB) },
++	{ SPK_CON(9), 0x0400 },		/* class-D speaker PGA gain +6dB; "Speaker Volume" owns it */
++};
++
++/* Audio clocks: CLKSQ + 26 MHz, gated with the stream. */
++static int mt6323_clk_event(struct snd_soc_dapm_widget *w,
++			    struct snd_kcontrol *kcontrol, int event)
++{
++	struct mt6323_codec_priv *priv =
++		snd_soc_component_get_drvdata(snd_soc_dapm_to_component(w->dapm));
++
++	switch (event) {
++	case SND_SOC_DAPM_PRE_PMU:
++		regmap_write(priv->regmap, MT6323_TOP_CKPDN0_SET, PMIC_RG_CLKSQ_EN_AUD);
++		regmap_write(priv->regmap, MT6323_TOP_CKPDN1_CLR, PMIC_RG_AUD_26M_PDN);
++		break;
++	case SND_SOC_DAPM_POST_PMD:
++		regmap_write(priv->regmap, MT6323_TOP_CKPDN1_SET, PMIC_RG_AUD_26M_PDN);
++		regmap_write(priv->regmap, MT6323_TOP_CKPDN0_CLR, PMIC_RG_CLKSQ_EN_AUD);
++		break;
++	}
++	return 0;
++}
++
++/* AFE<->PMIC serial bridge (NEWIF) downlink enable. */
++static int mt6323_newif_event(struct snd_soc_dapm_widget *w,
++			      struct snd_kcontrol *kcontrol, int event)
++{
++	struct mt6323_codec_priv *priv =
++		snd_soc_component_get_drvdata(snd_soc_dapm_to_component(w->dapm));
++
++	switch (event) {
++	case SND_SOC_DAPM_PRE_PMU:
++		/* enable the ABB AFE bridge (CON0) and its clock/format config (CON11) */
++		regmap_write(priv->regmap, ABB_AFE_CON(0),  0x0001);
++		regmap_write(priv->regmap, ABB_AFE_CON(11), 0x0303);
++		break;
++	case SND_SOC_DAPM_POST_PMD:
++		regmap_write(priv->regmap, ABB_AFE_CON(11), 0x0000);
++		regmap_write(priv->regmap, ABB_AFE_CON(0),  0x0000);
++		break;
++	}
++	return 0;
++}
++
++/* Analog DAC: bias + enable on power-up, back to the idle baseline on down. */
++static int mt6323_dac_event(struct snd_soc_dapm_widget *w,
++			    struct snd_kcontrol *kcontrol, int event)
++{
++	struct mt6323_codec_priv *priv =
++		snd_soc_component_get_drvdata(snd_soc_dapm_to_component(w->dapm));
++
++	switch (event) {
++	case SND_SOC_DAPM_PRE_PMU:
++		regmap_write(priv->regmap, AUDTOP_CON(5), 0x0014);	/* DAC output level: stock plays here; old 0x7714 over-drove the speaker */
++		regmap_write(priv->regmap, AUDTOP_CON(0), 0x7010);	/* DAC enable */
++		break;
++	case SND_SOC_DAPM_POST_PMD:
++		regmap_write(priv->regmap, AUDTOP_CON(0), 0x6010);	/* baseline */
++		regmap_write(priv->regmap, AUDTOP_CON(5), 0x0014);	/* baseline */
++		break;
++	}
++	return 0;
++}
++
++/*
++ * Headphone driver. On power-up: depop config then enable. On power-down: drop
++ * the output driver back to the idle baseline -- DAPM powers this down before
++ * the DAC (output-to-input order), muting the HP before the feed stops.
++ */
++static int mt6323_hp_event(struct snd_soc_dapm_widget *w,
++			   struct snd_kcontrol *kcontrol, int event)
++{
++	struct mt6323_codec_priv *priv =
++		snd_soc_component_get_drvdata(snd_soc_dapm_to_component(w->dapm));
++
++	switch (event) {
++	case SND_SOC_DAPM_PRE_PMU:
++		regmap_write(priv->regmap, AUDTOP_CON(6), 0xf5ba);	/* HP drv + depop */
++		regmap_write(priv->regmap, AUDTOP_CON(4), 0x007c);	/* HP enable */
++		break;
++	case SND_SOC_DAPM_POST_PMD:
++		regmap_write(priv->regmap, AUDTOP_CON(4), 0x0000);	/* HP off */
++		regmap_write(priv->regmap, AUDTOP_CON(6), 0x37e2);	/* baseline */
++		break;
++	}
++	return 0;
++}
++
++/*
++ * Internal class-D speaker (SPK_CON) fed by the AUDTOP voice/LCH DAC; the 1.35V
++ * CM buffer comes up with the shared "DAC" widget. Sequence and values mirror
++ * the stock HAL DEVICE_OUT_SPEAKER (class-D) path.
+  */
++static int mt6323_speaker_event(struct snd_soc_dapm_widget *w,
++				struct snd_kcontrol *kcontrol, int event)
++{
++	struct mt6323_codec_priv *priv =
++		snd_soc_component_get_drvdata(snd_soc_dapm_to_component(w->dapm));
++	int i;
++
++	switch (event) {
++	case SND_SOC_DAPM_PRE_PMU:
++		/* Set voice buffer to smallest -22dB. */
++		regmap_write(priv->regmap, AUDTOP_CON(7), 0x2400);
++		/* enable input short of HP to prevent voice signal leakage . Enable 2.4V. */
++		regmap_write(priv->regmap, AUDTOP_CON(6), 0xb7f6);
++		/* enable clean 1.35VCM buffer in audioUL */
++		regmap_update_bits(priv->regmap, AUDTOP_CON(0), 0x7000, 0xf000);
++		/* enable audio bias. enable LCH DAC */
++		regmap_write(priv->regmap, AUDTOP_CON(4), 0x0014);
++		fsleep(10000);
++		/* enable voice buffer and -11dB gain. Inter-connect voice buffer to SPK AMP */
++		regmap_write(priv->regmap, AUDTOP_CON(7), 0x3550);
++		/* Speaker clock */
++		regmap_write(priv->regmap, MT6323_TOP_CKPDN1_CLR, PMIC_RG_AUD_SPK_PDN);
++		/* enable classAB OC function */
++		regmap_write(priv->regmap, SPK_CON(2), 0x0214);
++
++		/* SPK_CON9 PGA gain is owned by the "Speaker Volume" control. */
++
++		/* enable SPK-Amp with 0dB gain, enable SPK amp offset triming, select class D mode */
++		regmap_write(priv->regmap, SPK_CON(0), 0x3008);
++		/* Enable Class ABD */
++		regmap_write(priv->regmap, SPK_CON(0), 0x3009);
++		fsleep(5000);
++
++		/* enable SPK AMP with 0dB gain, select Class D. enable Amp. */
++		regmap_write(priv->regmap, SPK_CON(0), 0x3001);
++		/* spk output stage enable and enable */
++		regmap_write(priv->regmap, SPK_CON(12), 0x0a00);
++		for (i = 6; i <= 11; i++) {
++			fsleep(1000);
++			/* enable voice buffer and +1dB gain. Inter-connect voice buffer to SPK AMP */
++			regmap_write(priv->regmap, AUDTOP_CON(7), 0x3500 | (i << 4));
++		}
++		break;
++	case SND_SOC_DAPM_POST_PMD:
++		for (i = 10; i >= 5; i--) {
++			/* ramp to -11dB. Inter-connect voice buffer to SPK AMP */
++			regmap_write(priv->regmap, AUDTOP_CON(7), 0x3500 | (i << 4));
++			fsleep(1000);
++		}
++
++		/* Mute Spk amp, select to original class AB mode. disable class-D Amp */
++		regmap_write(priv->regmap, SPK_CON(0), 0x0004);
++		/* Disable SPK output stage, disable spk amp. */
++		regmap_write(priv->regmap, SPK_CON(12), 0x0000);
++		/* Disable Speaker clock */
++		regmap_write(priv->regmap, MT6323_TOP_CKPDN1_SET, PMIC_RG_AUD_SPK_PDN);
++		/* set voice buffer gain as -22dB */
++		regmap_write(priv->regmap, AUDTOP_CON(7), 0x2500);
++		/* Disable voice buffer */
++		regmap_write(priv->regmap, AUDTOP_CON(7), 0x2400);
++		/* Disable audio bias and L-DAC */
++		regmap_write(priv->regmap, AUDTOP_CON(4), 0x0000);
++		/* Disable input short of HP drivers for voice signal leakage prevent and disable 2.4V reference buffer , audio DAC clock. */
++		regmap_write(priv->regmap, AUDTOP_CON(6), 0x37e2);
++		break;
++	}
++	return 0;
++}
++
++#define AUDTOP_CON7_TEARDOWN_MASK	GENMASK(7, 4)
++
++static int mt6323_earpiece_event(struct snd_soc_dapm_widget *w,
++				 struct snd_kcontrol *kcontrol, int event)
++{
++	struct mt6323_codec_priv *priv = snd_soc_component_get_drvdata(
++		snd_soc_dapm_to_component(w->dapm));
++	u32 val, target_vol;
++	int i;
++
++	regmap_read(priv->regmap, AUDTOP_CON(7), &val);
++	target_vol = FIELD_GET(AUDTOP_CON7_TEARDOWN_MASK, val);
++
++	switch (event) {
++	case SND_SOC_DAPM_PRE_PMU:
++		/* Set voice buffer to smallest -22dB */
++		regmap_write(priv->regmap, AUDTOP_CON(7), 0x2400);
++		/* enable input short of HP to prevent voice signal leakage . Enable 2.4V. */
++		regmap_write(priv->regmap, AUDTOP_CON(6), 0xb7f6);
++		/* enable clean 1.35VCM buffer in audioUL */
++		regmap_update_bits(priv->regmap, AUDTOP_CON(0), 0x7000, 0xf000);
++		/* enable audio bias. enable LCH DAC */
++		regmap_write(priv->regmap, AUDTOP_CON(4), 0x0014);
++
++		for (i = 0; i <= target_vol; i++) {
++			fsleep(5000);
++			regmap_write(priv->regmap, AUDTOP_CON(7), 0x2500 | (i << 4));
++		}
++		break;
++	case SND_SOC_DAPM_POST_PMD:
++		for (i = target_vol - 1; i >= 0; i--) {
++			fsleep(5000);
++			regmap_write(priv->regmap, AUDTOP_CON(7), 0x2500 | (i << 4));
++		}
++
++		/* Disable voice buffer but keep volume so we know the state */
++		regmap_write(priv->regmap, AUDTOP_CON(7), 0x2400 | (target_vol << 4));
++		/* Disable audio bias and L-DAC */
++		regmap_write(priv->regmap, AUDTOP_CON(4), 0x0000);
++		/* Disable input short of HP drivers for voice signal leakage prevent and disable 2.4V reference buffer , audio DAC clock. */
++		regmap_write(priv->regmap, AUDTOP_CON(6), 0x37e2);
++		break;
++	}
++	return 0;
++}
++
++static const struct snd_kcontrol_new spk_route_switch =
++	SOC_DAPM_SINGLE_VIRT("Switch", 1);
++
++static const struct snd_kcontrol_new earpiece_route_switch =
++	SOC_DAPM_SINGLE_VIRT("Switch", 1);
++
+ static const struct snd_soc_dapm_widget mt6323_dapm_widgets[] = {
+-	/* Power/clock supplies (bit semantics TODO) */
+-	SND_SOC_DAPM_SUPPLY("DL_DIG", SND_SOC_NOPM, 0, 0, NULL, 0),
+-	SND_SOC_DAPM_SUPPLY("UL_DIG", SND_SOC_NOPM, 0, 0, NULL, 0),
+-	SND_SOC_DAPM_SUPPLY("SPK_ANA", SND_SOC_NOPM, 0, 0, NULL, 0),
+-
+-	/* AIF endpoints */
+-	SND_SOC_DAPM_AIF_IN("AIF1RX", "MT6323 Playback", 0, SND_SOC_NOPM, 0, 0),
+-	SND_SOC_DAPM_AIF_OUT("AIF1TX", "MT6323 Capture", 0, SND_SOC_NOPM, 0, 0),
+-
+-	/* DAC / ADC */
+-	SND_SOC_DAPM_DAC("DACL", "MT6323 Playback", SND_SOC_NOPM, 0, 0),
+-	SND_SOC_DAPM_DAC("DACR", "MT6323 Playback", SND_SOC_NOPM, 0, 0),
+-	SND_SOC_DAPM_ADC("ADCL", "MT6323 Capture", SND_SOC_NOPM, 0, 0),
+-	SND_SOC_DAPM_ADC("ADCR", "MT6323 Capture", SND_SOC_NOPM, 0, 0),
+-
+-	/* Audio inputs / outputs */
+-	SND_SOC_DAPM_INPUT("Microphone"),
++	SND_SOC_DAPM_SWITCH("Speaker Route", SND_SOC_NOPM, 0, 0, &spk_route_switch),
++	SND_SOC_DAPM_SWITCH("Earpiece Route", SND_SOC_NOPM, 0, 0, &earpiece_route_switch),
++
++	SND_SOC_DAPM_SUPPLY("AUDCLK", SND_SOC_NOPM, 0, 0, mt6323_clk_event,
++			    SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD),
++	SND_SOC_DAPM_SUPPLY("NEWIF", SND_SOC_NOPM, 0, 0, mt6323_newif_event,
++			    SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD),
++	SND_SOC_DAPM_DAC_E("DAC", NULL, SND_SOC_NOPM, 0, 0, mt6323_dac_event,
++			   SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD),
++	SND_SOC_DAPM_OUT_DRV_E("HP Driver", SND_SOC_NOPM, 0, 0, NULL, 0,
++			       mt6323_hp_event,
++			       SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD),
+ 	SND_SOC_DAPM_OUTPUT("Headphone"),
+-	SND_SOC_DAPM_OUTPUT("Speaker"),
++	SND_SOC_DAPM_OUT_DRV_E("Speaker Driver", SND_SOC_NOPM, 0, 0, NULL, 0,
++			       mt6323_speaker_event,
++			       SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD),
++	SND_SOC_DAPM_OUT_DRV_E("Earpiece Driver", SND_SOC_NOPM, 0, 0, NULL, 0,
++			       mt6323_earpiece_event,
++			       SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD),
+ };
+ 
+ static const struct snd_soc_dapm_route mt6323_dapm_routes[] = {
+-	/* Playback: AIF -> DAC -> HP/SPK */
+-	{ "DACL", NULL, "AIF1RX" },
+-	{ "DACR", NULL, "AIF1RX" },
+-	{ "Headphone", NULL, "DACL" },
+-	{ "Headphone", NULL, "DACR" },
+-	{ "Speaker", NULL, "DACL" },
+-	{ "Speaker", NULL, "DACR" },
+-
+-	/* Capture: MIC -> ADC -> AIF */
+-	{ "ADCL", NULL, "Microphone" },
+-	{ "ADCR", NULL, "Microphone" },
+-	{ "AIF1TX", NULL, "ADCL" },
+-	{ "AIF1TX", NULL, "ADCR" },
+-
+-	/* Supply dependencies */
+-	{ "DACL", NULL, "DL_DIG" },
+-	{ "DACR", NULL, "DL_DIG" },
+-	{ "ADCL", NULL, "UL_DIG" },
+-	{ "ADCR", NULL, "UL_DIG" },
+-	{ "Headphone", NULL, "SPK_ANA" },
+-	{ "Speaker", NULL, "SPK_ANA" },
+-};
++	{ "DAC", NULL, "AIF1 Playback" },
++	{ "DAC", NULL, "AUDCLK" },
++	{ "DAC", NULL, "NEWIF" },
++	{ "HP Driver", NULL, "DAC" },
++	{ "Headphone", NULL, "HP Driver" },
+ 
+-static struct snd_soc_dai_driver mt6323_snd_codec_dai[] = {
+-	{
+-		.name = "mt6323-snd-codec-aif1",
+-		.playback = {
+-			.stream_name = "MT6323 Playback",
+-			.channels_min = 1,
+-			.channels_max = 2,
+-			.rates = MT6323_SOC_HIGH_USE_RATE,
+-			.formats = MT6323_SND_SOC_ADV_MT_FMTS,
+-		},
+-		.capture = {
+-			.stream_name = "MT6323 Capture",
+-			.channels_min = 1,
+-			.channels_max = 2,
+-			.rates = MT6323_SOC_HIGH_USE_RATE,
+-			.formats = MT6323_SND_SOC_ADV_MT_FMTS,
+-		},
+-	},
++	{ "Speaker Route", "Switch", "DAC" },
++	{ "Speaker Driver", NULL, "Speaker Route" },
++
++	{ "Earpiece Route", "Switch", "DAC" },
++	{ "Earpiece Driver", NULL, "Earpiece Route" },
+ };
+ 
+-static int mt6323_codec_probe(struct snd_soc_component *component)
+-{
+-	struct mt6323_priv *priv = snd_soc_component_get_drvdata(component);
++/*
++ * Per-output mute switches. Component-scoped pin-switch ops -- the generic
++ * SOC_DAPM_PIN_SWITCH expects a card and faults on a component.
++ */
++#define MT6323_PIN_SWITCH(xname) { \
++	.iface = SNDRV_CTL_ELEM_IFACE_MIXER, .name = xname " Switch", \
++	.info = snd_soc_dapm_info_pin_switch, \
++	.get = snd_soc_dapm_get_component_pin_switch, \
++	.put = snd_soc_dapm_put_component_pin_switch, \
++	.private_value = (unsigned long)xname }
+ 
+-	snd_soc_component_init_regmap(component, priv->regmap);
++/* Output volume: -10dB .. +8dB in 1dB steps (the inverted ZCD gain field). */
++static const DECLARE_TLV_DB_SCALE(mt6323_dl_tlv, -1000, 100, 0);
+ 
+-	/*
+-	 * NOTE: on the Z1 every MT6323 write is rejected by the pwrap write
+-	 * gate (CONFIG_MTK_PMIC_WRAP_Z1_WRITE_DENY), so no audio power-on
+-	 * sequence is attempted here. TODO: add the MT6323 audio enable /
+-	 * regulator / clock sequence once the pwrap write gate is lifted.
+-	 */
++/*
++ * Class-D speaker PGA gain SPK_CON9[11:8]. Stock dB table {-60,0,4,5,...,17} for
++ * index 0..15 (0 = mute, 1 = 0dB, 2 = +4dB, then +1dB/step). Analog volume --
++ * scales after the DAC, unlike the digital "Playback Volume".
++ */
++static const DECLARE_TLV_DB_RANGE(mt6323_spk_tlv,
++	0, 0, TLV_DB_SCALE_ITEM(TLV_DB_GAIN_MUTE, 0, 1),
++	1, 1, TLV_DB_SCALE_ITEM(0, 0, 0),
++	2, 15, TLV_DB_SCALE_ITEM(400, 100, 0));
+ 
+-	return 0;
+-}
++/* Voice buffer gain AUDTOP_CON7[7:4]. -22dB to +8dB in 2dB steps. */
++static const DECLARE_TLV_DB_SCALE(mt6323_voice_tlv, -2200, 200, 0);
+ 
+-static const struct snd_soc_component_driver mt6323_component_driver = {
+-	.probe = mt6323_codec_probe,
+-	.read = snd_soc_component_read,
+-	.write = snd_soc_component_write,
+-	.dapm_widgets = mt6323_dapm_widgets,
+-	.num_dapm_widgets = ARRAY_SIZE(mt6323_dapm_widgets),
+-	.dapm_routes = mt6323_dapm_routes,
+-	.num_dapm_routes = ARRAY_SIZE(mt6323_dapm_routes),
++static const struct snd_kcontrol_new mt6323_snd_controls[] = {
++	MT6323_PIN_SWITCH("Headphone"),
++	SOC_DOUBLE_TLV("Headphone Volume", ZCD_CON2, 0, 7, ZCD_GAIN_CTL_MAX, 1,
++		       mt6323_dl_tlv),
++	SOC_DOUBLE_TLV("Lineout Volume", ZCD_CON1, 0, 7, ZCD_GAIN_CTL_MAX, 1,
++		       mt6323_dl_tlv),
++	SOC_SINGLE_TLV("Speaker Volume", SPK_CON(9), 8, 0x0f, 0, mt6323_spk_tlv),
++	SOC_SINGLE_TLV("Earpiece Volume", AUDTOP_CON(7), 4, 15, 0, mt6323_voice_tlv),
+ };
+ 
+-static int mt6323_platform_driver_probe(struct platform_device *pdev)
++static int mt6323_component_probe(struct snd_soc_component *component)
+ {
+-	struct mt6323_priv *priv;
+-	struct regmap *regmap;
++	struct mt6323_codec_priv *priv = snd_soc_component_get_drvdata(component);
+ 
+ 	/*
+-	 * The regmap is owned by the pwrap device and shared by all the
+-	 * MT6323 MFD children. dev_get_regmap() is the canonical way to
+-	 * fetch it from the MFD parent; fall back to the MFD drvdata
+-	 * (struct mt6397_chip) pattern used by mt6357/mt6358 upstream.
++	 * SOC_* mixer controls reach the PMIC through the component regmap. Without
++	 * this the control writes go to a soft cache only -- reads look right but
++	 * nothing changes in hardware, and snd_soc_put_volsw returns -EIO (which
++	 * userspace tools report as "invalid value"). The DAPM events write
++	 * priv->regmap directly, so they were unaffected.
+ 	 */
+-	regmap = dev_get_regmap(pdev->dev.parent, NULL);
+-	if (!regmap) {
+-		struct mt6397_chip *mt6397 = dev_get_drvdata(pdev->dev.parent);
++	snd_soc_component_init_regmap(component, priv->regmap);
++	return 0;
++}
+ 
+-		if (!mt6397)
+-			return -ENODEV;
+-		regmap = mt6397->regmap;
+-	}
+-	if (IS_ERR(regmap))
+-		return PTR_ERR(regmap);
++static const struct snd_soc_component_driver mt6323_soc_component_driver = {
++	.probe			= mt6323_component_probe,
++	.controls		= mt6323_snd_controls,
++	.num_controls		= ARRAY_SIZE(mt6323_snd_controls),
++	.dapm_widgets		= mt6323_dapm_widgets,
++	.num_dapm_widgets	= ARRAY_SIZE(mt6323_dapm_widgets),
++	.dapm_routes		= mt6323_dapm_routes,
++	.num_dapm_routes	= ARRAY_SIZE(mt6323_dapm_routes),
++	.endianness		= 1,
++};
++
++static struct snd_soc_dai_driver mt6323_dai_driver[] = {
++	{
++		.name = "mt6323-snd-codec-aif1",
++		.playback = {
++			.stream_name = "AIF1 Playback",
++			.channels_min = 1,
++			.channels_max = 2,
++			.rates = MT6323_CODEC_RATES,
++			.formats = MT6323_CODEC_FORMATS,
++		},
++	},
++};
++
++static int mt6323_codec_probe(struct platform_device *pdev)
++{
++	struct mt6397_chip *mt6397 = dev_get_drvdata(pdev->dev.parent);
++	struct mt6323_codec_priv *priv;
++	int ret;
+ 
+ 	priv = devm_kzalloc(&pdev->dev, sizeof(*priv), GFP_KERNEL);
+ 	if (!priv)
+ 		return -ENOMEM;
+ 
+ 	priv->dev = &pdev->dev;
+-	priv->regmap = regmap;
+-	dev_set_drvdata(&pdev->dev, priv);
++	priv->regmap = mt6397->regmap;
++	if (IS_ERR(priv->regmap))
++		return PTR_ERR(priv->regmap);
+ 
+-	return devm_snd_soc_register_component(&pdev->dev,
+-					       &mt6323_component_driver,
+-					       mt6323_snd_codec_dai,
+-					       ARRAY_SIZE(mt6323_snd_codec_dai));
+-}
++	platform_set_drvdata(pdev, priv);
+ 
+-static const struct platform_device_id mt6323_platform_ids[] = {
+-	{ "mt6323-sound", 0 },
+-	{ /* sentinel */ },
+-};
+-MODULE_DEVICE_TABLE(platform, mt6323_platform_ids);
++	/* Analog + NEWIF idle baseline; DAPM powers the output path per-stream. */
++	ret = regmap_multi_reg_write(priv->regmap, mt6323_codec_init,
++				     ARRAY_SIZE(mt6323_codec_init));
++	if (ret)
++		return dev_err_probe(&pdev->dev, ret,
++				     "failed to init analog codec\n");
++
++	ret = devm_snd_soc_register_component(&pdev->dev,
++					      &mt6323_soc_component_driver,
++					      mt6323_dai_driver,
++					      ARRAY_SIZE(mt6323_dai_driver));
++	if (ret)
++		return ret;
+ 
+-static const struct of_device_id mt6323_of_match[] = {
+-	{ .compatible = "mediatek,mt6323-codec" },
+-	{ /* sentinel */ },
++	return 0;
++}
++
++static const struct of_device_id mt6323_codec_of_match[] = {
++	/*
++	 * Z1 tree binds the codec under the PMIC's "mt6397codec" node with
++	 * compatible "mediatek,mt6323-codec" (arch/arm/boot/dts/mediatek/
++	 * mt6323.dtsi). Upstream gabin8 used "mediatek,mt6323-sound"; the
++	 * compatible is unified here to match the in-tree DT.
++	 */
++	{ .compatible = "mediatek,mt6323-codec", },
++	{ }
+ };
+-MODULE_DEVICE_TABLE(of, mt6323_of_match);
++MODULE_DEVICE_TABLE(of, mt6323_codec_of_match);
+ 
+ static struct platform_driver mt6323_codec_driver = {
+-	.probe = mt6323_platform_driver_probe,
+-	.id_table = mt6323_platform_ids,
+ 	.driver = {
+ 		.name = "mt6323-sound",
+-		.of_match_table = mt6323_of_match,
++		.of_match_table = mt6323_codec_of_match,
+ 	},
++	.probe = mt6323_codec_probe,
+ };
+-
+ module_platform_driver(mt6323_codec_driver);
+ 
+-MODULE_DESCRIPTION("MT6323 ALSA SoC codec driver");
+-MODULE_AUTHOR("Z1 mainline porting");
++MODULE_DESCRIPTION("MediaTek MT6323 PMIC audio codec driver");
+ MODULE_LICENSE("GPL");
+diff --git a/sound/soc/mediatek/mt6572/Kconfig b/sound/soc/mediatek/mt6572/Kconfig
+index ee2445417..df927b364 100644
+--- a/sound/soc/mediatek/mt6572/Kconfig
++++ b/sound/soc/mediatek/mt6572/Kconfig
+@@ -1,11 +1,21 @@
+ # SPDX-License-Identifier: GPL-2.0-only
+ 
+ config SND_SOC_MT6572
+-	tristate "ASoC support for Mediatek MT6572 chip"
+-	depends on ARCH_MEDIATEK
++	tristate "ASoC support for the MediaTek MT6572 chip"
++	depends on ARCH_MEDIATEK || COMPILE_TEST
+ 	select SND_SOC_MEDIATEK
+ 	help
+-	  This adds ASoC driver for Mediatek MT6572 boards
+-	  that can be used with other codecs.
+-	  Select Y if you have such device.
+-	  If unsure select "N".
++	  This adds the ASoC platform (AFE) driver for the MediaTek MT6572
++	  SoC. Select a machine driver below to build a sound card.
++	  Select Y if you have such a device. If unsure select "N".
++
++config SND_SOC_MT6572_MT6323
++	tristate "ASoC machine driver for MT6572 with the MT6323 codec"
++	depends on SND_SOC_MT6572
++	select SND_SOC_MT6323
++	imply SND_SOC_SIMPLE_AMPLIFIER
++	help
++	  This adds the ASoC machine driver for a MediaTek MT6572 board with
++	  the on-PMIC MT6323 analog audio codec: DL1 playback, headphone-jack
++	  detection and an optional external speaker amplifier.
++	  Select Y if you have such a device. If unsure select "N".
+diff --git a/sound/soc/mediatek/mt6572/Makefile b/sound/soc/mediatek/mt6572/Makefile
+index 3d9338f83..12f8e0e38 100644
+--- a/sound/soc/mediatek/mt6572/Makefile
++++ b/sound/soc/mediatek/mt6572/Makefile
+@@ -1,8 +1,3 @@
+-# SPDX-License-Identifier: GPL-2.0-only
+-# platform driver
+-snd-soc-mt6572-afe-y := mt6572-afe-pcm.o
+-obj-$(CONFIG_SND_SOC_MT6572) += snd-soc-mt6572-afe.o
+-
+-# machine driver
+-snd-soc-mt6572-machine-y := mt6572-machine.o
+-obj-$(CONFIG_SND_SOC_MT6572) += snd-soc-mt6572-machine.o
++# SPDX-License-Identifier: GPL-2.0
++obj-$(CONFIG_SND_SOC_MT6572) += mt6572-afe-pcm.o
++obj-$(CONFIG_SND_SOC_MT6572_MT6323) += mt6572-mt6323.o
+diff --git a/sound/soc/mediatek/mt6572/mt6572-afe-pcm.c b/sound/soc/mediatek/mt6572/mt6572-afe-pcm.c
+index 9b4a7dfe4..519bb7fa3 100644
+--- a/sound/soc/mediatek/mt6572/mt6572-afe-pcm.c
++++ b/sound/soc/mediatek/mt6572/mt6572-afe-pcm.c
+@@ -1,603 +1,786 @@
+ // SPDX-License-Identifier: GPL-2.0
+ /*
+- * Mediatek ALSA SoC AFE platform driver for MT6572
++ * MediaTek MT6572 AFE platform driver.
+  *
+- * Skeleton driver modeled on sound/soc/mediatek/mt2701/mt2701-afe-pcm.c and
+- * the MTK common ASoC layer (sound/soc/mediatek/common/).
+- *
+- * This is a COMPILE-ONLY skeleton: it builds and registers the platform
+- * DAI / component drivers, but the Z1 mainline dtsi does not yet have an
+- * audio (audsys) node at 0x11140000, so probe will not bind until that node
+- * is added.  No audio path is guaranteed to produce sound.
+- *
+- * Copyright (c) 2016 MediaTek Inc.
+- * Copyright (c) 2026 Z1 mainline port
++ * DL1 playback front-end feeding the ADDA downlink SRC and the AFE<->PMIC
++ * serial link to the mt6323 codec, plus the CONSYS FM receiver's I2S input,
++ * routed to the same downlink and captured through the AWB memif. The AFE
++ * registers are in the parent audsys syscon; a fast_io regmap keeps the
++ * triggers and the period IRQs atomic.
+  */
+ 
++#include <linux/bitfield.h>
+ #include <linux/clk.h>
++#include <linux/dma-mapping.h>
++#include <linux/err.h>
+ #include <linux/interrupt.h>
+ #include <linux/io.h>
++#include <linux/kernel.h>
+ #include <linux/module.h>
+ #include <linux/of.h>
++#include <linux/of_address.h>
+ #include <linux/platform_device.h>
+-#include <linux/pm_runtime.h>
+ #include <linux/regmap.h>
++
++#include <sound/pcm.h>
++#include <sound/pcm_params.h>
+ #include <sound/soc.h>
++#include <sound/tlv.h>
++
++/* AFE registers (classic mt65xx layout); stock magic values noted inline. */
++#define AUDIO_TOP_CON0		0x0000
++#define AUDIO_TOP_CON0_AFE_ON	0x60004000
++#define AFE_DAC_CON0		0x0010
++#define AFE_DAC_CON0_AFE_ON	BIT(0)
++#define AFE_DAC_CON0_DL1_ON	BIT(1)
++#define AFE_DAC_CON0_AWB_ON	BIT(6)
++#define AFE_DAC_CON0_DL1_OUT	BIT(10)
++#define AFE_DAC_CON1		0x0014
++#define AFE_DAC_CON1_DL1_RATE	GENMASK(3, 0)
++#define AFE_DAC_CON1_I2S_RATE	GENMASK(11, 8)	/* I2S-in ASRC output rate */
++#define AFE_DAC_CON1_AWB_RATE	GENMASK(15, 12)
++#define AFE_DAC_CON1_AWB_MONO	BIT(24)
++#define AFE_DL1_BASE		0x0040
++#define AFE_DL1_CUR		0x0044
++#define AFE_DL1_END		0x0048		/* ring end, inclusive */
++#define AFE_AWB_BASE		0x0070
++#define AFE_AWB_END		0x0078		/* ring end, inclusive */
++#define AFE_AWB_CUR		0x007c
++#define AFE_MEMIF_MAXLEN	0x03d4
++#define AFE_MEMIF_MAXLEN_DL1	GENMASK(3, 0)
++#define AFE_MEMIF_PBUF_SIZE	0x03d8
++#define AFE_MEMIF_PBUF_SIZE_DL1	GENMASK(17, 16)
++#define AFE_IRQ_MCU_CON		0x03a0
++#define AFE_IRQ_MCU_CON_IRQ1_ON		BIT(0)
++#define AFE_IRQ_MCU_CON_IRQ2_ON		BIT(1)
++#define AFE_IRQ_MCU_CON_IRQ1_RATE	GENMASK(7, 4)
++#define AFE_IRQ_MCU_CON_IRQ2_RATE	GENMASK(11, 8)
++#define AFE_IRQ_MCU_STATUS	0x03a4
++#define AFE_IRQ_MCU_STATUS_IRQ1	BIT(0)
++#define AFE_IRQ_MCU_STATUS_IRQ2	BIT(1)
++#define AFE_IRQ_MCU_STATUS_MASK	GENMASK(3, 0)
++#define AFE_IRQ_MCU_CLR		0x03a8
++#define AFE_IRQ_MCU_CLR_NOSTATUS (BIT(6) | BIT(1) | BIT(0))	/* ack when STATUS=0 */
++#define AFE_IRQ_MCU_CNT1	0x03ac
++#define AFE_IRQ_MCU_CNT2	0x03b0
++
++/* DL1 -> interconnect -> ADDA downlink SRC -> AFE<->PMIC link. */
++#define AFE_I2S_CON1		0x0034
++#define AFE_I2S_CON1_BASE	0x00000008	/* I2S DAC format */
++#define AFE_I2S_CON1_RATE	GENMASK(11, 8)
++#define AFE_I2S_CON1_ON		BIT(0)
++#define AFE_CONN1		0x0024
++#define AFE_CONN1_DL1_O3	BIT(21)		/* DL1 ch1 -> O3 */
++#define AFE_CONN2		0x0028
++#define AFE_CONN2_DL1_O4	BIT(6)		/* DL1 ch2 -> O4 */
++#define AFE_CONN2_I2S_IN_O05	BIT(16)		/* I2S-in L (I00) -> AWB L (O05) */
++#define AFE_CONN2_I2S_IN_O06	BIT(22)		/* I2S-in R (I01) -> AWB R (O06) */
++#define AFE_ADDA_DL_SRC2_CON0	0x0108
++#define AFE_ADDA_DL_SRC2_CON0_BASE 0x03001802	/* SRC-disabled base */
++#define AFE_ADDA_DL_SRC2_CON0_RATE GENMASK(31, 28)
++#define AFE_ADDA_DL_SRC2_CON0_ON   BIT(0)
++#define AFE_ADDA_DL_SRC2_CON1	0x010c
++#define AFE_ADDA_DL_SRC2_CON1_GAIN GENMASK(31, 16)
++#define AFE_DL_GAIN_DEFAULT	0x203b		/* ~-18dB */
++#define AFE_ADDA_UL_DL_CON0	0x0124
++#define AFE_ADDA_UL_DL_CON0_ON	BIT(0)
++#define AFE_ADDA_PREDIS_CON0	0x0260		/* ADDA downlink pre-distortion */
++#define AFE_ADDA_PREDIS_CON1	0x0264
++#define AFE_ADDA_NEWIF_CFG0	0x0138		/* AFE<->PMIC serial link (NEWIF) */
++#define AFE_ADDA_NEWIF_CFG0_VAL	0x03f87200
++#define AFE_ADDA_NEWIF_CFG1	0x013c
++#define AFE_ADDA_NEWIF_CFG1_VAL	0x03117180
+ 
+-#include "mt6572-afe-reg.h"
+-#include "../common/mtk-base-afe.h"
+-#include "../common/mtk-afe-platform-driver.h"
+-#include "../common/mtk-afe-fe-dai.h"
++/*
++ * FM: CONSYS drives the AFE I2S input as master at 32 kHz. The I2S-in ASRC
++ * resamples it to FM_RATE; HW gain 2 (I00/I01 -> O15/O16, I12/I13 -> O3/O4)
++ * then carries it onto the DL1 outputs with its own volume. Values follow
++ * the stock audio HAL's FM path.
++ */
++#define AFE_I2S_CON		0x0018
++#define AFE_I2S_CON_PHASE_FIX	BIT(31)
++#define AFE_I2S_CON_FMT_I2S	BIT(3)
++#define AFE_I2S_CON_SLAVE	BIT(2)
++#define AFE_I2S_CON_EN		BIT(0)
++#define AFE_CONN4		0x0030
++#define AFE_CONN4_BYPASS_ASRC	BIT(30)
++#define AFE_GAIN2_CON0		0x0428
++#define AFE_GAIN2_CON0_RATE	GENMASK(7, 4)
++#define AFE_GAIN2_CON0_ON	BIT(0)
++#define AFE_GAIN2_CON1		0x042c		/* target gain, 0x80000 = 0 dB */
++#define AFE_GAIN2_CON1_GAIN	GENMASK(19, 0)
++#define AFE_GAIN2_CONN		0x0438
++#define AFE_GAIN2_CONN_I12_O03	BIT(8)
++#define AFE_GAIN2_CONN_I13_O04	BIT(10)
++#define AFE_GAIN2_CONN_I00_O15	BIT(16)
++#define AFE_GAIN2_CONN_I01_O16	BIT(23)
++#define AFE_GAIN2_CONN_FM	(AFE_GAIN2_CONN_I00_O15 | AFE_GAIN2_CONN_I01_O16 | \
++				 AFE_GAIN2_CONN_I12_O03 | AFE_GAIN2_CONN_I13_O04)
++#define AFE_GAIN2_CUR		0x043c		/* ramp start */
++#define AFE_ASRC_CON0		0x0500
++#define AFE_ASRC_CON0_I2S_STR	BIT(6)		/* I2S channel set start/clear */
++#define AFE_ASRC_CON0_ASM_ON	BIT(0)
++#define AFE_ASRC_CON13		0x0550
++#define AFE_ASRC_CON13_I2S_MONO	BIT(16)
++#define AFE_ASRC_CON14		0x0554		/* I2S Rx output-rate palette */
++#define AFE_ASRC_CON15		0x0558		/* I2S Rx input-rate palette */
++#define AFE_ASRC_CON16		0x055c		/* frequency calibrator 2 */
++#define AFE_ASRC_CON16_CYCLE	GENMASK(31, 16)
++#define AFE_ASRC_CON16_AUTORST	BIT(14)
++/* datasheet: AUTO_TUNE_FREQ4; in practice it retunes CON15, the input palette */
++#define AFE_ASRC_CON16_TUNE_IFS	BIT(12)
++#define AFE_ASRC_CON16_COMP	BIT(11)
++#define AFE_ASRC_CON16_SEL	GENMASK(9, 8)
++#define AFE_ASRC_CON16_BP_DGL	BIT(7)
++#define AFE_ASRC_CON16_RESTART	BIT(2)
++#define AFE_ASRC_CON16_FREQ_OUT	BIT(1)
++#define AFE_ASRC_CON16_EN	BIT(0)
++#define AFE_ASRC_CON17		0x0560		/* calibrator denominator */
++#define AFE_ASRC_CON20		0x056c		/* calibrator auto-reset bound */
++
++/* 32 kHz in -> 44.1 kHz out: palettes and denominator from the datasheet. */
++#define FM_RATE			44100
++#define FM_ASRC_OFS_44K		0xdc8000
++#define FM_ASRC_IFS_32K		0xa00000
++#define FM_ASRC_DENOM_44K	0x1fbd
++#define FM_ASRC_AUTORST_HI	0x1b00
++/* Calibrator 2 tracking the I2S-in rate (stock value 0x75987 without EN). */
++#define FM_ASRC_CALI		(FIELD_PREP(AFE_ASRC_CON16_CYCLE, 7) | \
++				 AFE_ASRC_CON16_AUTORST | AFE_ASRC_CON16_TUNE_IFS | \
++				 AFE_ASRC_CON16_COMP | FIELD_PREP(AFE_ASRC_CON16_SEL, 1) | \
++				 AFE_ASRC_CON16_BP_DGL | AFE_ASRC_CON16_RESTART | \
++				 AFE_ASRC_CON16_FREQ_OUT)
++#define FM_GAIN_MAX		0x80000		/* 0 dB */
++#define FM_GAIN_DEFAULT		0x10000		/* -18 dB, on top of "Playback Volume" */
+ 
+-/* ---------------------------------------------------------------------
+- * memif / DAI ids
+- * ------------------------------------------------------------------ */
+-enum {
+-	MT6572_MEMIF_DL1,
+-	MT6572_MEMIF_VUL,
+-	MT6572_MEMIF_NUM,
+-	/* BE DAIs */
+-	MT6572_IO_ADDA = MT6572_MEMIF_NUM,
++static const struct regmap_config mt6572_afe_regmap_config = {
++	.reg_bits = 32,
++	.reg_stride = 4,
++	.val_bits = 32,
++	.fast_io = true,
++	.max_register = 0x0ffc,
++};
++
++struct mt6572_afe {
++	struct device *dev;
++	struct regmap *regmap;
++	struct clk *clk;
++	struct snd_pcm_substream *dl1_substream;	/* active DL1 stream */
++	struct snd_pcm_substream *awb_substream;	/* active AWB stream */
++	unsigned int dl_gain;				/* "Playback Volume" */
++	unsigned int fm_gain;				/* "FM Playback Volume" */
++	bool fm_on;					/* FM path owns the DL rate */
+ };
+ 
++/* Hz -> AFE sample-rate code. */
++static int mt6572_afe_rate_code(unsigned int rate)
++{
++	switch (rate) {
++	case 8000:	return 0;
++	case 11025:	return 1;
++	case 12000:	return 2;
++	case 16000:	return 4;
++	case 22050:	return 5;
++	case 24000:	return 6;
++	case 32000:	return 8;
++	case 44100:	return 9;
++	case 48000:	return 10;
++	default:	return -EINVAL;
++	}
++}
++
++/* Hz -> ADDA downlink SRC input-mode code. */
++static int mt6572_afe_adda_rate_code(unsigned int rate)
++{
++	switch (rate) {
++	case 8000:	return 0;
++	case 11025:	return 1;
++	case 12000:	return 2;
++	case 16000:	return 3;
++	case 22050:	return 4;
++	case 24000:	return 5;
++	case 32000:	return 6;
++	case 44100:	return 7;
++	case 48000:	return 8;
++	default:	return -EINVAL;
++	}
++}
++
+ enum {
+-	MT6572_IRQ1,
+-	MT6572_IRQ2,
+-	MT6572_IRQ_NUM,
++	MT6572_AFE_DAI_DL1,
++	MT6572_AFE_DAI_AWB,
+ };
+ 
+-struct mt6572_afe_private {
+-	struct clk *clk_afe;		/* CLK_TOP_AUDIO gate */
+-	struct clk *clk_intbus;		/* CLK_TOP_AUDIO_INTBUS_SEL mux */
++static struct snd_soc_dai_driver mt6572_afe_dais[] = {
++	{
++		.name = "mt6572-afe-dl1",
++		.id = MT6572_AFE_DAI_DL1,
++		.playback = {
++			.stream_name = "DL1 Playback",
++			.channels_min = 1,
++			.channels_max = 2,
++			.rates = SNDRV_PCM_RATE_8000_48000,
++			.formats = SNDRV_PCM_FMTBIT_S16_LE,
++		},
++	},
++	{
++		/* the FM stream after the I2S-in ASRC, so FM_RATE only */
++		.name = "mt6572-afe-awb",
++		.id = MT6572_AFE_DAI_AWB,
++		.capture = {
++			.stream_name = "AWB Capture",
++			.channels_min = 2,
++			.channels_max = 2,
++			.rates = SNDRV_PCM_RATE_44100,
++			.formats = SNDRV_PCM_FMTBIT_S16_LE,
++		},
++	},
+ };
+ 
+-/* ---------------------------------------------------------------------
+- * PCM hardware params (shared by all FE memifs)
+- * ------------------------------------------------------------------ */
+ static const struct snd_pcm_hardware mt6572_afe_hardware = {
+-	.info = SNDRV_PCM_INFO_MMAP | SNDRV_PCM_INFO_INTERLEAVED
+-		| SNDRV_PCM_INFO_RESUME | SNDRV_PCM_INFO_MMAP_VALID,
++	/* on-chip SRAM buffer, no mmap */
++	.info = SNDRV_PCM_INFO_INTERLEAVED | SNDRV_PCM_INFO_BLOCK_TRANSFER,
+ 	.formats = SNDRV_PCM_FMTBIT_S16_LE,
++	.rates = SNDRV_PCM_RATE_8000_48000,
++	.rate_min = 8000,
++	.rate_max = 48000,
++	.channels_min = 1,
++	.channels_max = 2,
+ 	.period_bytes_min = 1024,
+-	.period_bytes_max = 1024 * 256,
+-	.periods_min = 4,
+-	.periods_max = 1024,
+-	.buffer_bytes_max = 1024 * 1024,
+-	.fifo_size = 0,
++	.period_bytes_max = 8192,
++	.periods_min = 2,
++	.periods_max = 16,
++	.buffer_bytes_max = 16 * 1024,		/* AFE on-chip SRAM */
+ };
+ 
+-/* ---------------------------------------------------------------------
+- * Sampling-rate -> FS register value mapping (AFE_DAC_CON1 / AFE_IRQ_CON)
+- * ------------------------------------------------------------------ */
+-struct mt6572_afe_rate {
+-	unsigned int rate;
+-	unsigned int regvalue;
++/* AWB capture: a DRAM ring, leaving the on-chip SRAM to DL1 */
++static const struct snd_pcm_hardware mt6572_afe_awb_hardware = {
++	.info = SNDRV_PCM_INFO_MMAP | SNDRV_PCM_INFO_MMAP_VALID |
++		SNDRV_PCM_INFO_INTERLEAVED | SNDRV_PCM_INFO_BLOCK_TRANSFER,
++	.formats = SNDRV_PCM_FMTBIT_S16_LE,
++	.rates = SNDRV_PCM_RATE_44100,
++	.rate_min = FM_RATE,
++	.rate_max = FM_RATE,
++	.channels_min = 2,
++	.channels_max = 2,
++	.period_bytes_min = 1024,
++	.period_bytes_max = 32 * 1024,
++	.periods_min = 2,
++	.periods_max = 32,
++	.buffer_bytes_max = 128 * 1024,
+ };
+ 
+-static const struct mt6572_afe_rate mt6572_afe_rates[] = {
+-	{ .rate = 8000,		.regvalue = 0 },
+-	{ .rate = 11025,	.regvalue = 1 },
+-	{ .rate = 12000,	.regvalue = 2 },
+-	{ .rate = 16000,	.regvalue = 3 },
+-	{ .rate = 22050,	.regvalue = 4 },
+-	{ .rate = 24000,	.regvalue = 5 },
+-	{ .rate = 32000,	.regvalue = 6 },
+-	{ .rate = 44100,	.regvalue = 7 },
+-	{ .rate = 48000,	.regvalue = 8 },
+-};
++static bool mt6572_afe_is_awb(struct snd_pcm_substream *substream)
++{
++	return substream->stream == SNDRV_PCM_STREAM_CAPTURE;
++}
+ 
+-static int mt6572_afe_fs(unsigned int rate)
++static int mt6572_afe_pcm_open(struct snd_soc_component *comp,
++			       struct snd_pcm_substream *substream)
+ {
+-	int i;
++	snd_soc_set_runtime_hwparams(substream, mt6572_afe_is_awb(substream) ?
++				     &mt6572_afe_awb_hardware : &mt6572_afe_hardware);
++	/* memif END[2:0] must be 7: keep the period (so the buffer) 8-byte aligned. */
++	return snd_pcm_hw_constraint_step(substream->runtime, 0,
++					  SNDRV_PCM_HW_PARAM_PERIOD_BYTES, 8);
++}
+ 
+-	for (i = 0; i < ARRAY_SIZE(mt6572_afe_rates); i++)
+-		if (mt6572_afe_rates[i].rate == rate)
+-			return mt6572_afe_rates[i].regvalue;
++static int mt6572_afe_pcm_hw_params(struct snd_soc_component *comp,
++				    struct snd_pcm_substream *substream,
++				    struct snd_pcm_hw_params *params)
++{
++	struct mt6572_afe *afe = snd_soc_component_get_drvdata(comp);
++	struct snd_pcm_runtime *runtime = substream->runtime;
++	unsigned int bytes = params_buffer_bytes(params);
++	u32 base = lower_32_bits(runtime->dma_addr);
++
++	if (mt6572_afe_is_awb(substream)) {
++		regmap_write(afe->regmap, AFE_AWB_BASE, base);
++		regmap_write(afe->regmap, AFE_AWB_END, base + bytes - 1);
++		return 0;
++	}
+ 
+-	return -EINVAL;
++	/* program the DL1 memif DMA ring (in the AFE on-chip SRAM) */
++	regmap_write(afe->regmap, AFE_DL1_BASE, base);
++	regmap_write(afe->regmap, AFE_DL1_END, base + bytes - 1);
++	regmap_clear_bits(afe->regmap, AFE_MEMIF_MAXLEN, AFE_MEMIF_MAXLEN_DL1);
++	regmap_clear_bits(afe->regmap, AFE_MEMIF_PBUF_SIZE, AFE_MEMIF_PBUF_SIZE_DL1);
++	return 0;
+ }
+ 
+-static int mt6572_memif_fs(struct snd_pcm_substream *substream,
+-			   unsigned int rate)
++/* ADDA downlink SRC + I2S out to the PMIC link, then the global AFE enable. */
++static void mt6572_afe_dl_start(struct mt6572_afe *afe, int rate_code,
++				int adda_code)
+ {
+-	return mt6572_afe_fs(rate);
++	u32 src = AFE_ADDA_DL_SRC2_CON0_BASE |
++		  FIELD_PREP(AFE_ADDA_DL_SRC2_CON0_RATE, adda_code) |
++		  AFE_ADDA_DL_SRC2_CON0_ON;
++
++	regmap_write(afe->regmap, AFE_ADDA_PREDIS_CON0, 0);
++	regmap_write(afe->regmap, AFE_ADDA_PREDIS_CON1, 0);
++
++	/* stock's interleaving */
++	regmap_write(afe->regmap, AFE_ADDA_DL_SRC2_CON0, src);
++	regmap_write(afe->regmap, AFE_ADDA_DL_SRC2_CON1,
++		     FIELD_PREP(AFE_ADDA_DL_SRC2_CON1_GAIN, afe->dl_gain));
++	regmap_write(afe->regmap, AFE_I2S_CON1,
++		     AFE_I2S_CON1_BASE | FIELD_PREP(AFE_I2S_CON1_RATE, rate_code));
++	regmap_write(afe->regmap, AFE_ADDA_DL_SRC2_CON0, src);
++	regmap_set_bits(afe->regmap, AFE_I2S_CON1, AFE_I2S_CON1_ON);
++	regmap_write(afe->regmap, AFE_ADDA_DL_SRC2_CON0, src);
++	regmap_set_bits(afe->regmap, AFE_ADDA_UL_DL_CON0, AFE_ADDA_UL_DL_CON0_ON);
++
++	regmap_set_bits(afe->regmap, AFE_DAC_CON0, AFE_DAC_CON0_AFE_ON);
+ }
+ 
+-static int mt6572_irq_fs(struct snd_pcm_substream *substream,
+-			 unsigned int rate)
++/* AWB: IRQ2 paces its periods (DL1 keeps IRQ1); fed from the I2S input. */
++static int mt6572_afe_awb_prepare(struct mt6572_afe *afe,
++				  struct snd_pcm_runtime *runtime)
+ {
+-	return mt6572_afe_fs(rate);
++	int rate_code = mt6572_afe_rate_code(runtime->rate);
++
++	if (rate_code < 0)
++		return -EINVAL;
++
++	regmap_update_bits(afe->regmap, AFE_IRQ_MCU_CON, AFE_IRQ_MCU_CON_IRQ2_RATE,
++			   FIELD_PREP(AFE_IRQ_MCU_CON_IRQ2_RATE, rate_code));
++	regmap_write(afe->regmap, AFE_IRQ_MCU_CNT2, runtime->period_size);
++	regmap_update_bits(afe->regmap, AFE_DAC_CON1,
++			   AFE_DAC_CON1_AWB_RATE | AFE_DAC_CON1_AWB_MONO,
++			   FIELD_PREP(AFE_DAC_CON1_AWB_RATE, rate_code));
++	regmap_set_bits(afe->regmap, AFE_CONN2,
++			AFE_CONN2_I2S_IN_O05 | AFE_CONN2_I2S_IN_O06);
++	regmap_set_bits(afe->regmap, AFE_DAC_CON0, AFE_DAC_CON0_AFE_ON);
++	return 0;
+ }
+ 
+-/* ---------------------------------------------------------------------
+- * Registers backed up across suspend
+- * ------------------------------------------------------------------ */
+-static const unsigned int mt6572_afe_backup_list[] = {
+-	AFE_TOP_CON0,
+-	AFE_DAC_CON0,
+-	AFE_DAC_CON1,
+-	AFE_IRQ_CON,
+-};
+-
+-/* ---------------------------------------------------------------------
+- * Regmap config
+- * ------------------------------------------------------------------ */
+-static const struct regmap_config mt6572_afe_regmap_config = {
+-	.reg_bits = 32,
+-	.reg_stride = 4,
+-	.val_bits = 32,
+-	.max_register = AFE_MAX_REGISTER,
+-};
+-
+-/* ---------------------------------------------------------------------
+- * IRQ data (ASYS / AFE IRQ, one per memif, dynamic allocation)
+- * ------------------------------------------------------------------ */
+-static const struct mtk_base_irq_data irq_data[MT6572_IRQ_NUM] = {
+-	{
+-		.id = MT6572_IRQ1,
+-		.irq_cnt_reg = AFE_IRQ_CNT1,
+-		.irq_cnt_shift = 0,
+-		.irq_cnt_maskbit = 0xffffff,
+-		.irq_fs_reg = AFE_IRQ_CON,
+-		.irq_fs_shift = AFE_IRQ_CON_IRQ1_FS_SHIFT,
+-		.irq_fs_maskbit = AFE_IRQ_CON_IRQ_FS_MASK,
+-		.irq_en_reg = AFE_IRQ_CON,
+-		.irq_en_shift = AFE_IRQ_CON_IRQ1_ON_SHIFT,
+-		.irq_clr_reg = AFE_IRQ_CLR,
+-		.irq_clr_shift = 0,
+-	},
+-	{
+-		.id = MT6572_IRQ2,
+-		.irq_cnt_reg = AFE_IRQ_CNT2,
+-		.irq_cnt_shift = 0,
+-		.irq_cnt_maskbit = 0xffffff,
+-		.irq_fs_reg = AFE_IRQ_CON,
+-		.irq_fs_shift = AFE_IRQ_CON_IRQ2_FS_SHIFT,
+-		.irq_fs_maskbit = AFE_IRQ_CON_IRQ_FS_MASK,
+-		.irq_en_reg = AFE_IRQ_CON,
+-		.irq_en_shift = AFE_IRQ_CON_IRQ2_ON_SHIFT,
+-		.irq_clr_reg = AFE_IRQ_CLR,
+-		.irq_clr_shift = 1,
+-	},
+-};
+-
+-static irqreturn_t mt6572_afe_isr(int irq_id, void *dev)
++static int mt6572_afe_pcm_prepare(struct snd_soc_component *comp,
++				  struct snd_pcm_substream *substream)
+ {
+-	int id;
+-	struct mtk_base_afe *afe = dev;
+-	struct mtk_base_afe_memif *memif;
+-	struct mtk_base_afe_irq *irq;
+-	u32 status;
+-
+-	regmap_read(afe->regmap, AFE_IRQ_STATUS, &status);
+-	regmap_write(afe->regmap, AFE_IRQ_CLR, status);
+-
+-	for (id = 0; id < MT6572_MEMIF_NUM; ++id) {
+-		memif = &afe->memif[id];
+-		if (memif->irq_usage < 0)
+-			continue;
+-
+-		irq = &afe->irqs[memif->irq_usage];
+-		if (status & BIT(irq->irq_data->irq_clr_shift))
+-			snd_pcm_period_elapsed(memif->substream);
+-	}
++	struct mt6572_afe *afe = snd_soc_component_get_drvdata(comp);
++	struct snd_pcm_runtime *runtime = substream->runtime;
++	int adda_code = mt6572_afe_adda_rate_code(runtime->rate);
++	int rate_code = mt6572_afe_rate_code(runtime->rate);
+ 
+-	return IRQ_HANDLED;
+-}
++	if (mt6572_afe_is_awb(substream))
++		return mt6572_afe_awb_prepare(afe, runtime);
+ 
+-/* ---------------------------------------------------------------------
+- * memif data (FE DAIs)
+- * ------------------------------------------------------------------ */
+-static const struct mtk_base_memif_data memif_data_array[MT6572_MEMIF_NUM] = {
+-	[MT6572_MEMIF_DL1] = {
+-		.name = "DL1",
+-		.id = MT6572_MEMIF_DL1,
+-		.reg_ofs_base = AFE_DL1_BASE,
+-		.reg_ofs_cur = AFE_DL1_CUR,
+-		.reg_ofs_end = AFE_DL1_END,
+-		.fs_reg = AFE_DAC_CON1,
+-		.fs_shift = AFE_DAC_CON1_DL1_MODE_POS,
+-		.fs_maskbit = 0xf,
+-		.mono_reg = -1,
+-		.mono_shift = -1,
+-		.enable_reg = AFE_DAC_CON0,
+-		.enable_shift = AFE_DAC_CON0_DL1_ON_SHIFT,
+-		.hd_reg = -1,
+-		.hd_shift = 0,
+-		.hd_align_reg = -1,
+-		.hd_align_mshift = 0,
+-		.msb_reg = -1,
+-		.agent_disable_reg = -1,
+-		.agent_disable_shift = 0,
+-	},
+-	[MT6572_MEMIF_VUL] = {
+-		.name = "VUL",
+-		.id = MT6572_MEMIF_VUL,
+-		.reg_ofs_base = AFE_VUL_BASE,
+-		.reg_ofs_cur = AFE_VUL_CUR,
+-		.reg_ofs_end = AFE_VUL_END,
+-		.fs_reg = AFE_DAC_CON1,
+-		.fs_shift = AFE_DAC_CON1_VUL_MODE_POS,
+-		.fs_maskbit = 0xf,
+-		.mono_reg = AFE_DAC_CON1,
+-		.mono_shift = AFE_DAC_CON1_VUL_R_MONO_POS,
+-		.enable_reg = AFE_DAC_CON0,
+-		.enable_shift = AFE_DAC_CON0_VUL_ON_SHIFT,
+-		.hd_reg = -1,
+-		.hd_shift = 0,
+-		.hd_align_reg = -1,
+-		.hd_align_mshift = 0,
+-		.msb_reg = -1,
+-		.agent_disable_reg = -1,
+-		.agent_disable_shift = 0,
+-	},
+-};
++	if (adda_code < 0 || rate_code < 0)
++		return -EINVAL;
++	/* one downlink rate: FM holds it while its path is up */
++	if (afe->fm_on && runtime->rate != FM_RATE)
++		return -EBUSY;
+ 
+-/* ---------------------------------------------------------------------
+- * Clock control
+- * ------------------------------------------------------------------ */
+-static int mt6572_afe_enable_clock(struct mtk_base_afe *afe)
+-{
+-	struct mt6572_afe_private *afe_priv = afe->platform_priv;
+-	int ret;
+-
+-	/* Enable the intbus mux and the AFE gate clock if present in DT. */
+-	if (afe_priv->clk_intbus) {
+-		ret = clk_prepare_enable(afe_priv->clk_intbus);
+-		if (ret)
+-			return ret;
+-	}
++	/* IRQ1 rate + per-period frame count (enabled in the trigger) */
++	regmap_update_bits(afe->regmap, AFE_IRQ_MCU_CON, AFE_IRQ_MCU_CON_IRQ1_RATE,
++			   FIELD_PREP(AFE_IRQ_MCU_CON_IRQ1_RATE, rate_code));
++	regmap_write(afe->regmap, AFE_IRQ_MCU_CNT1, runtime->period_size);
+ 
+-	if (afe_priv->clk_afe) {
+-		ret = clk_prepare_enable(afe_priv->clk_afe);
+-		if (ret)
+-			goto err_clk;
+-	}
++	/* interconnect: DL1 ch1/ch2 -> O3/O4 */
++	regmap_set_bits(afe->regmap, AFE_CONN1, AFE_CONN1_DL1_O3);
++	regmap_set_bits(afe->regmap, AFE_CONN2, AFE_CONN2_DL1_O4);
+ 
+-	/* Power up the AFE: clear PDN_AFE / PDN_ADC (active-low). */
+-	regmap_update_bits(afe->regmap, AFE_TOP_CON0,
+-			   AFE_TOP_CON0_PDN_AFE | AFE_TOP_CON0_PDN_ADC, 0);
++	regmap_set_bits(afe->regmap, AFE_DAC_CON0, AFE_DAC_CON0_DL1_OUT);
++	mt6572_afe_dl_start(afe, rate_code, adda_code);
+ 
+-	/* Turn on the AFE core. */
+-	regmap_update_bits(afe->regmap, AFE_DAC_CON0,
+-			   AFE_DAC_CON0_AFE_ON, AFE_DAC_CON0_AFE_ON);
++	/* the DL1 memif rate */
++	regmap_update_bits(afe->regmap, AFE_DAC_CON1, AFE_DAC_CON1_DL1_RATE,
++			   FIELD_PREP(AFE_DAC_CON1_DL1_RATE, rate_code));
+ 
+ 	return 0;
+-
+-err_clk:
+-	clk_disable_unprepare(afe_priv->clk_intbus);
+-	return ret;
+ }
+ 
+-static int mt6572_afe_disable_clock(struct mtk_base_afe *afe)
++static int mt6572_afe_pcm_hw_free(struct snd_soc_component *comp,
++				  struct snd_pcm_substream *substream)
+ {
+-	struct mt6572_afe_private *afe_priv = afe->platform_priv;
+-
+-	regmap_update_bits(afe->regmap, AFE_DAC_CON0,
+-			   AFE_DAC_CON0_AFE_ON, 0);
+-	regmap_update_bits(afe->regmap, AFE_TOP_CON0,
+-			   AFE_TOP_CON0_PDN_AFE | AFE_TOP_CON0_PDN_ADC,
+-			   AFE_TOP_CON0_PDN_AFE | AFE_TOP_CON0_PDN_ADC);
+-
+-	if (afe_priv->clk_afe)
+-		clk_disable_unprepare(afe_priv->clk_afe);
+-	if (afe_priv->clk_intbus)
+-		clk_disable_unprepare(afe_priv->clk_intbus);
++	struct mt6572_afe *afe = snd_soc_component_get_drvdata(comp);
+ 
++	if (mt6572_afe_is_awb(substream))
++		regmap_clear_bits(afe->regmap, AFE_CONN2,
++				  AFE_CONN2_I2S_IN_O05 | AFE_CONN2_I2S_IN_O06);
+ 	return 0;
+ }
+ 
+-static int mt6572_afe_init_clock(struct mtk_base_afe *afe)
++static int mt6572_afe_awb_trigger(struct mt6572_afe *afe,
++				  struct snd_pcm_substream *substream, int cmd)
+ {
+-	struct mt6572_afe_private *afe_priv = afe->platform_priv;
+-
+-	/*
+-	 * TODO: the mt6572.dtsi audsys node does not exist yet.  Once the
+-	 * following node is added, these two clock names will resolve from
+-	 * topckgen (CLK_TOP_AUDIO, CLK_TOP_AUDIO_INTBUS_SEL):
+-	 *   audio: audio@11140000 {
+-	 *       compatible = "mediatek,mt6572-audio";
+-	 *       reg = <0x11140000 0x600>;
+-	 *       interrupts = <GIC_SPI ASYS_IRQ IRQ_TYPE_LEVEL_LOW>;
+-	 *       clocks = <&topckgen CLK_TOP_AUDIO>,
+-	 *                <&topckgen CLK_TOP_AUDIO_INTBUS_SEL>;
+-	 *       clock-names = "audio", "audio_intbus_sel";
+-	 *   };
+-	 */
+-	afe_priv->clk_afe = devm_clk_get(afe->dev, "audio");
+-	if (IS_ERR(afe_priv->clk_afe)) {
+-		if (PTR_ERR(afe_priv->clk_afe) == -EPROBE_DEFER)
+-			return -EPROBE_DEFER;
+-		dev_warn(afe->dev, "failed to get \"audio\" clock (%ld), continuing\n",
+-			 PTR_ERR(afe_priv->clk_afe));
+-		afe_priv->clk_afe = NULL;
++	switch (cmd) {
++	case SNDRV_PCM_TRIGGER_START:
++	case SNDRV_PCM_TRIGGER_RESUME:
++	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
++		afe->awb_substream = substream;
++		regmap_set_bits(afe->regmap, AFE_IRQ_MCU_CON, AFE_IRQ_MCU_CON_IRQ2_ON);
++		regmap_set_bits(afe->regmap, AFE_DAC_CON0, AFE_DAC_CON0_AWB_ON);
++		return 0;
++	case SNDRV_PCM_TRIGGER_STOP:
++	case SNDRV_PCM_TRIGGER_SUSPEND:
++	case SNDRV_PCM_TRIGGER_PAUSE_PUSH:
++		regmap_clear_bits(afe->regmap, AFE_DAC_CON0, AFE_DAC_CON0_AWB_ON);
++		regmap_clear_bits(afe->regmap, AFE_IRQ_MCU_CON, AFE_IRQ_MCU_CON_IRQ2_ON);
++		afe->awb_substream = NULL;
++		return 0;
++	default:
++		return -EINVAL;
+ 	}
++}
+ 
+-	afe_priv->clk_intbus = devm_clk_get(afe->dev, "audio_intbus_sel");
+-	if (IS_ERR(afe_priv->clk_intbus)) {
+-		if (PTR_ERR(afe_priv->clk_intbus) == -EPROBE_DEFER)
+-			return -EPROBE_DEFER;
+-		dev_warn(afe->dev, "failed to get \"audio_intbus_sel\" clock (%ld), continuing\n",
+-			 PTR_ERR(afe_priv->clk_intbus));
+-		afe_priv->clk_intbus = NULL;
++static int mt6572_afe_pcm_trigger(struct snd_soc_component *comp,
++				  struct snd_pcm_substream *substream, int cmd)
++{
++	struct mt6572_afe *afe = snd_soc_component_get_drvdata(comp);
++
++	if (mt6572_afe_is_awb(substream))
++		return mt6572_afe_awb_trigger(afe, substream, cmd);
++
++	switch (cmd) {
++	case SNDRV_PCM_TRIGGER_START:
++	case SNDRV_PCM_TRIGGER_RESUME:
++	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
++		afe->dl1_substream = substream;
++		/* atomic: memif start + period IRQ only (HW-IRQ driven) */
++		regmap_set_bits(afe->regmap, AFE_IRQ_MCU_CON, AFE_IRQ_MCU_CON_IRQ1_ON);
++		regmap_set_bits(afe->regmap, AFE_DAC_CON0, AFE_DAC_CON0_DL1_ON);
++		return 0;
++	case SNDRV_PCM_TRIGGER_STOP:
++	case SNDRV_PCM_TRIGGER_SUSPEND:
++	case SNDRV_PCM_TRIGGER_PAUSE_PUSH:
++		/* minimal stop: DL1 memif + period IRQ only; .prepare re-asserts the rest */
++		regmap_clear_bits(afe->regmap, AFE_IRQ_MCU_CON, AFE_IRQ_MCU_CON_IRQ1_ON);
++		regmap_clear_bits(afe->regmap, AFE_DAC_CON0, AFE_DAC_CON0_DL1_ON);
++		afe->dl1_substream = NULL;
++		return 0;
++	default:
++		return -EINVAL;
+ 	}
++}
+ 
++static snd_pcm_uframes_t mt6572_afe_pcm_pointer(struct snd_soc_component *comp,
++						struct snd_pcm_substream *substream)
++{
++	struct mt6572_afe *afe = snd_soc_component_get_drvdata(comp);
++	struct snd_pcm_runtime *runtime = substream->runtime;
++	u32 base = lower_32_bits(runtime->dma_addr);
++	unsigned int cur = 0;
++
++	regmap_read(afe->regmap, mt6572_afe_is_awb(substream) ? AFE_AWB_CUR : AFE_DL1_CUR,
++		    &cur);
++	if (cur < base || cur >= base + runtime->dma_bytes)
++		return 0;
++	return bytes_to_frames(runtime, cur - base);
++}
++
++static int mt6572_afe_pcm_new(struct snd_soc_component *comp,
++				    struct snd_soc_pcm_runtime *rtd)
++{
++	size_t size = mt6572_afe_hardware.buffer_bytes_max;
++
++	if (snd_soc_rtd_to_cpu(rtd, 0)->id == MT6572_AFE_DAI_AWB) {
++		snd_pcm_set_managed_buffer_all(rtd->pcm, SNDRV_DMA_TYPE_DEV, comp->dev, 0,
++					       mt6572_afe_awb_hardware.buffer_bytes_max);
++		return 0;
++	}
++
++	snd_pcm_set_managed_buffer_all(rtd->pcm, SNDRV_DMA_TYPE_DEV_IRAM, comp->dev,
++				       size, size);
+ 	return 0;
+ }
+ 
+-static int mt6572_afe_runtime_suspend(struct device *dev)
++static const DECLARE_TLV_DB_LINEAR(dl_gain_tlv, TLV_DB_GAIN_MUTE, 0);
++
++static int mt6572_dl_gain_get(struct snd_kcontrol *kcontrol,
++			      struct snd_ctl_elem_value *ucontrol)
+ {
+-	struct mtk_base_afe *afe = dev_get_drvdata(dev);
++	struct snd_soc_component *comp = snd_kcontrol_chip(kcontrol);
++	struct mt6572_afe *afe = snd_soc_component_get_drvdata(comp);
+ 
+-	return mt6572_afe_disable_clock(afe);
++	ucontrol->value.integer.value[0] = afe->dl_gain;
++	return 0;
++}
++
++static int mt6572_dl_gain_put(struct snd_kcontrol *kcontrol,
++			      struct snd_ctl_elem_value *ucontrol)
++{
++	struct snd_soc_component *comp = snd_kcontrol_chip(kcontrol);
++	struct mt6572_afe *afe = snd_soc_component_get_drvdata(comp);
++	unsigned int gain = ucontrol->value.integer.value[0];
++
++	if (gain > 0xffff)
++		return -EINVAL;
++	if (gain == afe->dl_gain)
++		return 0;
++
++	afe->dl_gain = gain;
++	regmap_update_bits(afe->regmap, AFE_ADDA_DL_SRC2_CON1,
++			   AFE_ADDA_DL_SRC2_CON1_GAIN,
++			   FIELD_PREP(AFE_ADDA_DL_SRC2_CON1_GAIN, gain));
++	return 1;
+ }
+ 
+-static int mt6572_afe_runtime_resume(struct device *dev)
++/*
++ * FM receive side, shared by playback and capture: the CONSYS FM receiver on
++ * the I2S input, resampled to FM_RATE. The receiver itself is driven over
++ * /dev/fm.
++ */
++static int mt6572_afe_fm_rx_event(struct snd_soc_dapm_widget *w,
++				  struct snd_kcontrol *kcontrol, int event)
+ {
+-	struct mtk_base_afe *afe = dev_get_drvdata(dev);
++	struct snd_soc_component *comp = snd_soc_dapm_to_component(w->dapm);
++	struct mt6572_afe *afe = snd_soc_component_get_drvdata(comp);
++
++	switch (event) {
++	case SND_SOC_DAPM_PRE_PMU:
++		/* I2S in from CONSYS (pad select 0): slave, I2S format, 16-bit */
++		regmap_write(afe->regmap, AFE_I2S_CON, AFE_I2S_CON_PHASE_FIX |
++			     AFE_I2S_CON_FMT_I2S | AFE_I2S_CON_SLAVE);
++
++		/* ASRC: 32 kHz (tracked by calibrator 2) -> FM_RATE, stereo */
++		regmap_clear_bits(afe->regmap, AFE_CONN4, AFE_CONN4_BYPASS_ASRC);
++		regmap_update_bits(afe->regmap, AFE_DAC_CON1, AFE_DAC_CON1_I2S_RATE,
++				   FIELD_PREP(AFE_DAC_CON1_I2S_RATE,
++					      mt6572_afe_rate_code(FM_RATE)));
++		regmap_clear_bits(afe->regmap, AFE_ASRC_CON13, AFE_ASRC_CON13_I2S_MONO);
++		regmap_write(afe->regmap, AFE_ASRC_CON14, FM_ASRC_OFS_44K);
++		regmap_write(afe->regmap, AFE_ASRC_CON15, FM_ASRC_IFS_32K);
++		regmap_write(afe->regmap, AFE_ASRC_CON17, FM_ASRC_DENOM_44K);
++		regmap_write(afe->regmap, AFE_ASRC_CON16, FM_ASRC_CALI | AFE_ASRC_CON16_EN);
++		regmap_write(afe->regmap, AFE_ASRC_CON20, FM_ASRC_AUTORST_HI);
++		regmap_set_bits(afe->regmap, AFE_ASRC_CON0,
++				AFE_ASRC_CON0_I2S_STR | AFE_ASRC_CON0_ASM_ON);
++
++		regmap_set_bits(afe->regmap, AFE_I2S_CON, AFE_I2S_CON_EN);
++		return 0;
++	case SND_SOC_DAPM_POST_PMD:
++		regmap_clear_bits(afe->regmap, AFE_I2S_CON, AFE_I2S_CON_EN);
++		regmap_clear_bits(afe->regmap, AFE_ASRC_CON0,
++				  AFE_ASRC_CON0_ASM_ON | AFE_ASRC_CON0_I2S_STR);
++		regmap_clear_bits(afe->regmap, AFE_ASRC_CON16, AFE_ASRC_CON16_EN);
++		regmap_set_bits(afe->regmap, AFE_CONN4, AFE_CONN4_BYPASS_ASRC);
++		return 0;
++	default:
++		return 0;
++	}
++}
+ 
+-	return mt6572_afe_enable_clock(afe);
++/*
++ * FM playback: the FM stream mixed onto the DL1 outputs through HW gain 2, so
++ * it reaches the codec through the DL1 DAI without a PCM stream.
++ */
++static int mt6572_afe_fm_event(struct snd_soc_dapm_widget *w,
++			       struct snd_kcontrol *kcontrol, int event)
++{
++	struct snd_soc_component *comp = snd_soc_dapm_to_component(w->dapm);
++	struct mt6572_afe *afe = snd_soc_component_get_drvdata(comp);
++	struct snd_pcm_substream *dl1 = afe->dl1_substream;
++
++	switch (event) {
++	case SND_SOC_DAPM_PRE_PMU:
++		if (dl1 && dl1->runtime->rate != FM_RATE) {
++			dev_err(afe->dev, "FM needs the downlink at %u Hz, DL1 runs at %u Hz\n",
++				FM_RATE, dl1->runtime->rate);
++			return -EBUSY;
++		}
++		afe->fm_on = true;
++		mt6572_afe_dl_start(afe, mt6572_afe_rate_code(FM_RATE),
++				    mt6572_afe_adda_rate_code(FM_RATE));
++
++		/* HW gain 2 at FM_RATE, ramping up from silence */
++		regmap_set_bits(afe->regmap, AFE_GAIN2_CONN, AFE_GAIN2_CONN_FM);
++		regmap_update_bits(afe->regmap, AFE_GAIN2_CON0, AFE_GAIN2_CON0_RATE,
++				   FIELD_PREP(AFE_GAIN2_CON0_RATE,
++					      mt6572_afe_rate_code(FM_RATE)));
++		regmap_write(afe->regmap, AFE_GAIN2_CON1,
++			     FIELD_PREP(AFE_GAIN2_CON1_GAIN, afe->fm_gain));
++		regmap_write(afe->regmap, AFE_GAIN2_CUR, 0);
++		regmap_set_bits(afe->regmap, AFE_GAIN2_CON0, AFE_GAIN2_CON0_ON);
++		return 0;
++	case SND_SOC_DAPM_POST_PMD:
++		regmap_clear_bits(afe->regmap, AFE_GAIN2_CON0, AFE_GAIN2_CON0_ON);
++		regmap_clear_bits(afe->regmap, AFE_GAIN2_CONN, AFE_GAIN2_CONN_FM);
++		afe->fm_on = false;
++		return 0;
++	default:
++		return 0;
++	}
+ }
+ 
+-/* ---------------------------------------------------------------------
+- * FE DAI ops (thin wrappers over the common MTK helpers)
+- * ------------------------------------------------------------------ */
+-static const struct snd_soc_dai_ops mt6572_memif_dai_ops = {
+-	.startup	= mtk_afe_fe_startup,
+-	.shutdown	= mtk_afe_fe_shutdown,
+-	.hw_params	= mtk_afe_fe_hw_params,
+-	.hw_free	= mtk_afe_fe_hw_free,
+-	.prepare	= mtk_afe_fe_prepare,
+-	.trigger	= mtk_afe_fe_trigger,
+-};
++static const struct snd_kcontrol_new mt6572_afe_fm_switch =
++	SOC_DAPM_SINGLE_VIRT("Switch", 1);
+ 
+-/* ---------------------------------------------------------------------
+- * DAIs: FE = DL1 / VUL memif, BE = ADDA
+- * ------------------------------------------------------------------ */
+-static struct snd_soc_dai_driver mt6572_afe_pcm_dais[] = {
+-	/* FE DAIs: memory interfaces to CPU */
+-	{
+-		.name = "PCM_DL1",
+-		.id = MT6572_MEMIF_DL1,
+-		.playback = {
+-			.stream_name = "DL1",
+-			.channels_min = 1,
+-			.channels_max = 2,
+-			.rates = SNDRV_PCM_RATE_8000_48000,
+-			.formats = SNDRV_PCM_FMTBIT_S16_LE,
+-		},
+-		.ops = &mt6572_memif_dai_ops,
+-	},
+-	{
+-		.name = "PCM_VUL",
+-		.id = MT6572_MEMIF_VUL,
+-		.capture = {
+-			.stream_name = "VUL",
+-			.channels_min = 1,
+-			.channels_max = 2,
+-			.rates = SNDRV_PCM_RATE_8000_48000,
+-			.formats = SNDRV_PCM_FMTBIT_S16_LE,
+-		},
+-		.ops = &mt6572_memif_dai_ops,
+-	},
+-	/* BE DAI: ADDA */
+-	{
+-		.name = "ADDA",
+-		.id = MT6572_IO_ADDA,
+-		.playback = {
+-			.stream_name = "ADDA Playback",
+-			.channels_min = 1,
+-			.channels_max = 2,
+-			.rates = SNDRV_PCM_RATE_8000_48000,
+-			.formats = SNDRV_PCM_FMTBIT_S16_LE,
+-		},
+-		.capture = {
+-			.stream_name = "ADDA Capture",
+-			.channels_min = 1,
+-			.channels_max = 2,
+-			.rates = SNDRV_PCM_RATE_8000_48000,
+-			.formats = SNDRV_PCM_FMTBIT_S16_LE,
+-		},
+-	},
++static const struct snd_soc_dapm_widget mt6572_afe_widgets[] = {
++	SND_SOC_DAPM_INPUT("FM I2S In"),
++	SND_SOC_DAPM_SUPPLY("FM I2S Rx", SND_SOC_NOPM, 0, 0, mt6572_afe_fm_rx_event,
++			    SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD),
++	SND_SOC_DAPM_SWITCH_E("FM Playback", SND_SOC_NOPM, 0, 0,
++			      &mt6572_afe_fm_switch, mt6572_afe_fm_event,
++			      SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD),
+ };
+ 
+-/* ---------------------------------------------------------------------
+- * Minimal DAPM: ADDA path (DL1 -> DAC, ADC -> VUL)
+- * ------------------------------------------------------------------ */
+-static const struct snd_soc_dapm_widget mt6572_afe_pcm_widgets[] = {
+-	SND_SOC_DAPM_AIF_IN("ADDA Playback", "ADDA Playback", 0,
+-			    SND_SOC_NOPM, 0, 0),
+-	SND_SOC_DAPM_AIF_OUT("ADDA Capture", "ADDA Capture", 0,
+-			     SND_SOC_NOPM, 0, 0),
++static const struct snd_soc_dapm_route mt6572_afe_routes[] = {
++	{ "FM Playback", "Switch", "FM I2S In" },
++	{ "FM Playback", NULL, "FM I2S Rx" },
++	{ "DL1 Playback", NULL, "FM Playback" },
++	/* the AWB memif records the FM stream, listened to or not */
++	{ "AWB Capture", NULL, "FM I2S In" },
++	{ "AWB Capture", NULL, "FM I2S Rx" },
+ };
+ 
+-static const struct snd_soc_dapm_route mt6572_afe_pcm_routes[] = {
+-	/* DL1 (FE playback) -> ADDA DAC */
+-	{ "ADDA Playback", NULL, "DL1" },
+-	/* ADDA ADC -> VUL (FE capture) */
+-	{ "VUL", NULL, "ADDA Capture" },
+-};
++static const DECLARE_TLV_DB_LINEAR(fm_gain_tlv, TLV_DB_GAIN_MUTE, 0);
+ 
+-static int mt6572_afe_pcm_probe(struct snd_soc_component *component)
++static int mt6572_fm_gain_get(struct snd_kcontrol *kcontrol,
++			      struct snd_ctl_elem_value *ucontrol)
+ {
+-	struct mtk_base_afe *afe = snd_soc_component_get_drvdata(component);
+-
+-	snd_soc_component_init_regmap(component, afe->regmap);
++	struct snd_soc_component *comp = snd_kcontrol_chip(kcontrol);
++	struct mt6572_afe *afe = snd_soc_component_get_drvdata(comp);
+ 
++	ucontrol->value.integer.value[0] = afe->fm_gain;
+ 	return 0;
+ }
+ 
+-static const struct snd_soc_component_driver mt6572_afe_pcm_dai_component = {
+-	.probe = mt6572_afe_pcm_probe,
+-	.name = "mt6572-afe-pcm-dai",
+-	.dapm_widgets = mt6572_afe_pcm_widgets,
+-	.num_dapm_widgets = ARRAY_SIZE(mt6572_afe_pcm_widgets),
+-	.dapm_routes = mt6572_afe_pcm_routes,
+-	.num_dapm_routes = ARRAY_SIZE(mt6572_afe_pcm_routes),
+-	.suspend = mtk_afe_suspend,
+-	.resume = mtk_afe_resume,
+-};
+-
+-/* ---------------------------------------------------------------------
+- * Platform driver
+- * ------------------------------------------------------------------ */
+-static int mt6572_afe_pcm_dev_probe(struct platform_device *pdev)
++static int mt6572_fm_gain_put(struct snd_kcontrol *kcontrol,
++			      struct snd_ctl_elem_value *ucontrol)
+ {
+-	struct mtk_base_afe *afe;
+-	struct mt6572_afe_private *afe_priv;
+-	struct device *dev;
+-	int i, irq_id, ret;
+-
+-	afe = devm_kzalloc(&pdev->dev, sizeof(*afe), GFP_KERNEL);
+-	if (!afe)
+-		return -ENOMEM;
+-
+-	afe->platform_priv = devm_kzalloc(&pdev->dev, sizeof(*afe_priv),
+-					  GFP_KERNEL);
+-	if (!afe->platform_priv)
+-		return -ENOMEM;
++	struct snd_soc_component *comp = snd_kcontrol_chip(kcontrol);
++	struct mt6572_afe *afe = snd_soc_component_get_drvdata(comp);
++	unsigned int gain = ucontrol->value.integer.value[0];
++
++	if (gain > FM_GAIN_MAX)
++		return -EINVAL;
++	if (gain == afe->fm_gain)
++		return 0;
++
++	afe->fm_gain = gain;
++	/* the gain block ramps to the new target on its own */
++	regmap_write(afe->regmap, AFE_GAIN2_CON1,
++		     FIELD_PREP(AFE_GAIN2_CON1_GAIN, gain));
++	return 1;
++}
+ 
+-	afe_priv = afe->platform_priv;
+-	afe->dev = &pdev->dev;
+-	dev = afe->dev;
++/*
++ * DL digital gain (DL1 and FM), shadowed in afe->dl_gain so .prepare re-applies
++ * it; FM's own HW-gain target in front of it.
++ */
++static const struct snd_kcontrol_new mt6572_afe_controls[] = {
++	SOC_SINGLE_EXT_TLV("Playback Volume", SND_SOC_NOPM, 0, 0xffff, 0,
++			   mt6572_dl_gain_get, mt6572_dl_gain_put, dl_gain_tlv),
++	SOC_SINGLE_EXT_TLV("FM Playback Volume", SND_SOC_NOPM, 0, FM_GAIN_MAX, 0,
++			   mt6572_fm_gain_get, mt6572_fm_gain_put, fm_gain_tlv),
++};
+ 
+-	/* AFE registers live at 0x11140000 (see reg property in DT node). */
+-	afe->base_addr = devm_platform_ioremap_resource(pdev, 0);
+-	if (IS_ERR(afe->base_addr))
+-		return PTR_ERR(afe->base_addr);
++static const struct snd_soc_component_driver mt6572_afe_component = {
++	.name = "mt6572-afe-pcm",
++	.controls = mt6572_afe_controls,
++	.num_controls = ARRAY_SIZE(mt6572_afe_controls),
++	.dapm_widgets = mt6572_afe_widgets,
++	.num_dapm_widgets = ARRAY_SIZE(mt6572_afe_widgets),
++	.dapm_routes = mt6572_afe_routes,
++	.num_dapm_routes = ARRAY_SIZE(mt6572_afe_routes),
++	.open = mt6572_afe_pcm_open,
++	.hw_params = mt6572_afe_pcm_hw_params,
++	.prepare = mt6572_afe_pcm_prepare,
++	.hw_free = mt6572_afe_pcm_hw_free,
++	.trigger = mt6572_afe_pcm_trigger,
++	.pointer = mt6572_afe_pcm_pointer,
++	.pcm_construct = mt6572_afe_pcm_new,
++};
+ 
+-	afe->regmap = devm_regmap_init_mmio(dev, afe->base_addr,
+-					    &mt6572_afe_regmap_config);
+-	if (IS_ERR(afe->regmap))
+-		return PTR_ERR(afe->regmap);
++/* IRQ1 marks a DL1 period, IRQ2 an AWB one; hardirq (fast_io regmap, atomic PCM). Active-low. */
++static irqreturn_t mt6572_afe_irq(int irq, void *dev_id)
++{
++	struct mt6572_afe *afe = dev_id;
++	unsigned int status;
++
++	regmap_read(afe->regmap, AFE_IRQ_MCU_STATUS, &status);
++	status &= AFE_IRQ_MCU_STATUS_MASK;
++	if (!status) {
++		regmap_write(afe->regmap, AFE_IRQ_MCU_CLR, AFE_IRQ_MCU_CLR_NOSTATUS);
++		return IRQ_HANDLED;
++	}
+ 
+-	mutex_init(&afe->irq_alloc_lock);
++	if ((status & AFE_IRQ_MCU_STATUS_IRQ1) && afe->dl1_substream)
++		snd_pcm_period_elapsed(afe->dl1_substream);
++	if ((status & AFE_IRQ_MCU_STATUS_IRQ2) && afe->awb_substream)
++		snd_pcm_period_elapsed(afe->awb_substream);
+ 
+-	/* memif initialize */
+-	afe->memif_size = MT6572_MEMIF_NUM;
+-	afe->memif = devm_kcalloc(dev, afe->memif_size, sizeof(*afe->memif),
+-				  GFP_KERNEL);
+-	if (!afe->memif)
+-		return -ENOMEM;
++	regmap_write(afe->regmap, AFE_IRQ_MCU_CLR, status);
++	return IRQ_HANDLED;
++}
+ 
+-	for (i = 0; i < afe->memif_size; i++) {
+-		afe->memif[i].data = &memif_data_array[i];
+-		afe->memif[i].irq_usage = -1;
+-	}
++static int mt6572_afe_pcm_dev_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct mt6572_afe *afe;
++	struct resource res;
++	void __iomem *base;
++	int ret, irq;
+ 
+-	/* irq initialize */
+-	afe->irqs_size = MT6572_IRQ_NUM;
+-	afe->irqs = devm_kcalloc(dev, afe->irqs_size, sizeof(*afe->irqs),
+-				 GFP_KERNEL);
+-	if (!afe->irqs)
++	afe = devm_kzalloc(dev, sizeof(*afe), GFP_KERNEL);
++	if (!afe)
+ 		return -ENOMEM;
++	afe->dev = dev;
++	afe->dl_gain = AFE_DL_GAIN_DEFAULT;
++	afe->fm_gain = FM_GAIN_DEFAULT;
++	platform_set_drvdata(pdev, afe);
+ 
+-	for (i = 0; i < afe->irqs_size; i++)
+-		afe->irqs[i].irq_data = &irq_data[i];
+-
+-	/* TODO: ASYS/AFE IRQ number for MT6572 is not confirmed yet; the
+-	 * vendor kernel routes it through the ASYS IRQ of the topckgen /
+-	 * sysirq domain.  platform_get_irq() reads the DT "interrupts"
+-	 * property once the audsys node exists.
+-	 *
+-	 * Framework-validation placeholder: the real MT6572 ASYS/AFE IRQ is
+-	 * not confirmed, so a missing/unrequestable IRQ must NOT abort the
+-	 * AFE probe.  Log and continue so the ASoC framework + MT6323 codec
+-	 * path can still be exercised on Z1 without sound output.
+-	 */
+-	irq_id = platform_get_irq(pdev, 0);
+-	if (irq_id < 0) {
+-		dev_warn(dev, "no ASYS/AFE IRQ (%d), continuing framework-only\n",
+-			 irq_id);
+-	} else {
+-		ret = devm_request_irq(dev, irq_id, mt6572_afe_isr,
+-				       IRQF_TRIGGER_NONE, "mt6572-afe-isr",
+-				       (void *)afe);
+-		if (ret)
+-			dev_warn(dev,
+-				 "request_irq for afe-isr failed (%d), continuing framework-only\n",
+-				 ret);
+-	}
+-
+-	afe->mtk_afe_hardware = &mt6572_afe_hardware;
+-	afe->memif_fs = mt6572_memif_fs;
+-	afe->irq_fs = mt6572_irq_fs;
+-	afe->reg_back_up_list = mt6572_afe_backup_list;
+-	afe->reg_back_up_list_num = ARRAY_SIZE(mt6572_afe_backup_list);
+-	afe->runtime_resume = mt6572_afe_runtime_resume;
+-	afe->runtime_suspend = mt6572_afe_runtime_suspend;
+-
+-	ret = mt6572_afe_init_clock(afe);
++	ret = dma_coerce_mask_and_coherent(dev, DMA_BIT_MASK(32));
+ 	if (ret)
+-		return ret;
++		return dev_err_probe(dev, ret, "failed to set DMA mask\n");
+ 
+-	platform_set_drvdata(pdev, afe);
++	afe->clk = devm_clk_get_enabled(dev, NULL);
++	if (IS_ERR(afe->clk))
++		return dev_err_probe(dev, PTR_ERR(afe->clk),
++				     "failed to get/enable the audio clock\n");
+ 
+-	pm_runtime_enable(dev);
+-	if (!pm_runtime_enabled(dev)) {
+-		ret = mt6572_afe_runtime_resume(dev);
+-		if (ret)
+-			goto err_pm_disable;
+-	}
+-	pm_runtime_get_sync(dev);
+-
+-	ret = devm_snd_soc_register_component(&pdev->dev, &mtk_afe_pcm_platform,
+-					      NULL, 0);
+-	if (ret) {
+-		dev_warn(dev, "err_platform\n");
+-		goto err_platform;
+-	}
++	/* The AFE registers are in the parent audsys syscon window. */
++	ret = of_address_to_resource(dev->parent->of_node, 0, &res);
++	if (ret)
++		return dev_err_probe(dev, ret, "no AFE reg in parent syscon\n");
++	base = devm_ioremap(dev, res.start, resource_size(&res));
++	if (!base)
++		return dev_err_probe(dev, -ENOMEM, "failed to map AFE registers\n");
++	afe->regmap = devm_regmap_init_mmio(dev, base, &mt6572_afe_regmap_config);
++	if (IS_ERR(afe->regmap))
++		return dev_err_probe(dev, PTR_ERR(afe->regmap),
++				     "failed to init AFE regmap\n");
++
++	/* power on the AFE top + the SoC side of the AFE<->PMIC link */
++	regmap_write(afe->regmap, AUDIO_TOP_CON0, AUDIO_TOP_CON0_AFE_ON);
++	regmap_write(afe->regmap, AFE_ADDA_NEWIF_CFG0, AFE_ADDA_NEWIF_CFG0_VAL);
++	regmap_write(afe->regmap, AFE_ADDA_NEWIF_CFG1, AFE_ADDA_NEWIF_CFG1_VAL);
++
++	/* mask all AFE IRQs + clear stale status before hooking the GIC */
++	regmap_write(afe->regmap, AFE_IRQ_MCU_CON, 0);
++	regmap_write(afe->regmap, AFE_IRQ_MCU_CLR, AFE_IRQ_MCU_STATUS_MASK);
++
++	irq = platform_get_irq(pdev, 0);
++	if (irq < 0)
++		return irq;
++	ret = devm_request_irq(dev, irq, mt6572_afe_irq, 0, "mt6572-afe", afe);
++	if (ret)
++		return dev_err_probe(dev, ret, "failed to request AFE irq %d\n", irq);
+ 
+-	ret = devm_snd_soc_register_component(&pdev->dev,
+-					      &mt6572_afe_pcm_dai_component,
+-					      mt6572_afe_pcm_dais,
+-					      ARRAY_SIZE(mt6572_afe_pcm_dais));
+-	if (ret) {
+-		dev_warn(dev, "err_dai_component\n");
+-		goto err_platform;
+-	}
++	ret = devm_snd_soc_register_component(dev, &mt6572_afe_component,
++					      mt6572_afe_dais,
++					      ARRAY_SIZE(mt6572_afe_dais));
++	if (ret)
++		return dev_err_probe(dev, ret, "failed to register AFE component\n");
+ 
+ 	return 0;
+-
+-err_platform:
+-	pm_runtime_put_sync(dev);
+-err_pm_disable:
+-	pm_runtime_disable(dev);
+-
+-	return ret;
+-}
+-
+-static void mt6572_afe_pcm_dev_remove(struct platform_device *pdev)
+-{
+-	pm_runtime_put_sync(&pdev->dev);
+-	pm_runtime_disable(&pdev->dev);
+-	if (!pm_runtime_status_suspended(&pdev->dev))
+-		mt6572_afe_runtime_suspend(&pdev->dev);
+ }
+ 
+ static const struct of_device_id mt6572_afe_pcm_dt_match[] = {
+ 	{ .compatible = "mediatek,mt6572-audio" },
+-	{},
++	{ /* sentinel */ }
+ };
+ MODULE_DEVICE_TABLE(of, mt6572_afe_pcm_dt_match);
+ 
+-static const struct dev_pm_ops mt6572_afe_pm_ops = {
+-	RUNTIME_PM_OPS(mt6572_afe_runtime_suspend,
+-		       mt6572_afe_runtime_resume, NULL)
+-};
+-
+ static struct platform_driver mt6572_afe_pcm_driver = {
+ 	.driver = {
+-		.name = "mt6572-audio",
++		.name = "mt6572-afe-pcm",
+ 		.of_match_table = mt6572_afe_pcm_dt_match,
+-		.pm = pm_ptr(&mt6572_afe_pm_ops),
+ 	},
+ 	.probe = mt6572_afe_pcm_dev_probe,
+-	.remove = mt6572_afe_pcm_dev_remove,
+ };
+-
+ module_platform_driver(mt6572_afe_pcm_driver);
+ 
+-MODULE_DESCRIPTION("Mediatek ALSA SoC AFE platform driver for 6572");
+-MODULE_AUTHOR("MediaTek Inc.");
+-MODULE_LICENSE("GPL v2");
++MODULE_DESCRIPTION("MediaTek MT6572 AFE platform driver");
++MODULE_LICENSE("GPL");
+diff --git a/sound/soc/mediatek/mt6572/mt6572-afe-reg.h b/sound/soc/mediatek/mt6572/mt6572-afe-reg.h
+deleted file mode 100644
+index 729c4bb8d..000000000
+--- a/sound/soc/mediatek/mt6572/mt6572-afe-reg.h
++++ /dev/null
+@@ -1,148 +0,0 @@
+-/* SPDX-License-Identifier: GPL-2.0 */
+-/*
+- * mt6572-afe-reg.h  --  Mediatek MT6572 audio front end register definition
+- *
+- * All offsets are relative to the AFE base 0x11140000 (32-bit registers).
+- * Values taken from the vendor 3.4.67 kernel:
+- *   wifi_recon/mt6572_kernel_drsami/mediatek/platform/mt6572/kernel/
+- *     drivers/sound/AudDrv_Afe.h
+- *
+- * Copyright (c) 2016 MediaTek Inc.
+- */
+-
+-#ifndef _MT6572_REG_H_
+-#define _MT6572_REG_H_
+-
+-/* ---- AFE global / top registers ---- */
+-#define AUDIO_AFE_TOP_CON0	0x0000
+-#define AUDIO_AFE_TOP_CON1	0x0004
+-#define AUDIO_AFE_TOP_CON2	0x0008
+-#define AUDIO_AFE_TOP_CON3	0x000c
+-
+-#define AFE_DAC_CON0		0x0010
+-#define AFE_DAC_CON1		0x0014
+-#define AFE_I2S_CON		0x0018
+-
+-#define AFE_CONN0		0x0020
+-#define AFE_CONN1		0x0024
+-#define AFE_CONN2		0x0028
+-#define AFE_CONN3		0x002c
+-#define AFE_CONN4		0x0030
+-
+-#define AFE_I2S_CON1		0x0034
+-#define AFE_I2S_CON2		0x0038
+-#define AFE_I2S_CON3		0x004c
+-
+-/* ---- Memory interfaces (memif) ---- */
+-#define AFE_DL1_BASE		0x0040
+-#define AFE_DL1_CUR		0x0044
+-#define AFE_DL1_END		0x0048
+-#define AFE_DL2_BASE		0x0050
+-#define AFE_DL2_CUR		0x0054
+-#define AFE_DL2_END		0x0058
+-#define AFE_AWB_BASE		0x0070
+-#define AFE_AWB_END		0x0078
+-#define AFE_AWB_CUR		0x007c
+-#define AFE_VUL_BASE		0x0080
+-#define AFE_VUL_END		0x0088
+-#define AFE_VUL_CUR		0x008c
+-
+-#define AFE_MEMIF_MON0		0x00d0
+-#define AFE_MEMIF_MON1		0x00d4
+-#define AFE_MEMIF_MON2		0x00d8
+-#define AFE_MEMIF_MON4		0x00e0
+-
+-/* ---- ADDA ---- */
+-#define AFE_ADDA_DL_SRC2_CON0	0x0108
+-#define AFE_ADDA_DL_SRC2_CON1	0x010c
+-#define AFE_ADDA_UL_SRC_CON0	0x0114
+-#define AFE_ADDA_UL_SRC_CON1	0x0118
+-#define AFE_ADDA_TOP_CON0	0x0120
+-#define AFE_ADDA_UL_DL_CON0	0x0124
+-#define AFE_ADDA_SRC_DEBUG	0x012c
+-#define AFE_ADDA_SRC_DEBUG_MON0	0x0130
+-#define AFE_ADDA_SRC_DEBUG_MON1	0x0134
+-#define AFE_ADDA_NEWIF_CFG0	0x0138
+-#define AFE_ADDA_NEWIF_CFG1	0x013c
+-
+-/* ---- Top power / IRQ / maxlen ---- */
+-#define AFE_TOP_CON0		0x0200
+-
+-#define AFE_ADDA_PREDIS_CON0	0x0260
+-#define AFE_ADDA_PREDIS_CON1	0x0264
+-
+-#define AFE_MOD_PCM_BASE	0x0330
+-#define AFE_MOD_PCM_END		0x0338
+-#define AFE_MOD_PCM_CUR		0x033c
+-
+-#define AFE_IRQ_CON		0x03a0
+-#define AFE_IRQ_STATUS		0x03a4
+-#define AFE_IRQ_CLR		0x03a8
+-#define AFE_IRQ_CNT1		0x03ac
+-#define AFE_IRQ_CNT2		0x03b0
+-#define AFE_IRQ_MON2		0x03b8
+-#define AFE_IRQ1_CNT_MON	0x03c0
+-#define AFE_IRQ2_CNT_MON	0x03c4
+-#define AFE_IRQ1_EN_CNT_MON	0x03c8
+-#define AFE_MEMIF_MAXLEN	0x03d4
+-#define AFE_MEMIF_PBUF_SIZE	0x03d8
+-
+-/* ---- ASRC ---- */
+-#define AFE_ASRC_CON0		0x0500
+-#define AFE_ASRC_CON21		0x0570
+-
+-#define AFE_MAX_REGISTER	AFE_ASRC_CON21
+-
+-/* ---- AFE_TOP_CON0 (0x0200) bit masks ---- */
+-#define AFE_TOP_CON0_PDN_AFE	BIT(2)
+-#define AFE_TOP_CON0_PDN_ADC	BIT(5)
+-#define AFE_TOP_CON0_PDN_I2S	BIT(6)
+-#define AFE_TOP_CON0_APB_W2T	BIT(12)
+-#define AFE_TOP_CON0_APB_R2T	BIT(13)
+-#define AFE_TOP_CON0_APB3_SEL	BIT(14)
+-
+-/* ---- AFE_DAC_CON0 (0x0010) bit masks ---- */
+-#define AFE_DAC_CON0_AFE_ON	BIT(0)
+-#define AFE_DAC_CON0_DL1_ON	BIT(1)
+-#define AFE_DAC_CON0_DL2_ON	BIT(2)
+-#define AFE_DAC_CON0_VUL_ON	BIT(3)
+-#define AFE_DAC_CON0_DAI_ON	BIT(4)
+-#define AFE_DAC_CON0_I2S_ON	BIT(5)
+-#define AFE_DAC_CON0_AWB_ON	BIT(6)
+-
+-/* enable bit positions for memif (used with 1 << shift) */
+-#define AFE_DAC_CON0_DL1_ON_SHIFT	1
+-#define AFE_DAC_CON0_DL2_ON_SHIFT	2
+-#define AFE_DAC_CON0_VUL_ON_SHIFT	3
+-#define AFE_DAC_CON0_AWB_ON_SHIFT	6
+-
+-/* ---- AFE_DAC_CON1 (0x0014) field positions / masks ---- */
+-#define AFE_DAC_CON1_DL1_MODE_POS	0
+-#define AFE_DAC_CON1_DL1_MODE_MASK	(0xf << 0)
+-#define AFE_DAC_CON1_DL2_MODE_POS	4
+-#define AFE_DAC_CON1_DL2_MODE_MASK	(0xf << 4)
+-#define AFE_DAC_CON1_I2S_MODE_POS	8
+-#define AFE_DAC_CON1_I2S_MODE_MASK	(0xf << 8)
+-#define AFE_DAC_CON1_AWB_MODE_POS	12
+-#define AFE_DAC_CON1_AWB_MODE_MASK	(0xf << 12)
+-#define AFE_DAC_CON1_VUL_MODE_POS	16
+-#define AFE_DAC_CON1_VUL_MODE_MASK	(0xf << 16)
+-#define AFE_DAC_CON1_VUL_R_MONO_POS	28
+-#define AFE_DAC_CON1_VUL_R_MONO_MASK	BIT(28)
+-
+-/* ---- AFE_IRQ_CON (0x03a0) field positions ---- */
+-#define AFE_IRQ_CON_IRQ1_ON_SHIFT	0
+-#define AFE_IRQ_CON_IRQ2_ON_SHIFT	1
+-#define AFE_IRQ_CON_IRQ1_FS_SHIFT	4
+-#define AFE_IRQ_CON_IRQ2_FS_SHIFT	8
+-#define AFE_IRQ_CON_IRQ_FS_MASK		0xf
+-
+-/* AFE_IRQ_STATUS (0x03a4) bit masks */
+-#define AFE_IRQ_STATUS_IRQ1	BIT(0)
+-#define AFE_IRQ_STATUS_IRQ2	BIT(1)
+-
+-/* AFE_IRQ_CLR (0x03a8) bit masks */
+-#define AFE_IRQ_CLR_IRQ1	BIT(0)
+-#define AFE_IRQ_CLR_IRQ2	BIT(1)
+-
+-#endif /* _MT6572_REG_H_ */
+diff --git a/sound/soc/mediatek/mt6572/mt6572-machine.c b/sound/soc/mediatek/mt6572/mt6572-machine.c
+deleted file mode 100644
+index 3ba174a2b..000000000
+--- a/sound/soc/mediatek/mt6572/mt6572-machine.c
++++ /dev/null
+@@ -1,205 +0,0 @@
+-// SPDX-License-Identifier: GPL-2.0
+-/*
+- * mt6572-machine.c  --  MT6572 MT6323 ALSA SoC machine driver
+- *
+- * Minimal ASoC machine skeleton for the MT6572 AFE + MT6323 PMIC codec
+- * audio path used on the Z1 hearing-aid device.
+- *
+- * Modeled on sound/soc/mediatek/mt6797/mt6797-mt6351.c (classic MTK
+- * AFE + PMIC-codec machine, DPCM FE/BE).
+- *
+- * DAI NAME CONTRACT (strings must match the platform/codec drivers):
+- *   - CPU (AFE FE playback) : "PCM_DL1"
+- *   - CPU (AFE FE capture)  : "PCM_VUL"
+- *   - CPU (AFE BE)          : "ADDA"
+- *   - CODEC (MT6323 AIF1)   : "mt6323-snd-codec-aif1"
+- *
+- * NOTE: the AFE platform driver (mt6572-afe-pcm.c) currently registers its
+- * FE/BE DAIs as "PCM_DL1"/"PCM_VUL"/"ADDA".  If it is later renamed to a
+- * "mt6572-afe-pcm*" / "mt6572-afe-adda" scheme, the COMP_CPU() strings below
+- * must be updated to match.
+- *
+- * TODO (runtime, not compile-blocking):
+- *   - fill mt6572_audio_card_init(): real MT6323 DAI setup
+- *     (snd_soc_dai_set_sysclk / snd_soc_dai_set_fmt) for the AFE BE <-> codec
+- *   - fill mt6572_audio_card_hw_params(): AFE ADDA <-> MT6323 DAI format /
+- *     channel map once the Z1 wiring is confirmed
+- *   - add card->dapm_widgets / .dapm_routes / .controls when the AFE power
+- *     sequence is defined
+- */
+-
+-#include <linux/array_size.h>
+-#include <linux/module.h>
+-#include <linux/of.h>
+-#include <linux/platform_device.h>
+-#include <sound/pcm_params.h>
+-#include <sound/soc.h>
+-
+-/* Front End: PCM_DL1 playback */
+-SND_SOC_DAILINK_DEFS(playback1,
+-	DAILINK_COMP_ARRAY(COMP_CPU("PCM_DL1")),
+-	DAILINK_COMP_ARRAY(COMP_DUMMY()),
+-	DAILINK_COMP_ARRAY(COMP_EMPTY()));
+-
+-/* Front End: PCM_VUL capture */
+-SND_SOC_DAILINK_DEFS(capture1,
+-	DAILINK_COMP_ARRAY(COMP_CPU("PCM_VUL")),
+-	DAILINK_COMP_ARRAY(COMP_DUMMY()),
+-	DAILINK_COMP_ARRAY(COMP_EMPTY()));
+-
+-/* Back End: AFE ADDA <-> MT6323 codec AIF1 */
+-SND_SOC_DAILINK_DEFS(primary_codec,
+-	DAILINK_COMP_ARRAY(COMP_CPU("ADDA")),
+-	DAILINK_COMP_ARRAY(COMP_CODEC(NULL, "mt6323-snd-codec-aif1")),
+-	DAILINK_COMP_ARRAY(COMP_EMPTY()));
+-
+-static int mt6572_audio_card_hw_params(struct snd_pcm_substream *substream,
+-				       struct snd_pcm_hw_params *params)
+-{
+-	/*
+-	 * TODO: configure the AFE BE (ADDA) <-> MT6323 codec digital link.
+-	 * Once the Z1 wiring is confirmed, do e.g.:
+-	 *   struct snd_soc_pcm_runtime *rtd = substream->private_data;
+-	 *   struct snd_soc_dai *cpu_dai = snd_soc_rtd_to_cpu(rtd, 0);
+-	 *   struct snd_soc_dai *codec_dai = snd_soc_rtd_to_codec(rtd, 0);
+-	 *   snd_soc_dai_set_tdm_slot(codec_dai, ...);
+-	 *   snd_soc_dai_set_channel_map(codec_dai, ...);
+-	 */
+-	return 0;
+-}
+-
+-/*
+- * Machine stream ops for the AFE BE <-> codec link.  This is the "card ops"
+- * hook where per-stream hardware setup would go.
+- */
+-static const struct snd_soc_ops mt6572_audio_card_ops = {
+-	.hw_params = mt6572_audio_card_hw_params,
+-};
+-
+-/*
+- * BE DAI link init: called when the backend link is probed.  This is where
+- * the AFE BE DAI gets connected to the MT6323 codec DAI (sysclk/format).
+- */
+-static int mt6572_audio_card_init(struct snd_soc_pcm_runtime *rtd)
+-{
+-	/*
+-	 * TODO: real MT6323 DAI setup once the Z1 pwrap write gate is lifted
+-	 * (see sound/soc/codecs/mt6323.c).  Example:
+-	 *   struct snd_soc_dai *codec_dai = snd_soc_rtd_to_codec(rtd, 0);
+-	 *   snd_soc_dai_set_sysclk(codec_dai, 0, 26000000, 0);
+-	 *   snd_soc_dai_set_fmt(codec_dai, SND_SOC_DAIFMT_CBS_CFS |
+-	 *                       SND_SOC_DAIFMT_I2S | SND_SOC_DAIFMT_NB_NF);
+-	 */
+-	return 0;
+-}
+-
+-static struct snd_soc_dai_link mt6572_mt6323_dai_links[] = {
+-	/* Front End links */
+-	{
+-		.name = "PCM_DL1",
+-		.stream_name = "DL1",
+-		.trigger = { SND_SOC_DPCM_TRIGGER_PRE,
+-			     SND_SOC_DPCM_TRIGGER_PRE },
+-		.dynamic = 1,
+-		.playback_only = 1,
+-		SND_SOC_DAILINK_REG(playback1),
+-	},
+-	{
+-		.name = "PCM_VUL",
+-		.stream_name = "VUL",
+-		.trigger = { SND_SOC_DPCM_TRIGGER_PRE,
+-			     SND_SOC_DPCM_TRIGGER_PRE },
+-		.dynamic = 1,
+-		.capture_only = 1,
+-		SND_SOC_DAILINK_REG(capture1),
+-	},
+-	/* Back End link: AFE ADDA <-> MT6323 codec */
+-	{
+-		.name = "MTK_Codec",
+-		.no_pcm = 1,
+-		.ignore_suspend = 1,
+-		.init = mt6572_audio_card_init,
+-		.ops = &mt6572_audio_card_ops,
+-		SND_SOC_DAILINK_REG(primary_codec),
+-	},
+-};
+-
+-static struct snd_soc_card mt6572_mt6323_card = {
+-	.name = "mt6572-mt6323",
+-	.owner = THIS_MODULE,
+-	.dai_link = mt6572_mt6323_dai_links,
+-	.num_links = ARRAY_SIZE(mt6572_mt6323_dai_links),
+-};
+-
+-static int mt6572_mt6323_dev_probe(struct platform_device *pdev)
+-{
+-	struct snd_soc_card *card = &mt6572_mt6323_card;
+-	struct device_node *platform_node, *codec_node;
+-	struct snd_soc_dai_link *dai_link;
+-	int ret, i;
+-
+-	card->dev = &pdev->dev;
+-
+-	/* AFE platform component (mtk-afe-pcm on the "mediatek,mt6572-audio" node) */
+-	platform_node = of_parse_phandle(pdev->dev.of_node,
+-					 "mediatek,platform", 0);
+-	if (!platform_node) {
+-		dev_err(&pdev->dev, "Property 'platform' missing or invalid\n");
+-		return -EINVAL;
+-	}
+-	for_each_card_prelinks(card, i, dai_link) {
+-		if (dai_link->platforms->name)
+-			continue;
+-		dai_link->platforms->of_node = platform_node;
+-	}
+-
+-	/* MT6323 codec node */
+-	codec_node = of_parse_phandle(pdev->dev.of_node,
+-				      "mediatek,audio-codec", 0);
+-	if (!codec_node) {
+-		dev_err(&pdev->dev,
+-			"Property 'audio-codec' missing or invalid\n");
+-		ret = -EINVAL;
+-		goto put_platform_node;
+-	}
+-	for_each_card_prelinks(card, i, dai_link) {
+-		if (dai_link->codecs->name)
+-			continue;
+-		dai_link->codecs->of_node = codec_node;
+-	}
+-
+-	ret = devm_snd_soc_register_card(&pdev->dev, card);
+-	if (ret)
+-		dev_err(&pdev->dev, "%s snd_soc_register_card fail %d\n",
+-			__func__, ret);
+-
+-	of_node_put(codec_node);
+-put_platform_node:
+-	of_node_put(platform_node);
+-	return ret;
+-}
+-
+-#ifdef CONFIG_OF
+-static const struct of_device_id mt6572_mt6323_dt_match[] = {
+-	{ .compatible = "mediatek,mt6572-sound", },
+-	{}
+-};
+-MODULE_DEVICE_TABLE(of, mt6572_mt6323_dt_match);
+-#endif
+-
+-static struct platform_driver mt6572_mt6323_driver = {
+-	.driver = {
+-		.name = "mt6572-sound",
+-#ifdef CONFIG_OF
+-		.of_match_table = mt6572_mt6323_dt_match,
+-#endif
+-	},
+-	.probe = mt6572_mt6323_dev_probe,
+-};
+-
+-module_platform_driver(mt6572_mt6323_driver);
+-
+-MODULE_DESCRIPTION("MT6572 MT6323 ALSA SoC machine driver");
+-MODULE_AUTHOR("Z1 mainline porting");
+-MODULE_LICENSE("GPL v2");
+-MODULE_ALIAS("mt6572 mt6323 soc card");
+diff --git a/sound/soc/mediatek/mt6572/mt6572-mt6323.c b/sound/soc/mediatek/mt6572/mt6572-mt6323.c
+new file mode 100644
+index 000000000..aa4b84513
+--- /dev/null
++++ b/sound/soc/mediatek/mt6572/mt6572-mt6323.c
+@@ -0,0 +1,156 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * MediaTek MT6572 + MT6323 sound card.
++ *
++ * Machine driver binding the MT6572 AFE platform (DL1 playback) to the MT6323
++ * PMIC analog codec, with headphone-jack detection that auto-routes between the
++ * speaker and the headphones, and an optional external speaker amplifier. The
++ * AFE's AWB capture (the FM receiver's stream) has no codec behind it.
++ * Modelled on the mt8183-mt6358 PMIC-codec card.
++ */
++
++#include <linux/module.h>
++#include <linux/of.h>
++#include <linux/platform_device.h>
++#include <linux/property.h>
++#include "../../codecs/mt6323-accdet.h"
++#include "../common/mtk-soundcard-driver.h"
++#include "../common/mtk-soc-card.h"
++
++#include <sound/jack.h>
++#include <sound/soc.h>
++
++static const struct snd_soc_dapm_widget mt6572_mt6323_widgets[] = {
++	SND_SOC_DAPM_SPK("Speaker", NULL),
++	SND_SOC_DAPM_SPK("Earpiece", NULL),
++};
++
++/*
++ * Lets userspace keep the speaker on with the headphones in; each jack event
++ * re-applies the automatic route. The codec provides the Headphone switch.
++ */
++static const struct snd_kcontrol_new mt6572_mt6323_controls[] = {
++	SOC_DAPM_PIN_SWITCH("Speaker"),
++};
++
++/*
++ * The codec component name is the DT node name of the codec under the PMIC
++ * ("mt6397codec" in arch/arm/boot/dts/mediatek/mt6323.dtsi) — ASoC matches
++ * dai_link codecs by component->name, which for a DT device is the node
++ * name. The gabin8 upstream name "mt6323-sound" does not exist in this
++ * tree's DT.
++ */
++SND_SOC_DAILINK_DEFS(playback,
++	DAILINK_COMP_ARRAY(COMP_CPU("mt6572-afe-dl1")),
++	DAILINK_COMP_ARRAY(COMP_CODEC("mt6397codec", "mt6323-snd-codec-aif1")),
++	DAILINK_COMP_ARRAY(COMP_EMPTY()));
++
++SND_SOC_DAILINK_DEFS(awb,
++	DAILINK_COMP_ARRAY(COMP_CPU("mt6572-afe-awb")),
++	DAILINK_COMP_ARRAY(COMP_DUMMY()),
++	DAILINK_COMP_ARRAY(COMP_EMPTY()));
++
++static struct snd_soc_dai_link mt6572_mt6323_dai_links[] = {
++	{
++		.name = "DL1",
++		.stream_name = "DL1 Playback",
++		SND_SOC_DAILINK_REG(playback),
++	},
++	{
++		.name = "AWB",
++		.stream_name = "AWB Capture",
++		.capture_only = 1,
++		SND_SOC_DAILINK_REG(awb),
++	},
++};
++
++static struct snd_soc_jack mt6572_mt6323_hp_jack;
++
++static struct snd_soc_jack_pin mt6572_mt6323_jack_pins[] = {
++	{ .pin = "Headphone", .mask = SND_JACK_HEADPHONE },
++	{ .pin = "Speaker", .mask = SND_JACK_HEADPHONE, .invert = 1 },
++};
++
++static int mt6572_mt6323_accdet_init(struct snd_soc_pcm_runtime *rtd)
++{
++	struct mtk_soc_card_data *soc_card_data = snd_soc_card_get_drvdata(rtd->card);
++	int ret;
++
++	if (!soc_card_data->accdet)
++		return 0;
++
++	ret = snd_soc_card_jack_new_pins(rtd->card, "Headphone Jack",
++				   SND_JACK_HEADSET,
++				   &mt6572_mt6323_hp_jack, mt6572_mt6323_jack_pins,
++				   ARRAY_SIZE(mt6572_mt6323_jack_pins));
++	if (ret) {
++		dev_err(rtd->dev, "Headphone Jack create failed: %d\n", ret);
++		return ret;
++	}
++
++	ret = mt6323_accdet_enable_jack_detect(soc_card_data->accdet, &mt6572_mt6323_hp_jack);
++	if (ret) {
++		dev_err(rtd->dev, "Headphone Jack enable failed: %d\n", ret);
++		return ret;
++	}
++
++	return 0;
++}
++
++static int mt6572_mt6323_soc_card_probe(struct mtk_soc_card_data *soc_card_data,
++					bool legacy)
++{
++	struct snd_soc_card *card = soc_card_data->card_data->card;
++	struct snd_soc_dai_link *dai_link;
++	int i;
++
++	if (legacy)
++		return -EINVAL;
++
++	for_each_card_prelinks(card, i, dai_link) {
++		if (strcmp(dai_link->name, "DL1") == 0) {
++			dai_link->init = mt6572_mt6323_accdet_init;
++			break;
++		}
++	}
++
++	return 0;
++}
++
++static struct snd_soc_card mt6572_mt6323_card = {
++	.name = "mt6572-mt6323",
++	.owner = THIS_MODULE,
++	.dai_link = mt6572_mt6323_dai_links,
++	.num_links = ARRAY_SIZE(mt6572_mt6323_dai_links),
++	.controls = mt6572_mt6323_controls,
++	.num_controls = ARRAY_SIZE(mt6572_mt6323_controls),
++	.dapm_widgets = mt6572_mt6323_widgets,
++	.num_dapm_widgets = ARRAY_SIZE(mt6572_mt6323_widgets),
++};
++
++static const struct mtk_soundcard_pdata mt6572_card = {
++	.card_name = "mt6572_mt6323",
++	.card_data = &(struct mtk_platform_card_data) {
++		.card = &mt6572_mt6323_card,
++		.num_jacks = 1,
++	},
++	.soc_probe = mt6572_mt6323_soc_card_probe,
++};
++
++static const struct of_device_id mt6572_mt6323_dt_match[] = {
++	{ .compatible = "mediatek,mt6572-mt6323-sound", .data = &mt6572_card },
++	{ /* sentinel */ }
++};
++MODULE_DEVICE_TABLE(of, mt6572_mt6323_dt_match);
++
++static struct platform_driver mt6572_mt6323_driver = {
++	.driver = {
++		.name = "mt6572-mt6323",
++		.of_match_table = mt6572_mt6323_dt_match,
++	},
++	.probe = mtk_soundcard_common_probe,
++};
++module_platform_driver(mt6572_mt6323_driver);
++
++MODULE_DESCRIPTION("MediaTek MT6572 MT6323 sound card");
++MODULE_LICENSE("GPL");
