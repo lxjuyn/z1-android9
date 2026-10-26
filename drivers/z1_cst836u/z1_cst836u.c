@@ -54,13 +54,13 @@
 #define CST836U_SCAN_MS     5000
 #define CST836U_SCAN_TRIES  60
 
-static unsigned int poll_ms = 15;
+static unsigned int poll_ms = 40;
 static bool flip_x, flip_y, swap_xy;
 static unsigned int max_x = 240, max_y = 320;
 static unsigned int log_raw = 64;
 /* Capacitive key strip: raw y at/above key_y_min is a nav key press.
  * The two x splits divide the strip into Back / Home / Recents. */
-static unsigned int key_y_min = 320;
+static unsigned int key_y_min = 300;
 static unsigned int key_x_split1 = 80;
 static unsigned int key_x_split2 = 160;
 module_param(poll_ms, uint, 0644);
