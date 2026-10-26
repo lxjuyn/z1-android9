@@ -24,9 +24,17 @@ R3 layers, on top of the already device-verified R1R2 boot image:
     [z1prop] abilist/fingerprint sentinels + swap lines in the logpersist
     snapshot, zero-fork heartbeat with battery voltage, watchdogd 10 30,
     dalvik.vm.dex2oat-threads=1.
+  - R3e --cmdline: override the boot command line for R3e's bootargs delta
+    (+= printk.devkmsg=on, audit A8-1). The string is written into BOTH the
+    boot header cmdline fields and the DTB: the caller must pass a --dtb
+    whose /chosen bootargs equal it byte for byte, which is enforced by the
+    final parse_boot() readback (final.cmdline comes from the DTB). Without
+    --cmdline the R1R2 baseline string is used and the header is left
+    untouched, exactly as before.
 
-The zImage, appended DTB (except linux,initrd-end), boot cmdline and all
-other ramdisk records stay byte-identical to the flashed R1R2 baseline.
+The zImage, appended DTB (except linux,initrd-end and, with --cmdline, the
+chosen bootargs) and all other ramdisk records stay byte-identical to the
+flashed R1R2 baseline.
 """
 
 import argparse
@@ -50,6 +58,8 @@ from z1_repair_r9_boot import (
 from z1_prepare_android9_ramdisk import INITRD_START
 from z1_make_android9_bootimg import (
     MTK_HEADER_SIZE, BOOT_LIMIT, check_image, check_ramdisk, ADB_DEBUG_BLOCK,
+    BOOT_CMDLINE_OFFSET, BOOT_ARGS_SIZE, BOOT_EXTRA_CMDLINE_OFFSET,
+    BOOT_EXTRA_ARGS_SIZE,
 )
 from z1_make_stock_android9 import ramdisk_index
 
@@ -142,6 +152,28 @@ def encode_record(name, fields, data):
 def new_record(name, data, mode, inode):
     fields = [inode, stat.S_IFREG | mode, 0, 0, 1, 0, len(data), 0, 0, 0, 0, 0, 0]
     return Record(name, fields, data, encode_record(name, fields, data))
+
+
+def patch_header_cmdline(header, cmdline):
+    """Rewrite the v0 header cmdline + extra_cmdline fields in place.
+
+    Mirrors the repository MTK mkbootimg writer packing rules that
+    check_boot_header_cmdline() asserts against: up to 511 bytes plus a NUL
+    in cmdline, any remainder in extra_cmdline, and zero padding for the
+    unused bytes (the writer's struct is zero-initialized).
+    """
+    if isinstance(cmdline, str):
+        raw = cmdline.encode("utf-8")
+    else:
+        raw = bytes(cmdline)
+    if b"\x00" in raw:
+        raise ValueError("boot command line contains an embedded NUL")
+    if len(raw) > BOOT_ARGS_SIZE + BOOT_EXTRA_ARGS_SIZE - 2:
+        raise ValueError("boot command line exceeds the MTK v0 header capacity")
+    main = raw[:BOOT_ARGS_SIZE - 1].ljust(BOOT_ARGS_SIZE - 1, b"\x00") + b"\x00"
+    extra = raw[BOOT_ARGS_SIZE - 1:].ljust(BOOT_EXTRA_ARGS_SIZE, b"\x00")
+    header[BOOT_CMDLINE_OFFSET:BOOT_CMDLINE_OFFSET + BOOT_ARGS_SIZE] = main
+    header[BOOT_EXTRA_CMDLINE_OFFSET:BOOT_EXTRA_CMDLINE_OFFSET + BOOT_EXTRA_ARGS_SIZE] = extra
 
 
 def patch_init_z1_rc(rc, with_adb):
@@ -310,7 +342,14 @@ def rebuild_ramdisk(body, module_path, bootdiag_path, with_adb, with_low_ram,
     return gzip.compress(raw, compresslevel=9, mtime=0), additions
 
 
-def build(base: Boot, module_path, bootdiag_path, directory, with_adb, with_low_ram, dtb_override=None, extra_modules=()):
+def build(base: Boot, module_path, bootdiag_path, directory, with_adb, with_low_ram,
+          dtb_override=None, extra_modules=(), cmdline_override=None):
+    # R3e (A8-1): expected_cmdline is the string the boot header fields AND
+    # the appended DTB bootargs must both carry. Default (None) keeps the
+    # R1R2 baseline verbatim; --cmdline replaces it (R3e: baseline +
+    # " printk.devkmsg=on"). The DTB side is enforced by the final
+    # parse_boot() readback below, whose cmdline is read from the DTB.
+    expected_cmdline = cmdline_override if cmdline_override is not None else base.cmdline
     body, additions = rebuild_ramdisk(base.ramdisk[MTK_HEADER_SIZE:], module_path,
                                       bootdiag_path, with_adb, with_low_ram,
                                       extra_modules=extra_modules)
@@ -331,19 +370,27 @@ def build(base: Boot, module_path, bootdiag_path, directory, with_adb, with_low_
     header = bytearray(base.data[:base.page])
     struct.pack_into("<I", header, 8, len(kernel))
     struct.pack_into("<I", header, 16, len(ramdisk))
+    # R3e (A8-1): with a --cmdline override the header is copied from the
+    # R1R2 baseline first, so rewrite the cmdline fields (after the sizes,
+    # before boot_id which lives at 576:608 and is independent of them).
+    if expected_cmdline != base.cmdline:
+        patch_header_cmdline(header, expected_cmdline)
     header[576:608] = boot_id(kernel, ramdisk)
     image = bytes(header) + padded(kernel, base.page) + padded(ramdisk, base.page)
 
     if len(image) > BOOT_LIMIT:
         raise ValueError(f"candidate exceeds the {BOOT_LIMIT}-byte boot partition")
 
-    check_image(image, base.zimage + dtb, ramdisk, base.cmdline)
+    check_image(image, base.zimage + dtb, ramdisk, expected_cmdline)
     rd_path = directory / "ramdisk-mtk.img"
     rd_path.write_bytes(ramdisk)
     check_ramdisk(rd_path, require_android_logging=True, allow_adb=with_adb)
     final = parse_boot(image)
-    if final.zimage != base.zimage or final.cmdline != base.cmdline or final.initrd_end != end:
-        raise ValueError("final readback differs from the baseline")
+    if final.zimage != base.zimage or final.cmdline != expected_cmdline or final.initrd_end != end:
+        raise ValueError(
+            "final readback differs from the expected state (zImage/cmdline/"
+            "initrd); with a --cmdline override this also proves the DTB "
+            "bootargs equal the overridden string byte for byte")
 
     verify = ramdisk_index([(r.name, r.fields, r.data) for r in records(gzip.decompress(final.ramdisk[MTK_HEADER_SIZE:]))])
     rc = verify["init.z1.rc"][2]
@@ -415,7 +462,14 @@ def main():
     parser.add_argument("--dtb", type=Path, default=None,
                         help="replace the appended DTB wholesale (initrd-end "
                              "still patched); its /chosen bootargs must equal "
-                             "the baseline cmdline byte for byte")
+                             "the boot command line (baseline, or --cmdline "
+                             "when given) byte for byte")
+    parser.add_argument("--cmdline", default=None, metavar="STR",
+                        help="override the boot command line for both the "
+                             "boot header fields and (via the required "
+                             "matching --dtb) the DTB bootargs; default is "
+                             "the R1R2 baseline string (R3e: baseline + "
+                             "' printk.devkmsg=on')")
     parser.add_argument("--extra-module", type=Path, action="append", default=[],
                         metavar="KO",
                         help="additional out-of-tree module to pack into the "
@@ -436,7 +490,9 @@ def main():
                                             with_adb=args.composite_adb,
                                             with_low_ram=args.low_ram,
                                             dtb_override=args.dtb,
-                                            extra_modules=args.extra_module)
+                                            extra_modules=args.extra_module,
+                                            cmdline_override=args.cmdline)
+    expected_cmdline = args.cmdline if args.cmdline is not None else base.cmdline
 
     outputs = {"boot.img": image, "ramdisk-mtk.img": ramdisk, "mt6572-z1.dtb": dtb}
     for name, blob in outputs.items():
@@ -446,6 +502,11 @@ def main():
         "status": "HOST_PACKAGE_PASS_NOT_DEVICE_VERIFIED",
         "input_baseline": {"name": args.input.name, "sha256": sha(data)},
         "dtb_override": {"sha256": sha(args.dtb.read_bytes())} if args.dtb else None,
+        "cmdline": {
+            "baseline": base.cmdline,
+            "override": args.cmdline,
+            "final": expected_cmdline,
+        },
         "outputs": {n: {"bytes": len(b), "sha256": sha(b)} for n, b in outputs.items()},
         "new_initrd_end": f"{end:#x}",
         "initrd_start": f"{INITRD_START:#x}",
@@ -484,6 +545,11 @@ def main():
             else "R3e +wifi-nvram-WIFI.bin (device NVRAM, 512 B)"
                  " (regulatory.db absent on host, skipped)",
         ],
+        "cmdline_delta": (
+            None if args.cmdline is None
+            else f"boot header + DTB bootargs overridden via --cmdline "
+                 f"(R3e A8-1 printk.devkmsg=on); final string sha256 "
+                 f"{sha(expected_cmdline.encode('utf-8'))}"),
         "device_boot_verified": False,
         "flashing_performed": False,
     }
