@@ -16,6 +16,14 @@ R3 layers, on top of the already device-verified R1R2 boot image:
     z1_gpio_hunt, runtime GPIO scan for the touch I2C hunt) packed root:root
     0644 before the cpio TRAILER; --dtb replaces the appended DTB wholesale
     (R3d: corrected bootargs) with initrd-end still recomputed.
+  - R3e (audit v2 parallel items): WMT ignition (z1_6620 service armed by
+    sys.z1.radio.modules_ready=1; no wmt_loader, no oneshot - the launcher
+    must stay resident), z1_wifi_probe.sh func-on/scan diagnostic, WiFi
+    NVRAM (wifi-nvram-WIFI.bin, 512 B) + regulatory.db packed and persisted
+    by z1_radio_finish.sh, WMT quick-sleep off via /proc/driver/wmt_dbg,
+    [z1prop] abilist/fingerprint sentinels + swap lines in the logpersist
+    snapshot, zero-fork heartbeat with battery voltage, watchdogd 10 30,
+    dalvik.vm.dex2oat-threads=1.
 
 The zImage, appended DTB (except linux,initrd-end), boot cmdline and all
 other ramdisk records stay byte-identical to the flashed R1R2 baseline.
@@ -62,6 +70,7 @@ on post-fs
     exec_background u:r:init:s0 root root -- /system/bin/sh /z1_display_takeover.sh
     exec_background u:r:init:s0 root root -- /system/bin/sh /system/bin/z1_linux7_radio_init.sh
     exec_background u:r:init:s0 root root -- /system/bin/sh /z1_radio_finish.sh
+    exec_background u:r:init:s0 root root -- /system/bin/sh /z1_wifi_probe.sh
     exec_background u:r:init:s0 root root -- /system/bin/sh /z1_touch_load.sh
 
 service z1_heartbeat /system/bin/sh /z1_heartbeat.sh
@@ -77,6 +86,22 @@ service z1_logpersist /system/bin/sh /z1_logpersist.sh
     group root system sdcard_rw
     disabled
     seclabel u:r:init:s0
+
+# R3e (A1-1/A1-2/A2-3): the WMT transport (modules, /dev/stpwmt, /dev/stpbt)
+# has been up since R3c, but nothing ever started the firmware loader, so the
+# WMT patch was never downloaded and WLAN could not function. Fire the
+# SOC-flow launcher the moment z1_radio_finish publishes modules_ready=1.
+# wmt_loader is NOT started: it belongs to the old combo flow and the SoC
+# solution does not walk it. No oneshot: the launcher must stay resident to
+# serve WMT control traffic.
+on property:sys.z1.radio.modules_ready=1
+    start z1_6620
+
+service z1_6620 /system/bin/6620_launcher -m 3 -p /system/etc/firmware/
+    class core
+    user root
+    group root wifi inet
+    seclabel u:r:init:s0
 """
 
 HEARTBEAT_MARKER = b"z1_heartbeat"
@@ -91,6 +116,21 @@ TOUCH_EXEC = (
 
 MODULE_NAME = b"z1_cst836u.ko"
 VERMAGIC = b"7.0.0-rc7-z1+ SMP mod_unload ARMv7 p2v8"
+
+# R3e (A8-6): widen the watchdog window for bring-up. The baseline 5 s
+# timeout / 10 s margin is too narrow while suspend handling and the radio
+# chain are still being settled; tighten back to 5 10 for productization.
+WATCHDOG_OLD = b"service watchdogd /sbin/watchdogd 5 10"
+WATCHDOG_NEW = (
+    b"# R3e (A8-6): 10s timeout / 30s margin for bring-up; tighten back to\n"
+    b"# 5 10 for productization once suspend and the radio chain are settled.\n"
+    b"service watchdogd /sbin/watchdogd 10 30"
+)
+
+# R3e (A1-3): WiFi NVRAM calibration (device's own 512 B blob) and the host
+# regdb, packed into the ramdisk root and persisted by z1_radio_finish.sh.
+NVRAM_SRC = ROOT.parent / "mainline_recon/wifi-nvram-WIFI.bin"
+REGDB_SRC = Path("/lib/firmware/regulatory.db")
 
 
 def encode_record(name, fields, data):
@@ -118,7 +158,12 @@ def patch_init_z1_rc(rc, with_adb):
         raise ValueError("baseline init.z1.rc lacks the R1R2 touch exec line")
     rc = rc.replace(TOUCH_EXEC, PM_GUARD_EXEC, 1)
 
-    # 2. Append the post-fs block; ADB block only in composite mode (R3
+    # 2. Widen the watchdog window (R3e, A8-6).
+    if WATCHDOG_OLD not in rc:
+        raise ValueError("baseline init.z1.rc lacks the watchdogd 5 10 line")
+    rc = rc.replace(WATCHDOG_OLD, WATCHDOG_NEW, 1)
+
+    # 3. Append the post-fs block; ADB block only in composite mode (R3
     # device evidence: composite never bound and left the board USB-blind).
     if not rc.endswith(b"\n"):
         rc += b"\n"
@@ -154,6 +199,13 @@ def patch_default_prop(prop, with_low_ram):
     # Cap the dex2oat heap: 512m on 1 GiB RAM invites memory-pressure kills
     # during background dexopt (crash-restart window around minute 6).
     prop = prop.replace(b"dalvik.vm.dex2oat-Xmx=512m", b"dalvik.vm.dex2oat-Xmx=256m", 1)
+
+    # R3e (A6-4): single-thread dex2oat - same memory-pressure failure class
+    # as the Xmx cap above; the guard mirrors the abilist one (never append
+    # twice, and never stack on an existing value).
+    if b"dalvik.vm.dex2oat-threads=" in prop:
+        raise ValueError("default.prop already sets dalvik.vm.dex2oat-threads")
+    prop += b"dalvik.vm.dex2oat-threads=1\n"
 
     if not with_low_ram:
         return prop
@@ -217,8 +269,21 @@ def rebuild_ramdisk(body, module_path, bootdiag_path, with_adb, with_low_ram,
         (b"z1_radio_finish.sh", (ROOT / "stock/z1_radio_finish.sh").read_bytes(), 0o755),
     ]
     # Extra modules join the additions list (all landed root:root 0644/0755 by
-    # new_record, all emitted before the TRAILER!!! record).
+    # new_record, all emitted before the TRAILER!!! record). R3e: every new
+    # addition must stay behind this line, otherwise each extra module's cpio
+    # inode shifts by the number of new records (regression diff would show
+    # inode churn on records whose content did not change).
     additions += [(name, blob, 0o644) for name, blob in extra_blobs]
+    # R3e (A1-2/A1-3): func-on/scan probe, the device's own 512 B WiFi NVRAM
+    # calibration and the host regdb. NVRAM is mandatory; regdb is packed
+    # only when it exists on the host, otherwise skipped (recorded in the
+    # build manifest).
+    additions.append((b"z1_wifi_probe.sh", (ROOT / "stock/z1_wifi_probe.sh").read_bytes(), 0o755))
+    if not NVRAM_SRC.is_file():
+        raise ValueError(f"WiFi NVRAM source missing: {NVRAM_SRC}")
+    additions.append((b"wifi-nvram-WIFI.bin", NVRAM_SRC.read_bytes(), 0o644))
+    if REGDB_SRC.is_file():
+        additions.append((b"regulatory.db", REGDB_SRC.read_bytes(), 0o644))
     names = [r.name for r in listing]
     for name, _, _ in additions:
         if name in names:
@@ -284,6 +349,10 @@ def build(base: Boot, module_path, bootdiag_path, directory, with_adb, with_low_
     rc = verify["init.z1.rc"][2]
     markers = [HEARTBEAT_MARKER, RADIO_MARKER, WAKELOCK_MARKER, b"z1_pm_guard.sh",
                b"z1_logpersist.sh", b"z1_radio_finish.sh",
+               # R3e: radio ignition service/trigger + func-on probe exec.
+               b"z1_wifi_probe.sh", b"z1_6620",
+               b"on property:sys.z1.radio.modules_ready=1",
+               b"exec_background u:r:init:s0 root root -- /system/bin/sh /z1_wifi_probe.sh",
                b"exec_background u:r:init:s0 root root -- /system/bin/sh /z1_touch_load.sh"]
     if with_adb:
         markers.append(b"functionfs")
@@ -295,9 +364,12 @@ def build(base: Boot, module_path, bootdiag_path, directory, with_adb, with_low_
     if "edt-ft5x06.ko" in verify:
         raise ValueError("superseded edt-ft5x06.ko still present")
     for key in ("z1_cst836u.ko", "z1_pm_guard.sh", "z1_heartbeat.sh",
-                "z1_logpersist.sh", "z1_radio_finish.sh"):
+                "z1_logpersist.sh", "z1_radio_finish.sh", "z1_wifi_probe.sh",
+                "wifi-nvram-WIFI.bin"):
         if key not in verify:
             raise ValueError(f"ramdisk readback missing {key}")
+    if REGDB_SRC.is_file() and "regulatory.db" not in verify:
+        raise ValueError("ramdisk readback missing regulatory.db")
     if VERMAGIC not in verify["z1_cst836u.ko"][2]:
         raise ValueError("module vermagic missing from final ramdisk")
     for path in extra_modules:
@@ -312,6 +384,16 @@ def build(base: Boot, module_path, bootdiag_path, directory, with_adb, with_low_
         raise ValueError("default.prop abilist insurance missing")
     if b"dex2oat-Xmx=512m" in verify["default.prop"][2]:
         raise ValueError("dex2oat Xmx still 512m")
+    if b"dalvik.vm.dex2oat-threads=1\n" not in verify["default.prop"][2]:
+        raise ValueError("default.prop dex2oat-threads=1 missing")
+    if b"service watchdogd /sbin/watchdogd 10 30" not in rc:
+        raise ValueError("watchdogd is not 10 30 in the final init.z1.rc")
+    if b"service watchdogd /sbin/watchdogd 5 10" in rc:
+        raise ValueError("baseline watchdogd 5 10 line still present")
+    if b"wifi-nvram-WIFI.bin" not in verify["z1_radio_finish.sh"][2]:
+        raise ValueError("z1_radio_finish.sh readback lacks the NVRAM persist block")
+    if b"wmt_dbg" not in verify["z1_radio_finish.sh"][2]:
+        raise ValueError("z1_radio_finish.sh readback lacks the wmt_dbg line")
 
     return image, ramdisk, dtb, end, verify
 
@@ -386,6 +468,21 @@ def main():
             "z1_touch_load.sh: rewritten for the polled driver, retrying loader",
             "+z1_cst836u.ko +z1_pm_guard.sh +z1_heartbeat.sh +z1_logpersist.sh",
             "-edt-ft5x06.ko (superseded: cannot probe without IRQ GPIO)",
+            # R3e (audit v2 parallel items):
+            "R3e init.z1.rc: +z1_6620 (6620_launcher -m 3, armed by "
+            "sys.z1.radio.modules_ready=1, no oneshot; wmt_loader untouched) "
+            "+z1_wifi_probe.sh exec (post-fs, after radio_finish); watchdogd 5 10 -> 10 30",
+            "R3e default.prop: +dalvik.vm.dex2oat-threads=1",
+            "R3e +z1_wifi_probe.sh (func-on /dev/wmtWifi -> wlan0 poll -> iw scan -> logcat Z1Wifi, [z1wifi] kmsg)",
+            "R3e z1_radio_finish.sh: +wmt_dbg quick-sleep off (pre-chown) "
+            "+idempotent NVRAM/regdb persist into /system/etc/firmware",
+            "R3e z1_logpersist.sh: 60s snapshot +[z1prop] fingerprint/abilist "
+            "sentinels +SwapTotal/SwapFree",
+            "R3e z1_heartbeat.sh: zero-fork sampling (up/tasks/free) +voltage_now",
+            "R3e +wifi-nvram-WIFI.bin (device NVRAM, 512 B)"
+            + " +regulatory.db (host copy packed)" if REGDB_SRC.is_file()
+            else "R3e +wifi-nvram-WIFI.bin (device NVRAM, 512 B)"
+                 " (regulatory.db absent on host, skipped)",
         ],
         "device_boot_verified": False,
         "flashing_performed": False,

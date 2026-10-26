@@ -31,7 +31,21 @@ while :; do
             /system/bin/getprop 2>/dev/null | grep -iE 'z1|boot|usb|radio'
             echo '--- wake locks ---'
             cat /sys/power/wake_lock 2>/dev/null
+            echo '--- swap ---'
+            grep -E 'SwapTotal|SwapFree' /proc/meminfo 2>/dev/null
         } > "$D/snap.txt.new" && mv "$D/snap.txt.new" "$D/snap.txt"
+
+        # R3e (A3-5): property-area sentinels. An empty ro.build.fingerprint or
+        # an abilist vanished from the raw default_prop area means the
+        # /dev/__properties__ region lost records again (R3b failure class).
+        # An empty dd output counts as lost too: it means the area is unreadable.
+        if [ -z "$(/system/bin/getprop ro.build.fingerprint 2>/dev/null)" ]; then
+            printf '<3>[z1prop] AREA BROKEN: ro.build.fingerprint is empty\n' > /dev/kmsg 2>/dev/null || true
+        fi
+        raw=$(dd if=/dev/__properties__/u:object_r:default_prop:s0 bs=4096 2>/dev/null | strings 2>/dev/null | grep -c abilist)
+        if [ -z "$raw" ] || [ "$raw" = "0" ]; then
+            printf '<3>[z1prop] raw lost: abilist missing from default_prop area\n' > /dev/kmsg 2>/dev/null || true
+        fi
     fi
 
     echo "beat $i up=${up}s" >> "$D/beats.txt"
