@@ -15,10 +15,20 @@
  * i2c-1) where a single-byte READ at 0x15 gets an ACK, so no DT node is
  * required. R3d note: the probe must NOT use I2C_SMBUS_QUICK — 0-length
  * messages never reach the bus on i2c-mt65xx (see comment in cst836u_scan).
- * Orientation knobs (flip_x,
- * flip_y, swap_xy) are module parameters: recalibrate by rmmod/insmod
- * without reflashing. Raw samples are logged until log_raw quota is used so
- * the first on-board session doubles as orientation calibration evidence.
+ *
+ * R3f: the touch panel physically extends below the 240x320 display over
+ * the three capacitive navigation buttons (Back / Home / Recents). Touches
+ * with a raw y above the display area are reported as key events instead
+ * of coordinates; the split points are module parameters so they can be
+ * recalibrated without reflashing. NOTE: the key strip assumes flip_y=0
+ * (the calibrated default); with flip_y set the strip mirrors above y=0
+ * and the keys stop working.
+ *
+ * R3f naming: the input device name uses an underscore ("z1_cst836u")
+ * because Android normalizes non-alphanumeric characters in input device
+ * names to underscores when looking up .idc/.kl files. A dash in the name
+ * would require the same dash-less filenames anyway; using the underscore
+ * directly keeps both the raw and normalized lookups identical.
  */
 
 #include <linux/delay.h>
@@ -48,6 +58,11 @@ static unsigned int poll_ms = 15;
 static bool flip_x, flip_y, swap_xy;
 static unsigned int max_x = 240, max_y = 320;
 static unsigned int log_raw = 64;
+/* Capacitive key strip: raw y at/above key_y_min is a nav key press.
+ * The two x splits divide the strip into Back / Home / Recents. */
+static unsigned int key_y_min = 320;
+static unsigned int key_x_split1 = 80;
+static unsigned int key_x_split2 = 160;
 module_param(poll_ms, uint, 0644);
 module_param(flip_x, bool, 0644);
 module_param(flip_y, bool, 0644);
@@ -55,19 +70,26 @@ module_param(swap_xy, bool, 0644);
 module_param(max_x, uint, 0444);
 module_param(max_y, uint, 0444);
 module_param(log_raw, uint, 0644);
+module_param(key_y_min, uint, 0644);
+module_param(key_x_split1, uint, 0644);
+module_param(key_x_split2, uint, 0644);
 MODULE_PARM_DESC(poll_ms, "polling interval in milliseconds");
 MODULE_PARM_DESC(flip_x, "mirror X coordinates");
-MODULE_PARM_DESC(flip_y, "mirror Y coordinates");
+MODULE_PARM_DESC(flip_y, "mirror Y coordinates (disables the capacitive key strip)");
 MODULE_PARM_DESC(swap_xy, "exchange X and Y axes");
 MODULE_PARM_DESC(max_x, "clamped maximum X coordinate");
 MODULE_PARM_DESC(max_y, "clamped maximum Y coordinate");
 MODULE_PARM_DESC(log_raw, "number of raw samples logged for calibration");
+MODULE_PARM_DESC(key_y_min, "raw Y at/above this is the capacitive key strip");
+MODULE_PARM_DESC(key_x_split1, "X below this splits Back from Home");
+MODULE_PARM_DESC(key_x_split2, "X below this splits Home from Recents");
 
 struct cst836u {
     struct i2c_client *client;
     struct input_dev *input;
     struct delayed_work work;
     bool touching;
+    int last_key;           /* keycode of the currently held nav key, 0 = none */
     unsigned int raw_logged;
     unsigned int bus_errors;
 };
@@ -78,15 +100,43 @@ static int cst836u_read_block(struct i2c_client *client, u8 reg, u8 *buf, size_t
     return ret < 0 ? ret : (size_t)ret == len ? 0 : -EIO;
 }
 
+/* Release a held nav key (finger lifted, moved off the strip, or bus died). */
+static void cst836u_release_key(struct cst836u *ts)
+{
+    if (ts->last_key) {
+        input_report_key(ts->input, ts->last_key, 0);
+        ts->last_key = 0;
+    }
+}
+
+/*
+ * Report with RAW (post-orientation, PRE-clamp) coordinates so the key
+ * strip region above the display stays reachable: the touch path clamps
+ * to the display range itself.
+ */
 static void cst836u_report(struct cst836u *ts, bool touch, unsigned int x, unsigned int y)
 {
     if (touch != ts->touching) {
         input_report_key(ts->input, BTN_TOUCH, touch);
+        if (!touch)
+            cst836u_release_key(ts);
         ts->touching = touch;
     }
     if (touch) {
-        input_report_abs(ts->input, ABS_X, x);
-        input_report_abs(ts->input, ABS_Y, y);
+        if (y >= key_y_min) {
+            int key = x < key_x_split1 ? KEY_BACK
+                    : x < key_x_split2 ? KEY_HOME
+                    : KEY_MENU;
+            if (key != ts->last_key) {
+                cst836u_release_key(ts);
+                input_report_key(ts->input, key, 1);
+                ts->last_key = key;
+            }
+        } else {
+            cst836u_release_key(ts);
+            input_report_abs(ts->input, ABS_X, min(x, max_x - 1));
+            input_report_abs(ts->input, ABS_Y, min(y, max_y - 1));
+        }
     }
     input_sync(ts->input);
 }
@@ -99,8 +149,11 @@ static void cst836u_poll(struct work_struct *work)
     bool touch;
 
     if (cst836u_read_block(ts->client, CST836U_REG_COUNT, buf, sizeof(buf))) {
-        if (++ts->bus_errors == 50)
+        if (++ts->bus_errors == 50) {
             dev_err(&ts->client->dev, "50 consecutive I2C read failures; check power/clock\n");
+            cst836u_release_key(ts);
+            input_sync(ts->input);
+        }
         goto resched;
     }
     ts->bus_errors = 0;
@@ -125,16 +178,16 @@ static void cst836u_poll(struct work_struct *work)
         unsigned int a = ((xh & CST836U_COORD_MASK) << 8) | xl;
         unsigned int b = ((yh & CST836U_COORD_MASK) << 8) | yl;
         if (swap_xy) { unsigned int t = a; a = b; b = t; }
-        x = min(flip_x ? max_x - 1 - a : a, max_x - 1);
-        y = min(flip_y ? max_y - 1 - b : b, max_y - 1);
+        x = flip_x ? max_x - 1 - a : a;
+        y = flip_y ? max_y - 1 - b : b;
     } else {
         x = y = 0;
     }
 
     if (ts->raw_logged < log_raw && (touch || ts->touching)) {
         dev_info(&ts->client->dev,
-                 "raw sample %u: count=%u xh=%02x xl=%02x yh=%02x yl=%02x -> x=%u y=%u\n",
-                 ts->raw_logged++, count, xh, xl, yh, yl, x, y);
+                 "raw sample %u: count=%u xh=%02x xl=%02x yh=%02x yl=%02x -> x=%u y=%u key=%d\n",
+                 ts->raw_logged++, count, xh, xl, yh, yl, x, y, ts->last_key);
     }
 
     cst836u_report(ts, touch, x, y);
@@ -166,13 +219,17 @@ static int cst836u_probe(struct i2c_client *client)
     if (!ts->input)
         return -ENOMEM;
 
-    ts->input->name = "z1-cst836u";
+    ts->input->name = "z1_cst836u";
     ts->input->id.bustype = BUS_I2C;
     ts->input->phys = devm_kasprintf(&client->dev, GFP_KERNEL,
                                      "i2c-%u/0x%02x", i2c_adapter_id(client->adapter), client->addr);
     __set_bit(EV_KEY, ts->input->evbit);
     __set_bit(EV_ABS, ts->input->evbit);
     __set_bit(BTN_TOUCH, ts->input->keybit);
+    /* capacitive navigation strip below the display */
+    __set_bit(KEY_BACK, ts->input->keybit);
+    __set_bit(KEY_HOME, ts->input->keybit);
+    __set_bit(KEY_MENU, ts->input->keybit);
     input_set_abs_params(ts->input, ABS_X, 0, max_x - 1, 0, 0);
     input_set_abs_params(ts->input, ABS_Y, 0, max_y - 1, 0, 0);
 
@@ -184,8 +241,9 @@ static int cst836u_probe(struct i2c_client *client)
     INIT_DELAYED_WORK(&ts->work, cst836u_poll);
     schedule_delayed_work(&ts->work, msecs_to_jiffies(poll_ms));
 
-    dev_info(&client->dev, "polled CST836U input device registered (poll=%ums flip_x=%d flip_y=%d swap_xy=%d)\n",
-             poll_ms, flip_x, flip_y, swap_xy);
+    dev_info(&ts->input->dev,
+             "polled CST836U registered (poll=%ums flips=%d/%d/%d strip: y>=%u splits %u/%u)\n",
+             poll_ms, flip_x, flip_y, swap_xy, key_y_min, key_x_split1, key_x_split2);
     return 0;
 }
 
@@ -304,5 +362,5 @@ module_init(cst836u_init);
 module_exit(cst836u_exit);
 
 MODULE_AUTHOR("Z1 mainline bring-up");
-MODULE_DESCRIPTION("Polled CST836U (FT6206 protocol) touchscreen for Jiabo Z1");
+MODULE_DESCRIPTION("Polled CST836U (FT6206 protocol) touchscreen + capacitive nav keys for Jiabo Z1");
 MODULE_LICENSE("GPL");
