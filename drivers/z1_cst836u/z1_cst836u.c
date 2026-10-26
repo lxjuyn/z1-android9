@@ -116,14 +116,23 @@ static void cst836u_release_key(struct cst836u *ts)
  */
 static void cst836u_report(struct cst836u *ts, bool touch, unsigned int x, unsigned int y)
 {
-    if (touch != ts->touching) {
-        input_report_key(ts->input, BTN_TOUCH, touch);
-        if (!touch)
-            cst836u_release_key(ts);
-        ts->touching = touch;
-    }
-    if (touch) {
-        if (y >= key_y_min) {
+    if (!touch) {
+        /* Finger lifted: end the display gesture and release any nav key. */
+        if (ts->touching)
+            input_report_key(ts->input, BTN_TOUCH, 0);
+        cst836u_release_key(ts);
+        ts->touching = false;
+    } else if (y >= key_y_min) {
+        /*
+         * Nav-key strip. The touch must be UP while a nav key is held,
+         * otherwise BTN_TOUCH=1 with stale ABS_X/Y makes Android treat
+         * the key press as a tap at the last display position.
+         */
+        if (ts->touching) {
+            input_report_key(ts->input, BTN_TOUCH, 0);
+            ts->touching = false;
+        }
+        {
             int key = x < key_x_split1 ? KEY_BACK
                     : x < key_x_split2 ? KEY_HOME
                     : KEY_MENU;
@@ -132,11 +141,16 @@ static void cst836u_report(struct cst836u *ts, bool touch, unsigned int x, unsig
                 input_report_key(ts->input, key, 1);
                 ts->last_key = key;
             }
-        } else {
-            cst836u_release_key(ts);
-            input_report_abs(ts->input, ABS_X, min(x, max_x - 1));
-            input_report_abs(ts->input, ABS_Y, min(y, max_y - 1));
         }
+    } else {
+        /* Display area: release any held nav key, then report the gesture. */
+        cst836u_release_key(ts);
+        if (!ts->touching) {
+            input_report_key(ts->input, BTN_TOUCH, 1);
+            ts->touching = true;
+        }
+        input_report_abs(ts->input, ABS_X, min(x, max_x - 1));
+        input_report_abs(ts->input, ABS_Y, min(y, max_y - 1));
     }
     input_sync(ts->input);
 }
