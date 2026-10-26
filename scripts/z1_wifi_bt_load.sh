@@ -18,3 +18,7 @@ fi
 if [ -f "$MODDIR/wlan_mt6620.ko" ]; then
   insmod "$MODDIR/wlan_mt6620.ko" 2>/dev/null && echo "z1wifi: wlan OK" || echo "z1wifi: wlan FAIL"
 fi
+
+# Bluetooth: kernel modules already loaded above (mtk_stp_bt).
+# Userspace: libbt-vendor.so dlopens libbluetoothdrv.so (factory, in /system/lib)
+# requiring libstdc++.so (factory 4.4 libc++ replacement, also in /system/lib).
