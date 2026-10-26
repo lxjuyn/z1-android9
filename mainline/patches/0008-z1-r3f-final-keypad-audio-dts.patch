@@ -1,0 +1,52 @@
+--- /tmp/r3e_orig.dts	2026-10-26 10:42:15.956068830 +0800
++++ /tmp/r3e.dts	2026-10-26 10:36:31.318530955 +0800
+@@ -233,10 +233,12 @@
+ 			clocks = <0x0e>;
+ 			clock-names = "kpd";
+ 			status = "okay";
++			pinctrl-names = "default";
++			pinctrl-0 = <0x30>;
+ 			keypad,num-rows = <0x08>;
+ 			keypad,num-columns = <0x09>;
+ 			debounce-delay-ms = <0x20>;
+-			linux,keymap = <0x73 0x1000072>;
++			linux,keymap = <0x72 0x100fb 0x200fa 0x1000073 0x10100fc 0x200006a 0x20100e8 0x2020069 0x3010067 0x400009e 0x401006c 0x40200fe>;
+ 		};
+ 
+ 		power-controller@10006000 {
+@@ -369,6 +371,16 @@
+ 				};
+ 			};
+ 
++			kpd-pins {
++				phandle = <0x30>;
++
++				pins {
++					pinmux = <0x6b01 0x6c01 0x6d01 0x6e01 0x6f01 0x7001 0x8e05 0x8f05>;
++					input-enable;
++					bias-pull-up;
++				};
++			};
++
+ 			mmc0-pins {
+ 				phandle = <0x23>;
+ 
+@@ -1128,15 +1140,16 @@
+ 		reg = <0x11140000 0x600>;
+ 		clocks = <0x04 0x4d 0x04 0x26>;
+ 		clock-names = "audio\0audio_intbus_sel";
+-		interrupts = <0x00 0x00 0x04>;
++		interrupts = <0x00 0x40 0x08>;
+ 		status = "okay";
+ 		phandle = <0x2d>;
+ 	};
+ 
+ 	sound {
+-		compatible = "mediatek,mt6572-sound";
++		compatible = "mediatek,mt6572-mt6323-sound";
+ 		mediatek,platform = <0x2d>;
+ 		mediatek,audio-codec = <0x2e>;
++		audio-routing = "Speaker", "Speaker", "Earpiece", "Earpiece";
+ 		status = "okay";
+ 	};
+ 

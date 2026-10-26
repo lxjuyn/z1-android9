@@ -1,3 +1,15 @@
-# Linux 7 Z1 keypad. The current DTS defines only these two volume keys.
-key 115 VOLUME_UP
-key 114 VOLUME_DOWN
+# R3f: Z1 12-key keypad from vendor kernel reverse engineering.
+# Mainline driver registers as "mt6779-keypad".
+# Key codes are the original factory values (250-254 = F1-F6 etc).
+key 114   VOLUME_DOWN       WAKE_DROPPED
+key 251   F2                WAKE_DROPPED
+key 250   F1                WAKE_DROPPED
+key 115   VOLUME_UP         WAKE_DROPPED
+key 252   F3                WAKE_DROPPED
+key 106   DPAD_RIGHT
+key 232   DPAD_CENTER       WAKE
+key 105   DPAD_LEFT
+key 103   DPAD_UP
+key 158   BACK
+key 108   DPAD_DOWN
+key 254   F5                WAKE_DROPPED
