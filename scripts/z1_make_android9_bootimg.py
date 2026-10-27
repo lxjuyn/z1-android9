@@ -114,7 +114,14 @@ def canonical_ramdisk_path(name):
     return name.decode()
 
 
-ADB_DEBUG_BLOCK = b"""\n# Debug-only ADB beside the independent diagnostic ACM. No ADB keys are added.\non init\n    mkdir /dev/usb-ffs 0755 root root\n    mkdir /dev/usb-ffs/adb 0770 shell shell\n    mount functionfs adb /dev/usb-ffs/adb uid=2000,gid=2000,rmode=0770,fmode=0660\n    start adbd\n\nservice adbd /system/bin/adbd\n    class core\n    socket adbd stream 660\n    user shell\n    group shell\n    disabled\n    seclabel u:r:adbd:s0\n\n"""
+# R5 (A7-3): mount functionfs and start adbd moved from "on init" to
+# "on post-fs" — on init runs before mount_all, so /system/bin/adbd could
+# never exec; post-fs runs after the fstab mounts. adbd runs as root and
+# drops privileges itself (ro.adb.secure=0 in default.prop), so the old
+# "user shell / group shell" lines are gone. check_android_init_rcs
+# matches this block byte-for-byte via this same constant, so the exception
+# keeps accepting exactly this text.
+ADB_DEBUG_BLOCK = b"""\n# Debug-only ADB beside the independent diagnostic ACM. No ADB keys are added.\non post-fs\n    mkdir /dev/usb-ffs 0755 root root\n    mkdir /dev/usb-ffs/adb 0770 shell shell\n    mount functionfs adb /dev/usb-ffs/adb uid=2000,gid=2000,rmode=0770,fmode=0660\n    start adbd\n\nservice adbd /system/bin/adbd\n    class core\n    socket adbd stream 660\n    disabled\n    seclabel u:r:adbd:s0\n\n"""
 
 
 def check_android_init_rcs(index, allow_adb=False):

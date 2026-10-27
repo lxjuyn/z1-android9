@@ -448,12 +448,14 @@ static int folder(const char *path)
     return -1;
 }
 
-/* R3 device evidence: composite binding never completed with adbd in the
- * loop, leaving the board with no diagnostic USB at all for a whole boot.
- * Ship ACM-only (the R1R2-proven configuration) until adbd's FunctionFS
- * behaviour is understood from logs; the fallback path below is kept for
- * the round that re-enables it. */
-static int enable_composite_adb = 0;
+/* R3 root cause (audit A7-1/A7-2): the old composite branch demanded a
+ * character-device ep0 (mainline functionfs ep0 is S_IFREG, so the check
+ * always failed with ENODEV) and its fallback counter required ep0 to be
+ * absent, so it never counted and was dead code. R5 (A7-3) replaces the
+ * flat flag with the three-state upgrade machine below: bind ACM-only
+ * first (the R1R2-proven configuration), watch the kernel ffs ready
+ * probe, then upgrade the live gadget in place; any failed step unwinds
+ * to ACM-only, three failures stop the machine for good. */
 
 static int attribute(const char *name, const char *value)
 {
@@ -499,7 +501,11 @@ static int bound_gadget(char *ours, size_t size)
     return result;
 }
 
-static int setup_acm(void)
+/* composite=0 binds the R1R2-proven ACM-only gadget (state 1); composite=1
+ * additionally assembles ffs.adb and binds ACM+ADB in one shot — it is
+ * only ever called from the upgrade machine after the ready probe read
+ * '1', never at startup (A7-3). */
+static int setup_acm(int composite)
 {
     static const char *const dirs[] = {
         DIAG_GADGET, DIAG_GADGET "/strings/0x409", DIAG_GADGET "/configs/c.1",
@@ -517,11 +523,16 @@ static int setup_acm(void)
     busy = bound_gadget(ours, sizeof(ours));
     if (busy < 0) return -1;
     if (busy) { errno = EBUSY; return -1; }
-    if (ours[0] && !enable_composite_adb) return 0;
-    if (enable_composite_adb) {
+    if (ours[0] && !composite) return 0;
+    if (composite) {
         struct stat adb_ep;
+        /* A7-1: mainline functionfs exposes ep0 as a plain S_IFREG file,
+         * not a chardev; the old S_ISCHR check was always false and made
+         * every composite bind fail with ENODEV. S_ISREG only proves the
+         * functionfs mount exists; "descriptors are complete" was already
+         * confirmed by the ready probe before this path runs. */
         if (stat(ADB_EP0, &adb_ep) < 0) { errno = ENODEV; return -1; }
-        if (!S_ISCHR(adb_ep.st_mode)) { errno = ENODEV; return -1; }
+        if (!S_ISREG(adb_ep.st_mode)) { errno = ENODEV; return -1; }
     }
     dir = opendir("/sys/class/udc");
     if (!dir) return -1;
@@ -534,14 +545,14 @@ static int setup_acm(void)
     closedir(dir);
     if (!udc[0]) { errno = ENODEV; return -1; }
     for (i = 0; i < sizeof(dirs) / sizeof(dirs[0]); ++i)
-        if (!enable_composite_adb && strstr(dirs[i], "ffs.adb")) continue;
+        if (!composite && strstr(dirs[i], "ffs.adb")) continue;
         else if (folder(dirs[i]) < 0) return -1;
     if (attribute("idVendor", "0x0e8d") || attribute("idProduct", "0x2006") ||
         attribute("bcdUSB", "0x0200") || attribute("bcdDevice", "0x0100") ||
         attribute("strings/0x409/serialnumber", "Z1DIAG20261001") ||
         attribute("strings/0x409/manufacturer", "Z1") ||
-        attribute("strings/0x409/product", enable_composite_adb ? "Z1 Android9 ACM and ADB" : "Z1 Android9 diagnostic ACM") ||
-        attribute("configs/c.1/strings/0x409/configuration", enable_composite_adb ? "ACM and ADB" : "Kernel log") ||
+        attribute("strings/0x409/product", composite ? "Z1 Android9 ACM and ADB" : "Z1 Android9 diagnostic ACM") ||
+        attribute("configs/c.1/strings/0x409/configuration", composite ? "ACM and ADB" : "Kernel log") ||
         attribute("configs/c.1/MaxPower", "100")) return -1;
     if (symlink(DIAG_GADGET "/functions/acm.usb0", DIAG_GADGET "/configs/c.1/acm.usb0") < 0) {
         ssize_t n;
@@ -551,18 +562,163 @@ static int setup_acm(void)
         target[n] = 0;
         if (strcmp(target, DIAG_GADGET "/functions/acm.usb0")) { errno = EEXIST; return -1; }
     }
-    if (enable_composite_adb) {
+    if (composite) {
         struct stat adb_ep;
+        /* A7-1, second site: same S_ISCHR→S_ISREG correction as above. */
         if (stat(ADB_EP0, &adb_ep) < 0) { errno = ENODEV; return -1; }
-        if (!S_ISCHR(adb_ep.st_mode)) { errno = ENODEV; return -1; }
+        if (!S_ISREG(adb_ep.st_mode)) { errno = ENODEV; return -1; }
         if (symlink(DIAG_GADGET "/functions/ffs.adb", DIAG_GADGET "/configs/c.1/ffs.adb") < 0 && errno != EEXIST) return -1;
     }
     /* Recheck ownership just before binding; kernel also refuses a busy UDC. */
     busy = bound_gadget(ours, sizeof(ours));
-    if (busy || (ours[0] && !enable_composite_adb)) { errno = EBUSY; return -1; }
+    if (busy || (ours[0] && !composite)) { errno = EBUSY; return -1; }
     if (attribute("UDC", udc) < 0) return -1;
-    acmlog(enable_composite_adb ? "ACM and ADB bound; connect device USB after adbd opens FunctionFS" : "ACM bound; connect device USB after boot", 0);
+    acmlog(composite ? "ACM and ADB bound; connect device USB after adbd opens FunctionFS" : "ACM bound; connect device USB after boot", 0);
     return 0;
+}
+
+/* ---- A7-3 (R5): composite upgrade state machine ----
+ * Kernel semantics below were fixed by reading the local fork_linux tree
+ * (Linux 7.0-rc7) directly:
+ *  K1 the ffs configfs "ready" attribute reads ffs_dev->desc_ready
+ *     (f_fs.c:3974-3985 f_fs_opts_ready_show);
+ *  K2 ffs_do_functionfs_bind returns -ENODEV unless desc_ready is set
+ *     (f_fs.c:3509) — ready='1' therefore implies a bindable ffs;
+ *  K3 desc_ready becomes true when adbd finishes writing its descriptors
+ *     (ffs_ready, f_fs.c:4266, reached from the ep0 write path f_fs.c:418);
+ *  K4 desc_ready becomes false only when adbd closes its ep files
+ *     (ffs_data_closed → ffs_closed, f_fs.c:2156/2216, callers :666/:1376);
+ *  K5 UDC unbind (ffs_func_unbind) does NOT clear desc_ready, so the
+ *     unbind→rebind window cannot fail with f_fs.c:3509's -ENODEV;
+ *  K6 writing "\n" to UDC unbinds (configfs.c:271-312 strips the newline,
+ *     empty name → unregister_gadget); unbinding an unbound gadget gives
+ *     -ENODEV (configfs.c:260-261) and unwinds into the recovery state;
+ *  K7 writing "" to UDC risks strlen(page)<len → EOVERFLOW
+ *     (configfs.c:278-279), so unbind always writes "\n";
+ *  K8 mkdir functions/ffs.adb does not require functionfs to be mounted
+ *     (ffs_alloc_inst/_ffs_alloc_dev, f_fs.c:4029-4053);
+ *  K9 mounting functionfs requires a pre-existing same-named ffs_dev or
+ *     the mount fails with -ENOENT (ffs_acquire_dev) — polling state 2
+ *     creates ffs.adb early, which is a precondition of the rc-side
+ *     mount, not just of reading ready. */
+#define DIAG_READY_POLL_MS 5000U    /* A7-3: state 2 polls ready every 5s */
+#define DIAG_READY_WINDOW_MS 10000U /* A7-3: one upgrade attempt times out at 10s */
+#define DIAG_BACKOFF_MS 30000U      /* A7-3: back off 30s after a failed attempt */
+#define DIAG_MAX_FAILURES 3U        /* A7-3: permanent fallback after 3 failures */
+
+enum diag_upgrade_state {
+    DIAG_ACM_ONLY = 0, /* 状态 1：纯 ACM 在役（setup_acm(0) 成功后即转状态 2） */
+    DIAG_WAIT_READY,   /* 状态 2：每 5s 读 ffs.adb/ready，10s 窗口 */
+    DIAG_UPGRADE,      /* 状态 2 执行：软断开 tty → 解绑 → 重绑复合 */
+    DIAG_RECOVER,      /* 状态 3：拆 ffs 链接 + 回绑纯 ACM，退避后重试 */
+    DIAG_COMPOSITE,    /* 终态：ACM+ADB 复合在役（adbd 死亡只影响 ADB，
+                          f_acm 独立工作，无需再动 UDC） */
+    DIAG_DISABLED      /* 状态 3 终态：累计 3 次失败，永久回退纯 ACM */
+};
+
+static int diag_state = DIAG_ACM_ONLY;
+static unsigned diag_upgrade_failures;
+static uint64_t diag_poll_deadline;
+static uint64_t diag_window_deadline;
+
+static void diag_fail_backoff(void)
+{
+    ++diag_upgrade_failures;
+    if (diag_upgrade_failures >= DIAG_MAX_FAILURES) {
+        /* A7-3 定案文案；acmlog 自动补 [z1acm] 前缀进 kmsg。 */
+        acmlog("composite upgrade failed x3; staying ACM-only", 0);
+        diag_state = DIAG_DISABLED;
+        return;
+    }
+    acmlog("composite upgrade failed; backoff 30s before retry", 0);
+    diag_poll_deadline = monotonic_ms() + DIAG_BACKOFF_MS;
+    diag_window_deadline = diag_poll_deadline + DIAG_READY_WINDOW_MS;
+    diag_state = DIAG_WAIT_READY;
+}
+
+/* A7-d：解绑前把 tty fd 状态记好并软断开；UDC 解绑会 hangup ttyGS0，
+ * 重绑后由 acm_main 既有 retry=5 节奏重开（重开时重放历史窗口，
+ * kmsg/FIFO 采集与环形缓冲全程不停——ACM 中继不断流）。 */
+static void diag_softclose_tty(int *tty, int *streaming, unsigned *retry)
+{
+    if (*tty >= 0) {
+        close(*tty);
+        *tty = -1;
+        *streaming = 0;
+        *retry = 5;
+    }
+}
+
+/* 非阻塞步进：acm_main 每 tick（约 200ms）调用一次，任何路径都不睡眠。 */
+static void diag_upgrade_step(int *tty, int *streaming, unsigned *retry)
+{
+    switch (diag_state) {
+    case DIAG_ACM_ONLY:
+        diag_state = DIAG_WAIT_READY;
+        diag_poll_deadline = monotonic_ms();
+        diag_window_deadline = diag_poll_deadline + DIAG_READY_WINDOW_MS;
+        return;
+    case DIAG_WAIT_READY: {
+        char value[16];
+        int fd;
+        ssize_t n;
+        int ready = 0;
+        if (monotonic_ms() < diag_poll_deadline) return;
+        diag_poll_deadline = monotonic_ms() + DIAG_READY_POLL_MS;
+        /* K8/K9：先建 ffs.adb 实例目录（幂等）；adbd 的 functionfs
+         * mount 依赖它先存在。mkdir 失败按"未就绪"处理，计入窗口。 */
+        if (folder(DIAG_GADGET "/functions/ffs.adb") >= 0) {
+            fd = open(DIAG_GADGET "/functions/ffs.adb/ready", O_RDONLY | O_CLOEXEC);
+            if (fd >= 0) { /* K1：ready 探针读的就是 desc_ready */
+                n = read(fd, value, sizeof(value) - 1);
+                close(fd);
+                if (n > 0) { value[n] = 0; ready = value[0] == '1'; }
+            }
+        }
+        if (ready) {
+            diag_state = DIAG_UPGRADE;
+            return;
+        }
+        /* A7-3：10s 窗口耗尽仍未读出 '1'（含 mkdir/open/read 全部失败
+         * 路径）= 一次升级失败 → 计数、退避或永久回退。 */
+        if (monotonic_ms() >= diag_window_deadline) diag_fail_backoff();
+        return;
+        }
+    case DIAG_UPGRADE:
+        diag_softclose_tty(tty, streaming, retry); /* A7-d：先记好 tty 状态 */
+        /* K6/K7：写 "\n" 解绑；未绑时 -ENODEV 同样落入恢复路径自愈。 */
+        if (attribute("UDC", "\n") < 0) {
+            acmlog("composite UDC unbind failed", errno);
+            diag_poll_deadline = 0;
+            diag_state = DIAG_RECOVER;
+            return;
+        }
+        /* K2/K3/K5：ready 刚确认为 '1' 且解绑不清 desc_ready，
+         * setup_acm(1) 的一次性重绑（含 A7-1 修正的 S_ISREG ep0 校验与
+         * ffs symlink 装配）不会撞 f_fs.c:3509 的 -ENODEV。 */
+        if (setup_acm(1) < 0) {
+            acmlog("composite bind failed", errno);
+            diag_poll_deadline = 0;
+            diag_state = DIAG_RECOVER;
+            return;
+        }
+        acmlog("composite upgraded; ACM and ADB bound (idProduct 0x2006)", 0);
+        diag_state = DIAG_COMPOSITE;
+        return;
+    case DIAG_RECOVER:
+        /* 状态 3：ACM 恢复优先于计数——UDC 回绑失败每秒重试（节流），
+         * 不计入升级失败；回绑成功才算一次完整升级失败（A7-3）。 */
+        if (monotonic_ms() < diag_poll_deadline) return;
+        diag_poll_deadline = monotonic_ms() + 1000U;
+        (void)unlink(DIAG_GADGET "/configs/c.1/ffs.adb");
+        if (setup_acm(0) < 0) return;
+        diag_fail_backoff();
+        return;
+    case DIAG_COMPOSITE:
+    case DIAG_DISABLED:
+        return;
+    }
+    /* 不可达；所有 case 均以 return 结束（A7-3 状态机穷尽转移）。 */
 }
 
 /* Stock 3.4 android_usb predates configfs. Keep this path independent. */
@@ -995,8 +1151,6 @@ static int acm_main(int stock)
     uint64_t warning_target = 0;
     unsigned retry = 0;
     uint64_t identity_deadline = 0;
-    /* Composite ADB is opportunistic: never let a dead adbd blind the ACM log. */
-    unsigned adb_missing_cycles = 0;
     if (stock) { stock_history = history; stock_history_end = &end; }
     acmlog("starting independent ramdisk ACM log relay; send R to replay", 0);
     for (;;) {
@@ -1055,20 +1209,18 @@ static int acm_main(int stock)
             for (i = 0; i < (size_t)n; ++i) history[(end++) % HISTORY_SIZE] = (unsigned char)record[i];
         }
         if (!configured && !retry) {
-            if (!(stock ? setup_stock_acm() : setup_acm())) { configured = 1; previous_error = -1; }
+            if (!(stock ? setup_stock_acm() : setup_acm(0))) { configured = 1; previous_error = -1; }
             else {
                 int error = errno;
-                struct stat adb_ep;
-                if (!stock && enable_composite_adb && error == ENODEV &&
-                    stat(ADB_EP0, &adb_ep) < 0 && ++adb_missing_cycles >= 12) {
-                    enable_composite_adb = 0;
-                    acmlog("adbd FunctionFS ep0 never appeared; falling back to ACM-only gadget", 0);
-                }
                 if (error != previous_error) acmlog(stock ? "waiting for stock android_usb ACM" : "waiting for configfs/free MUSB UDC", error);
                 previous_error = error;
                 retry = 25; /* 5 seconds, no retry spin. */
             }
         }
+        /* A7-3：复合升级状态机步进（stock 走 android_usb 老路径，不参与；
+         * 旧的 adb_missing_cycles/ep0 存在性回退已按审计 A7-2/A7-c 删除，
+         * 回退判定由状态机在 ready/UDC 层面完成，不再依赖 ep0）。 */
+        if (configured && !stock) diag_upgrade_step(&tty, &streaming, &retry);
         if (retry) --retry;
         if (configured && tty < 0 && !retry) {
             if (stock && ensure_tty_node("ttyGS0") < 0) {
