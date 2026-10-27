@@ -1,0 +1,24 @@
+Z1 R4 final boot 构建记录（2026-10-28，镜像组装工程师 ask）
+
+方法：记录级替换法（不重建 cpio）
+  1. z1_split_boot_img.py 拆 out/z1_v11/boot.img（sha 76e06674f3658a9d…）
+  2. z1_ramdisk_edit.py 记录级替换 3 条 + 新增 2 条（源件 z1a9_gpt/scripts/ramdisk_r4_merge/，git 6b1823f）：
+     --replace init.z1.network.rc(5871B 合并版 ee598ea5f742…) z1_wifi_probe.sh(4755B d90cc0892fae…) z1_wpa_start.sh(2828B =w10)
+     --add z1_wifi_pre.sh(3103B) z1_wifi_connect.sh(3759B) --mode 两条 0755
+     → ramdisk 1,977,444B（body 1,976,932B），initrd-end 0x842e2a64
+  3. fdtput -t x dtb /chosen linux,initrd-end 0x842e2a64（v11 dtb 基础上仅此一处）
+  4. z1_make_android9_bootimg.py（仓内 mtkbootimg，--cmdline=dts bootargs 语义自洽）
+
+产物：
+  boot_mainline_r4_final.img  6,209,536B  sha256 2804c947a4b60684657061539de34b7ae2ecc3e51419e1090dd9e91c39678f24
+  ramdisk_r4_final.rootfs     1,977,444B  sha256 8ebf3b71df5f1198422f23405a5c569744971f46b78b07c9fc50eb868fbe89f6
+  dtb.r4_final                20,407B     sha256 1633bcfff3c3b9a8a8cbc4e07d19923347d786d24f03abfbf43afb348fdd5a59
+
+校验（独立终检 33 项全 PASS，verify_r4f_indep.py 自写解析器）：
+  - 与上游成品 out/z1_r4_merge/boot_mainline_r4.img cmp 逐字节同一
+  - zImage 与 v11 逐字节一致（59bc73c3efe30110…）；dtb 全树 diff 恰 2 字节（initrd-end）
+  - 74 条记录：69 条=v11 逐字节 + 5 条 WiFi 记录=决策源件逐字节；GPS 段 z1_gps_prep.sh 在位
+  - z1_cst836u.ko/z1_gpio_hunt.ko vermagic=7.0.0-rc7-z1+；≤6MB
+电源键：判据串 'MT6323 regulator-only diagnostic mode' 在 Image 0 命中，mtk-pmic-keys built-in，
+  电源键本版生效；R4 沿用 v11 zImage，无需换 R3f。
+未刷写、未触碰设备、未 kill 任何进程。
