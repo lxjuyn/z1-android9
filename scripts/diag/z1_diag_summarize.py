@@ -122,9 +122,33 @@ class Sheet:
 # --------------------------------------------------------------------------
 
 
+def covered(f, *keys):
+    """True when this bundle carries any evidence key for the subsystem.
+    A deep-dive bundle (wifi_*/bt_*/...) only covers one subsystem; the others
+    must be reported as 'not covered', never as FAIL."""
+    for k in keys:
+        if f.get(k) not in (None, ""):
+            return True
+    return False
+
+
+def first(f, *keys):
+    """First non-empty fact among `keys` (all.sh and the deep dives use
+    different names for the same evidence)."""
+    for k in keys:
+        v = f.get(k)
+        if v not in (None, ""):
+            return v
+    return ""
+
+
 def check_wifi(f, sheet, grep):
     sub = "WiFi"
-    if not yes(f.get("DEV_WMTWIFI")):
+    if not covered(f, "DEV_WMTWIFI", "PRE_WMTWIFI_NODE", "WLAN0_EXISTS", "TRIGGER_SCAN_SSIDS"):
+        sheet.add(sub, INFO, "本包未覆盖该子系统（单子系统深挖包）",
+                  "跑 z1_diag_all.sh 或对应的 z1_diag_*.sh")
+        return
+    if not yes(first(f, "DEV_WMTWIFI", "PRE_WMTWIFI_NODE")):
         sheet.add(sub, FAIL,
                   "/dev/wmtWifi 不存在（WMT 平台驱动没建出功能开关节点）",
                   "看 04_modules.txt 有无 mtk_stp_wmt/wlan_mt6620；"
@@ -149,18 +173,33 @@ def check_wifi(f, sheet, grep):
         sheet.add(sub, FAIL, "func-on 写入了但 wlan0 一直没出现",
                   "dmesg | grep -iE 'wlan|hif|sdio'；查固件目录与 wlan_mt6620 加载")
         return
+    if f.get("TRIGGER_RESULT") == "scan_empty_but_carrier_up":
+        sheet.add(sub, WARN,
+                  "wlan0 up、carrier 也起来了，但 %s 次 scan 都没扫到 SSID" %
+                  f.get("TRIGGER_SCAN_ATTEMPTS", "?"),
+                  "典型是固件/NVRAM(wifi-nvram-WIFI.bin)/校准没到位；"
+                  "看 03_trigger.txt 的 firmware/nvram 段与 dmesg | grep -i wmt")
+        return
+    if f.get("TRIGGER_RESULT") == "scan_empty_no_carrier":
+        sheet.add(sub, FAIL, "wlan0 在但 carrier 一直没 up，scan 全空",
+                  "射频没起来：查固件下载、NVRAM、以及 wmt func-on 是否真的生效")
+        return
     sheet.add(sub, WARN, "/dev/wmtWifi 在但 wlan0 不在（未做触发）",
               "跑 z1_diag_wifi.sh trigger 复现 func-on")
 
 
 def check_bt(f, sheet, grep):
     sub = "BT"
-    if not yes(f.get("BT_STPBT")):
+    if not covered(f, "BT_STPBT", "PRE_STPBT_NODE", "BT_STACK_RUNNING", "TRIGGER_STACK_APPEARED"):
+        sheet.add(sub, INFO, "本包未覆盖该子系统（单子系统深挖包）",
+                  "跑 z1_diag_all.sh 或对应的 z1_diag_*.sh")
+        return
+    if not yes(first(f, "BT_STPBT", "PRE_STPBT_NODE")):
         sheet.add(sub, FAIL, "/dev/stpbt 不存在（BT transport 没起来）",
                   "根因在内核：grep stp_bt /proc/modules；dmesg | grep -i stpbt。"
                   "此时不用查 HAL，栈必然起不来")
         return
-    if as_int(f.get("BT_STACK_RUNNING"), 0) > 0:
+    if as_int(first(f, "BT_STACK_RUNNING", "TRIGGER_STACK_APPEARED"), 0) > 0:
         sheet.add(sub, OK, "com.android.bluetooth 进程在跑",
                   "链路通；再验 hciconfig 有 hci0 与能否配对")
     else:
@@ -171,21 +210,31 @@ def check_bt(f, sheet, grep):
 
 def check_gps(f, sheet, grep):
     sub = "GPS"
+    if not covered(f, "GPS_MNLD_BINARY", "GPS_HAL_BINARIES", "DEV_STPGPS", "PRE_STPGPS_NODE"):
+        sheet.add(sub, INFO, "本包未覆盖该子系统（单子系统深挖包）",
+                  "跑 z1_diag_all.sh 或对应的 z1_diag_*.sh")
+        return
     mnld_bin = as_int(f.get("GPS_MNLD_BINARY"), 0)
     hal = as_int(f.get("GPS_HAL_BINARIES"), 0)
-    hal_lib = as_int(f.get("GPS_HAL_LIBS"), 0)
+    hal_lib = as_int(first(f, "GPS_HAL_LIBS", "GPS_HAL_LIB"), 0)
+    if f.get("PRE_MNLD_SVC") == "running" or f.get("PRE_MNLD_PROCS") not in (None, "", "0"):
+        mnld_bin = max(mnld_bin, 1)
+        hal = max(hal, 1)
     if mnld_bin == 0 and hal == 0 and hal_lib == 0:
         sheet.add(sub, INFO,
                   "本版没有 GPS 用户态（无 mnld、无 gnss HAL、无 gps.*.so）",
                   "这是镜像内容问题不是驱动问题：当前 device.mk 无 GPS 条目。"
                   "要测 GNSS 先把 HAL+mnld+libnvram 打进去，否则系列现象都无意义")
         return
-    if not yes(f.get("DEV_STPGPS")):
+    if not yes(first(f, "DEV_STPGPS", "PRE_STPGPS_NODE")):
         sheet.add(sub, FAIL, "/dev/stpgps 不存在（mtk_stp_gps 没起来）",
                   "grep stp_gps /proc/modules；dmesg | grep -i stp_gps")
         return
-    if as_int(f.get("GPS_MNLD_RUNNING"), 0) > 0:
-        sheet.add(sub, OK, "mnld 在跑", "再看 logcat 有无卫星/漂移；需户外或冷启动时间")
+    if (f.get("GPS_MNLD_SVC") or f.get("PRE_MNLD_SVC")) == "running" \
+            or as_int(first(f, "GPS_MNLD_RUNNING", "PRE_MNLD_PROCS"), 0) > 0:
+        sheet.add(sub, OK, "mnld 在跑 (init.svc.z1_mnld=%s)" %
+                  (f.get("GPS_MNLD_SVC") or f.get("PRE_MNLD_SVC") or "n/a"),
+                  "再看 logcat 有无卫星/漂移；需户外或冷启动时间")
     else:
         sheet.add(sub, FAIL, "节点在但 mnld 没跑起来",
                   "logcat | grep -iE 'mnld|linker'；libnvram*.so 是否齐")
@@ -193,18 +242,23 @@ def check_gps(f, sheet, grep):
 
 def check_audio(f, sheet, grep):
     sub = "Audio"
+    if not covered(f, "AUDIO_CARDS", "AUDIO_SND_NODES"):
+        sheet.add(sub, INFO, "本包未覆盖该子系统（单子系统深挖包）",
+                  "跑 z1_diag_all.sh 或对应的 z1_diag_*.sh")
+        return
     cards = as_int(f.get("AUDIO_CARDS"), 0)
     nodes = as_int(f.get("AUDIO_SND_NODES"), 0)
     if cards == 0:
         sheet.add(sub, FAIL, "没有 sound card（ASoC 机器驱动没注册）",
-                  "dmesg | grep -iE 'asoc|dai|snd_soc_register_card'；"
-                  "gabin8/MT6572 机器驱动是否编进内核")
+                  "先看 load_audio.sh 在不在并执行过（AUDIO_LOADER=%s）；"
+                  "dmesg | grep -iE 'asoc|dai|snd_soc_register_card'"
+                  % (f.get("AUDIO_LOADER") or "?"))
         return
     if nodes == 0:
         sheet.add(sub, FAIL, "%d 张卡但没有 /dev/snd 节点（PCM 未注册）" % cards,
                   "看 /proc/asound/pcm；dts 里 DAI link")
         return
-    if as_int(f.get("AUDIO_HAL_LIBS"), 0) == 0:
+    if as_int(first(f, "AUDIO_HAL_LIBS", "AUDIO_HAL_LIB"), 0) == 0:
         sheet.add(sub, WARN, "内核有 %d 卡 / %d 节点，但没找到 audio HAL 库" % (cards, nodes),
                   "09_audio 的 HAL 清单；getprop | grep audio")
         return
@@ -214,6 +268,10 @@ def check_audio(f, sheet, grep):
 
 def check_display(f, sheet, grep):
     sub = "Display/GPU"
+    if not covered(f, "DRI_NODES", "FB0_NAME"):
+        sheet.add(sub, INFO, "本包未覆盖该子系统（单子系统深挖包）",
+                  "跑 z1_diag_all.sh 或对应的 z1_diag_*.sh")
+        return
     dri = as_int(f.get("DRI_NODES"), 0)
     fb = f.get("FB0_NAME", "")
     if dri > 0:
@@ -228,6 +286,10 @@ def check_display(f, sheet, grep):
 
 def check_input(f, sheet, grep):
     sub = "Input"
+    if not covered(f, "INPUT_KPD", "INPUT_TPD", "INPUT_CST836", "INPUT_EVENT_NODES"):
+        sheet.add(sub, INFO, "本包未覆盖该子系统（单子系统深挖包）",
+                  "跑 z1_diag_all.sh 或对应的 z1_diag_*.sh")
+        return
     kpd = as_int(f.get("INPUT_KPD"), 0)
     tpd = as_int(f.get("INPUT_TPD"), 0)
     cst = as_int(f.get("INPUT_CST836"), 0)
@@ -243,6 +305,10 @@ def check_input(f, sheet, grep):
 
 def check_battery(f, sheet, grep):
     sub = "Battery"
+    if not covered(f, "POWER_SUPPLIES", "BATTERY_CAPACITY", "BATTERY_VOLTAGE_NOW"):
+        sheet.add(sub, INFO, "本包未覆盖该子系统（单子系统深挖包）",
+                  "跑 z1_diag_all.sh 或对应的 z1_diag_*.sh")
+        return
     cap = f.get("BATTERY_CAPACITY", "")
     volt = f.get("BATTERY_VOLTAGE_NOW", "")
     if cap or volt:
@@ -257,6 +323,10 @@ def check_battery(f, sheet, grep):
 
 def check_mem(f, sheet, grep):
     sub = "Memory/lmkd"
+    if not covered(f, "MEM_FREE_KB", "PSI_PRESENT", "ZRAM_DISKSIZE"):
+        sheet.add(sub, INFO, "本包未覆盖该子系统（单子系统深挖包）",
+                  "跑 z1_diag_all.sh 或对应的 z1_diag_*.sh")
+        return
     if not yes(f.get("PSI_PRESENT")):
         sheet.add(sub, INFO, "无 /proc/pressure（正常：本机 3.4.67 内核没有 PSI）", "")
     kills = grep("am_kill")
@@ -272,6 +342,10 @@ def check_mem(f, sheet, grep):
 
 def check_selinux(f, sheet, grep):
     sub = "SELinux"
+    if not covered(f, "SELINUX", "AVC_COUNT"):
+        sheet.add(sub, INFO, "本包未覆盖该子系统（单子系统深挖包）",
+                  "跑 z1_diag_all.sh 或对应的 z1_diag_*.sh")
+        return
     mode = f.get("SELINUX") or "unknown"
     avc = as_int(f.get("AVC_COUNT"), 0)
     if avc and avc > 50:
@@ -296,6 +370,10 @@ MODULE_PATTERNS = [
 
 def check_modules(f, sheet, grep):
     sub = "Kernel/modules"
+    if not grep("."):
+        sheet.add(sub, WARN, "本包里没有可解析的 dmesg/logcat 内容",
+                  "确认采集以 root 跑的（facts 的 RUN_UID），或单跑 dmesg 再看")
+        return
     hits = []
     for pat, label, hint in MODULE_PATTERNS:
         got = grep(pat)

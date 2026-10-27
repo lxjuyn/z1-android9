@@ -70,8 +70,10 @@ cap "$CUR" "asoc debugfs if mounted" \
     "ls /sys/kernel/debug/asoc 2>/dev/null; cat /sys/kernel/debug/asoc/*/dais 2>/dev/null | head -n 40"
 cap "$CUR" "snd/afe/codec modules" "grep -i -E 'snd|afe|mt6323|gabin|audio' /proc/modules"
 cap "$CUR" "audio props" "getprop | grep -i -E 'audio|sound|codec|afe|voice'"
-cap "$CUR" "audio HAL libraries" \
-    "ls -l /vendor/lib/hw/audio*.so /system/lib/hw/audio*.so 2>/dev/null"
+cap "$CUR" "audio HAL libraries (legacy primary + HIDL impl)" \
+    "ls -l /vendor/lib/hw/*audio*.so /system/lib/hw/*audio*.so /vendor/lib/hw/android.hardware.audio* /system/lib/hw/android.hardware.audio* 2>/dev/null"
+cap "$CUR" "audio module loader" \
+    "ls -l /system/lib/modules/load_audio.sh 2>/dev/null; grep -i -E 'snd|afe|gabin|mt6323' /system/lib/modules/load_audio.sh 2>/dev/null"
 cap "$CUR" "audio policy config" \
     "ls -l /vendor/etc/audio_policy_configuration.xml /system/etc/audio_policy_configuration.xml /vendor/etc/audio_effects.conf 2>/dev/null"
 cap "$CUR" "mixer tools present" \
@@ -88,7 +90,8 @@ cap "$CUR" "logcat audio lines" \
 CARDS=$(sed -n '/^ *[0-9]/p' /proc/asound/cards 2>/dev/null | wc -l)
 fact AUDIO_CARDS "$CARDS"
 fact AUDIO_SND_NODES "$(ls /dev/snd 2>/dev/null | wc -l)"
-fact AUDIO_HAL_LIBS "$(ls /vendor/lib/hw/audio*.so /system/lib/hw/audio*.so 2>/dev/null | wc -l)"
+fact AUDIO_HAL_LIBS "$(ls /vendor/lib/hw/*audio*.so /system/lib/hw/*audio*.so /vendor/lib/hw/android.hardware.audio* 2>/dev/null | wc -l)"
+fact AUDIO_LOADER "$(ls /system/lib/modules/load_audio.sh 2>/dev/null | wc -l)"
 fact AUDIO_TINYMIX "$(ls /system/bin/tinymix 2>/dev/null | wc -l)"
 fact AUDIO_TINYPLAY "$(ls /system/bin/tinyplay 2>/dev/null | wc -l)"
 

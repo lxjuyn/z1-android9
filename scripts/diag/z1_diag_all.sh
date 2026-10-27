@@ -313,8 +313,12 @@ cap "$CUR" "GPS NVRAM/data paths" \
     "ls -l /data/misc/GPS* /data/misc/gps /data/vendor/gps /data/gps 2>/dev/null"
 cap "$CUR" "GPS NVRAM files detail" \
     "ls -lR /data/misc/GPS* /data/vendor/gps 2>/dev/null | head -n 120"
-cap "$CUR" "gps libs / HAL / nvram libs" \
-    "ls -l /system/lib/hw/gps*.so /vendor/lib/hw/gps*.so /system/lib/libmnl*.so /vendor/lib/libmnl*.so /system/lib/libnvram*.so /vendor/lib/libnvram*.so 2>/dev/null"
+cap "$CUR" "GPS libs / HAL / nvram libs" \
+    "ls -l /system/lib/hw/gps*.so /vendor/lib/hw/gps*.so /vendor/lib/hw/*gnss*.so /system/lib/hw/*gnss*.so /system/lib/libmnl*.so /vendor/lib/libmnl*.so /system/lib/libnvram*.so /vendor/lib/libnvram*.so 2>/dev/null"
+cap "$CUR" "GPS config files (gps.conf / GPS_CHIP.cfg / agps profiles)" \
+    "ls -l /system/etc/gps.conf /vendor/etc/gps.conf /data/misc/GPS_CHIP.cfg /vendor/etc/agps_profiles_conf.xml 2>/dev/null; cat /data/misc/GPS_CHIP.cfg 2>/dev/null"
+cap "$CUR" "gps init service states (z1_gps_prep starts z1_mnld)" \
+    "getprop | grep -E 'init\.svc\.(z1_mnld|z1_gps|mnld)'; getprop init.svc.z1_mnld"
 cap "$CUR" "gps properties" "getprop | grep -i -E 'gps|gnss'"
 cap "$CUR" "location settings" \
     "settings get secure location_mode; settings get secure location_providers_allowed"
@@ -326,7 +330,9 @@ cap "$CUR" "logcat gps lines" \
 fact GPS_STPGPS "$(pc /dev/stpgps)"
 fact GPS_MNLD_RUNNING "$(pcount mnld)"
 fact GPS_NVRAM_DIRS "$(ls -d /data/misc/GPS* /data/vendor/gps 2>/dev/null | wc -l)"
-fact GPS_HAL_LIB "$(ls /system/lib/hw/gps*.so /vendor/lib/hw/gps*.so 2>/dev/null | wc -l)"
+fact GPS_HAL_LIB "$(ls /system/lib/hw/gps*.so /vendor/lib/hw/gps*.so /vendor/lib/hw/*gnss*.so 2>/dev/null | wc -l)"
+fact GPS_MNLD_SVC "$(getprop init.svc.z1_mnld 2>/dev/null)"
+fact GPS_CHIP_CFG "$(ls /data/misc/GPS_CHIP.cfg 2>/dev/null | wc -l)"
 
 # ---------------------------------------------------------------------------
 # 09 audio - ASoC (gabin8 / MT6572 AFE / MT6323) + Android audio HAL
@@ -346,8 +352,10 @@ cap "$CUR" "tinyplay/tinycap/tinypcminfo presence" \
 cap "$CUR" "snd modules" "grep -i -E 'snd|afe|mt6323|gabin|audio' /proc/modules"
 cap "$CUR" "audio props" \
     "getprop | grep -i -E 'audio|sound|codec|afe'"
-cap "$CUR" "audio HAL libs" \
-    "ls -l /vendor/lib/hw/audio*.so /system/lib/hw/audio*.so 2>/dev/null"
+cap "$CUR" "audio HAL libs (legacy primary + HIDL impl)" \
+    "ls -l /vendor/lib/hw/*audio*.so /system/lib/hw/*audio*.so /vendor/lib/hw/android.hardware.audio* /system/lib/hw/android.hardware.audio* 2>/dev/null"
+cap "$CUR" "audio module loader (load_audio.sh brings in the gabin8 stack)" \
+    "ls -l /system/lib/modules/load_audio.sh 2>/dev/null; grep -i -E 'snd|afe|gabin|mt6323' /system/lib/modules/load_audio.sh 2>/dev/null"
 cap "$CUR" "audio policy xml" \
     "ls -l /vendor/etc/audio_policy_configuration.xml /system/etc/audio_policy_configuration.xml 2>/dev/null"
 cap "$CUR" "dmesg snd/afe/mt6323 lines" \
@@ -359,7 +367,8 @@ cap "$CUR" "logcat audio lines" \
     "logcat -d 2>/dev/null | grep -i -E 'audio|AudioFlinger|AudioPolicy|tinyalsa|ASoC' | tail -n 400"
 fact AUDIO_CARDS "$(sed -n '/^ *[0-9]/p' /proc/asound/cards 2>/dev/null | wc -l)"
 fact AUDIO_SND_NODES "$(ls /dev/snd 2>/dev/null | wc -l)"
-fact AUDIO_HAL_LIB "$(ls /vendor/lib/hw/audio*.so /system/lib/hw/audio*.so 2>/dev/null | wc -l)"
+fact AUDIO_HAL_LIB "$(ls /vendor/lib/hw/*audio*.so /system/lib/hw/*audio*.so /vendor/lib/hw/android.hardware.audio* 2>/dev/null | wc -l)"
+fact AUDIO_LOADER "$(ls /system/lib/modules/load_audio.sh 2>/dev/null | wc -l)"
 fact AUDIO_TINYMIX "$(p /system/bin/tinymix)"
 
 # ---------------------------------------------------------------------------

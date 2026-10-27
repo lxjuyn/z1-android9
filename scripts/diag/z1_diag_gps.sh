@@ -67,7 +67,9 @@ cap "$CUR" "gps processes (mnld is the MTK daemon)" \
 cap "$CUR" "GPS daemon binary / configs" \
     "ls -l /system/bin/mnld /vendor/bin/mnld /system/etc/mnl* /vendor/etc/mnl* /system/etc/gps* /vendor/etc/gps* 2>/dev/null"
 cap "$CUR" "GPS HAL binaries" \
-    "ls -l /vendor/bin/hw/android.hardware.gnss* /system/bin/hw/android.hardware.gnss* /vendor/lib/hw/gps*.so /system/lib/hw/gps*.so 2>/dev/null"
+    "ls -l /vendor/bin/hw/android.hardware.gnss* /system/bin/hw/android.hardware.gnss* /vendor/lib/hw/gps*.so /system/lib/hw/gps*.so /vendor/lib/hw/*gnss*.so 2>/dev/null"
+cap "$CUR" "gps init service + config (z1_gps_prep seeds GPS_CHIP.cfg, starts z1_mnld)" \
+    "getprop | grep -E 'init\.svc\.(z1_mnld|z1_gps|mnld)'; ls -l /data/misc/GPS_CHIP.cfg /vendor/etc/gps.conf /vendor/etc/agps_profiles_conf.xml 2>/dev/null"
 cap "$CUR" "gnss properties" "getprop | grep -i -E 'gps|gnss|mnl'"
 cap "$CUR" "nvram libraries (mnld needs them)" \
     "ls -l /system/lib/libnvram*.so /vendor/lib/libnvram*.so 2>/dev/null"
@@ -84,6 +86,8 @@ cap "$CUR" "dmesg gps lines" \
 PRE_LOCMODE=$(settings get secure location_mode 2>/dev/null)
 fact PRE_STPGPS_NODE "$(pc /dev/stpgps)"
 fact PRE_MNLD_PROCS "$(pcount mnld)"
+fact PRE_MNLD_SVC "$(getprop init.svc.z1_mnld 2>/dev/null)"
+fact PRE_GPS_CHIP_CFG "$(ls /data/misc/GPS_CHIP.cfg 2>/dev/null | wc -l)"
 fact PRE_LOCATION_MODE "$PRE_LOCMODE"
 fact GPS_HAL_BINARIES "$(ls /vendor/bin/hw/android.hardware.gnss* /system/bin/hw/android.hardware.gnss* 2>/dev/null | wc -l)"
 fact GPS_HAL_LIBS "$(ls /vendor/lib/hw/gps*.so /system/lib/hw/gps*.so 2>/dev/null | wc -l)"
@@ -101,8 +105,9 @@ fi
 CUR=$OUT/02_trigger.txt
 hdr "GNSS trigger: location on, watch 60s for engineers" "$CUR"
 
-if [ "$(pcount mnld)" -eq 0 ] && [ "$(ls /system/bin/mnld /vendor/bin/mnld 2>/dev/null | wc -l)" -eq 0 ]; then
-    say "TRIGGER NOTE: no mnld binary and no mnld process -> GPS userspace is NOT deployed on this build."
+if [ "$(pcount mnld)" -eq 0 ] && [ "$(getprop init.svc.z1_mnld 2>/dev/null)" != "running" ] \
+   && [ "$(ls /system/bin/mnld /vendor/bin/mnld 2>/dev/null | wc -l)" -eq 0 ]; then
+    say "TRIGGER NOTE: no mnld binary/process/service -> GPS userspace is NOT deployed on this build."
     fact TRIGGER_RESULT gps_userspace_absent
 fi
 
@@ -128,8 +133,10 @@ cap "$CUR" "logcat gnss/gps after enable" \
 cap "$CUR" "avc denials while gnss starts" \
     "dmesg 2>/dev/null | grep -i 'avc:' | grep -i -E 'gps|mnl|nvram' | tail -n 60"
 
-if [ "$(pcount mnld)" -ge 1 ]; then
+if [ "$(pcount mnld)" -ge 1 ] || [ "$(getprop init.svc.z1_mnld 2>/dev/null)" = "running" ]; then
     fact TRIGGER_RESULT mnld_running
+elif [ -z "$(pc /dev/stpgps)" ]; then
+    fact TRIGGER_RESULT stpgps_missing
 else
     fact TRIGGER_RESULT mnld_absent
 fi

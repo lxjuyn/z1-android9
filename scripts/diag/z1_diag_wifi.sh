@@ -65,11 +65,14 @@ cap "$CUR" "netdevs" "cat /proc/net/dev; ifconfig -a"
 cap "$CUR" "iw dev" "iw dev"
 cap "$CUR" "/sys/class/net" 'ls -l /sys/class/net; for d in /sys/class/net/*; do echo "-- $d"; cat "$d/operstate" 2>/dev/null; done'
 cap "$CUR" "firmware tree" "ls -l /system/etc/firmware /vendor/etc/firmware 2>/dev/null"
+cap "$CUR" "WiFi NVRAM blob (needed for calibration)" \
+    "ls -l /system/etc/firmware/wifi-nvram-WIFI.bin /data/vendor/wifi 2>/dev/null"
 cap "$CUR" "WMT cfg" "cat /system/etc/firmware/WMT_SOC.cfg 2>/dev/null"
 cap "$CUR" "wmt debug node" "ls -l /proc/driver/wmt_dbg 2>/dev/null; head -n 60 /proc/driver/wmt_dbg 2>/dev/null"
 cap "$CUR" "launcher / supplicant / dhcp processes" \
     "(ps -A 2>/dev/null || ps) | grep -i -E '6620|wmt|wpa_supplicant|dhcp' | grep -v grep"
-cap "$CUR" "wifi props" "getprop | grep -i -E 'wifi|wlan|wmt|connsys'"
+cap "$CUR" "readiness properties (sys.wlan0.up is set by the v10 probe)" \
+    "getprop sys.wlan0.up; getprop | grep -i -E 'wifi|wlan|wmt|connsys'"
 cap "$CUR" "dumpsys wifi head" "$TO dumpsys wifi | head -n 120"
 cap "$CUR" "dmesg wlan/wmt/stp lines" \
     "dmesg 2>/dev/null | grep -i -E 'wlan|wifi|wmt|stp|6620|hif|sdio' | tail -n 400"
@@ -77,6 +80,8 @@ cap "$CUR" "dmesg wlan/wmt/stp lines" \
 fact PRE_WLAN0 "$(p /sys/class/net/wlan0)"
 fact PRE_WMTWIFI_NODE "$(pc /dev/wmtWifi)"
 fact PRE_MODULE_COUNT "$(grep -i -c -E 'wlan|wmt|stp' /proc/modules 2>/dev/null)"
+fact PRE_WLAN0_UP_PROP "$(getprop sys.wlan0.up 2>/dev/null)"
+fact PRE_WIFI_NVRAM "$(ls /system/etc/firmware/wifi-nvram-WIFI.bin 2>/dev/null | wc -l)"
 
 # ---------------------------------------------------------------------------
 # 2. optional insmod of the CONNSYS stack
@@ -147,25 +152,66 @@ fi
 
 say "wlan0 present after ${found}s; bringing up and scanning"
 
+# IMPORTANT (learned from the v10 probe audit): "wlan0 exists" is NOT
+# readiness. The netdev shows up at insmod time, before the firmware/NVRAM
+# download finishes, so an immediate scan always fails on a healthy system.
+# Hence: bring it up, then wait for carrier, then retry the scan.
 cap "$CUR" "wlan0 bring-up" "ifconfig wlan0 up; ip link set wlan0 up; sleep 1; ifconfig wlan0; iw dev wlan0 info"
 
-# One scan, raw output kept, summary derived from it (no second radio pass).
+carrier=
+k=0
+while [ $k -lt 15 ]; do
+    c=$(cat /sys/class/net/wlan0/carrier 2>/dev/null)
+    op=$(cat /sys/class/net/wlan0/operstate 2>/dev/null)
+    if [ "$c" = "1" ] || [ "$op" = "up" ]; then
+        carrier=$k
+        break
+    fi
+    sleep 1
+    k=$((k + 1))
+done
+cap "$CUR" "carrier/operstate wait" \
+    "echo waited=${k}s carrier=${carrier:-no}; cat /sys/class/net/wlan0/carrier /sys/class/net/wlan0/operstate 2>/dev/null"
+cap "$CUR" "firmware / nvram evidence" \
+    "ls -l /system/etc/firmware/wifi-nvram-WIFI.bin /data/vendor/wifi 2>/dev/null; dmesg 2>/dev/null | grep -i -E 'firmware|nvram|WIFI_RAM_CODE' | tail -n 40"
+fact TRIGGER_WLAN0_CARRIER "${carrier:-no}"
+fact TRIGGER_WLAN0_UP_PROP "$(getprop sys.wlan0.up 2>/dev/null)"
+
+# Scan with retries: up to 3 passes with a settle gap, first non-empty wins.
 SCAN=$OUT/04_scan_raw.txt
 : > "$SCAN" 2>/dev/null || true
-if have timeout; then
-    timeout 90 iw dev wlan0 scan > "$SCAN" 2>&1 || say "scan returned non-zero (see 04_scan_raw.txt)"
-else
-    iw dev wlan0 scan > "$SCAN" 2>&1 || say "scan returned non-zero (see 04_scan_raw.txt)"
-fi
+NSSID=0
+attempt=0
+while [ $attempt -lt 3 ] && [ "$NSSID" -eq 0 ]; do
+    attempt=$((attempt + 1))
+    if [ $attempt -gt 1 ]; then
+        say "scan attempt ${attempt}: settling 8s first"
+        sleep 8
+        ifconfig wlan0 up 2>/dev/null || true
+    fi
+    if have timeout; then
+        timeout 90 iw dev wlan0 scan > "$SCAN" 2>&1 || true
+    else
+        iw dev wlan0 scan > "$SCAN" 2>&1 || true
+    fi
+    NSSID=$(grep -c '^[[:space:]]*SSID:' "$SCAN" 2>/dev/null)
+    [ -n "$NSSID" ] || NSSID=0
+    say "scan attempt ${attempt}: ${NSSID} SSID lines"
+done
 
 cap "$CUR" "scan summary (from 04_scan_raw.txt)" \
     "grep -E 'SSID|frequency:|signal:' $SCAN | head -n 80"
 
-NSSID=$(grep -c '^[[:space:]]*SSID:' "$OUT/04_scan_raw.txt" 2>/dev/null)
-[ -n "$NSSID" ] || NSSID=0
-say "scan produced $NSSID SSID lines"
+say "scan produced $NSSID SSID lines after ${attempt} attempt(s)"
+fact TRIGGER_SCAN_ATTEMPTS "$attempt"
 fact TRIGGER_SCAN_SSIDS "$NSSID"
-fact TRIGGER_RESULT "$(if [ "$NSSID" -gt 0 ]; then echo scan_ok; else echo scan_empty; fi)"
+if [ "$NSSID" -gt 0 ]; then
+    fact TRIGGER_RESULT scan_ok
+elif [ -n "$carrier" ]; then
+    fact TRIGGER_RESULT scan_empty_but_carrier_up
+else
+    fact TRIGGER_RESULT scan_empty_no_carrier
+fi
 
 cap "$CUR" "iw link / station dump" "iw dev wlan0 link; iw dev wlan0 station dump"
 cap "$CUR" "dmesg during scan" "dmesg 2>/dev/null | grep -i -E 'wlan|wmt|scan|6620' | tail -n 120"

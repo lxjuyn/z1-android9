@@ -25,17 +25,17 @@ Z1 (MT6572 / Android 9 / arm32) **刷机后立刻取证**用的一套 shell 脚�
 | `z1_diag_onboot.sh` | 开机 90s 后自动跑 `z1_diag_all.sh`（无人值守） | 无 |
 | `z1_diag_summarize.py` | **主机侧**：读包出判定表，不进镜像 | — |
 
-行数（`wc -l`，设备侧脚本 1676 行 + 主机侧判定器 410 行）：
+行数（`wc -l`，设备侧 7 个脚本 1741 行 + 主机侧判定器 488 行）：
 
 ```
-z1_diag_all.sh        607
+z1_diag_all.sh        616
 z1_diag_keys.sh       274
-z1_diag_audio.sh      184
-z1_diag_wifi.sh       177
+z1_diag_wifi.sh       223
+z1_diag_audio.sh      187
 z1_diag_bt.sh         156
-z1_diag_gps.sh        145
+z1_diag_gps.sh        152
 z1_diag_onboot.sh     133
-z1_diag_summarize.py  410   (主机侧，不进镜像)
+z1_diag_summarize.py  488   (主机侧，不进镜像)
 ```
 
 ---
@@ -183,6 +183,9 @@ FAIL   WiFi      func-on 写入了但 wlan0 一直没出现
   1. [Kernel/modules] 模块 vermagic 不匹配（insmod 失败）
 ```
 
+也可以直接指向单子系统深挖目录（`wifi_*`/`bt_*`/…）：没覆盖到的子系统会报
+`INFO 本包未覆盖`，不会假装成 FAIL。
+
 退出码：`0` 无 FAIL、`1` 有 FAIL、`2` 包打不开。纯 stdlib，无第三方依赖。
 
 ---
@@ -212,8 +215,11 @@ FAIL   WiFi      func-on 写入了但 wlan0 一直没出现
 | `facts.txt` | `KEY=VALUE` 机器可读判定表 | **先看它**，再看分节 |
 
 `facts.txt` 关键键：`DEV_STPBT/DEV_STPGPS/DEV_WMTWIFI/DEV_TTYGS0`、`WLAN0_EXISTS`、
-`BT_STPBT`、`GPS_*`、`AUDIO_CARDS/AUDIO_SND_NODES`、`FB0_NAME/DRI_NODES`、
-`INPUT_KPD/INPUT_TPD/INPUT_CST836`、`BATTERY_CAPACITY`、`PSI_PRESENT`、`SELINUX/AVC_COUNT`。
+`BT_STPBT`、`GPS_*`（含 `GPS_MNLD_SVC`、`GPS_CHIP_CFG`）、`AUDIO_CARDS/AUDIO_SND_NODES/
+AUDIO_HAL_LIB/AUDIO_LOADER`、`FB0_NAME/DRI_NODES`、`INPUT_KPD/INPUT_TPD/INPUT_CST836`、
+`BATTERY_CAPACITY`、`PSI_PRESENT`、`SELINUX/AVC_COUNT`、`LOGPERSIST_*`，
+以及深挖包才会有的 `PRE_*` / `TRIGGER_*`（`TRIGGER_RESULT`、`TRIGGER_SCAN_ATTEMPTS`、
+`TRIGGER_SCAN_SSIDS`、`TRIGGER_WLAN0_CARRIER`、`TRIGGER_WLAN0_UP_PROP`…）。
 
 ---
 
@@ -224,11 +230,13 @@ FAIL   WiFi      func-on 写入了但 wlan0 一直没出现
 | 现象 | 结论 | 下一步 |
 |---|---|---|
 | `DEV_WMTWIFI=no`，`06_wireless` 里 `/dev/stp*` 全空 | WMT 平台驱动没建出功能开关节点，WiFi 无从谈起 | 看 `04_modules.txt` 有没有 `mtk_stp_wmt`；`init.z1.rc` 的 `mknod /dev/wmtWifi c 153 0` 兜底是否执行；`dmesg | grep wmt` |
-| `DEV_WMTWIFI=yes` 但 `WLAN0_EXISTS=no`，`trigger` 后仍 no | func-on 写了但 `wlan_mt6620` 没起来 | `04_scan_raw.txt` 不存在说明卡在 wlan0 没出现；看 dmesg `wlan`/`hif`/`sdio` |
-| `WLAN0_EXISTS=yes` 但 `TRIGGER_SCAN_SSIDS=0` | 驱动活了，射频/固件/校准不行 | 看 `04_scan_raw.txt` 的 errno（`-ENODEV`/`-EIO`）、`dmesg | grep -i scan` |
+| `DEV_WMTWIFI=yes` 但 `WLAN0_EXISTS=no`，`trigger` 后仍 no | func-on 写了但 `wlan_mt6620` 没起来 | 看 dmesg `wlan`/`hif`/`sdio`，固件目录 |
+| **`TRIGGER_RESULT=scan_empty_no_carrier`** | wlan0 在但 carrier 一直没 up | 射频没起来：固件下载/NVRAM/校准；`dmesg | grep -i wmt` |
+| **`TRIGGER_RESULT=scan_empty_but_carrier_up`** | 网卡 up 了、3 次 scan 都空 | 典型是固件/NVRAM(`wifi-nvram-WIFI.bin`)/校准没到位；注意 **"wlan0 出现" 本身不是就绪**（v10 审计结论：netdev 在 insmod 时就出现，早于固件下完） |
+| `TRIGGER_RESULT=scan_ok` | 射频+固件+校准链路通 | 剩下是连接/认证 |
 | dmesg 有 `request_firmware ... failed` | 固件 blob 缺或路径不对 | `06_wireless` 的 `firmware trees`；核对文件名大小写 |
 | `insmod` 报 `Invalid module format` / dmesg `unknown symbol` | vermagic 或符号不匹配 | 对比 `facts` 里 `MOD_VERMAGIC_KERNEL` 与 `MOD_VERMAGIC_RUNNING` |
-| `WIFI_WPA_RUNNING=0` 且 wlan0 在 | 只是没连，不一定是 bug | 要验连接再手动 `wpa_supplicant` + `dumpsys wifi` |
+| `PRE_WLAN0_UP_PROP` 有值（`sys.wlan0.up`） | v10 探针认为 WLAN 真正可用 | 比"wlan0 存在"更可信的就绪信号 |
 
 ### 5.2 蓝牙
 
@@ -244,19 +252,20 @@ FAIL   WiFi      func-on 写入了但 wlan0 一直没出现
 
 | 现象 | 结论 | 下一步 |
 |---|---|---|
-| `GPS_MNLD_BINARY=0` 且 `GPS_HAL_BINARIES=0` | **这一版根本没部署 GPS 用户态**（当前 device.mk 无 GPS 条目，属预期） | 先加 gnss HAL + mnld + libnvram 才有得测 |
-| mnld 二进制在但 `PRE_MNLD_PROCS=0`、trigger 后仍 0 | mnld 起不来 | logcat `mnld` / `linker`；`libnvram*.so` 是否齐 |
-| mnld 起了但 `DEV_STPGPS=no` | 内核 `mtk_stp_gps` 没起来 | `04_modules` / dmesg `stp_gps` |
-| 节点都在、无卫星 | `/data/misc/GPS*` NVRAM 缺失或 avc 拒绝 | `08_gps` 的 NVRAM 目录 + `15_selinux` 里 gps 相关 avc |
+| `GPS_MNLD_BINARY=0` 且 `GPS_HAL_BINARIES=0`、`GPS_HAL_LIB=0` | **这一版没有 GPS 用户态**（mnld/HAL/libgps 都没有） | 先把 HAL+mnld+libnvram 部署进去再谈，否则系列现象都无意义 |
+| `PRE_MNLD_SVC` 无值 / `TRIGGER_RESULT=mnld_absent` | mnld 起不来 | 看 `init.svc.z1_mnld`；确认 `scripts/ramdisk_v9/z1_gps_prep.sh` 跑过（它建目录、种 `GPS_CHIP.cfg`、`start z1_mnld`） |
+| `DEV_STPGPS=no`（`TRIGGER_RESULT=stpgps_missing`） | 内核 `mtk_stp_gps` 没起来 | `04_modules` / dmesg `stp_gps`；gps_prep 等 80s 仍无节点就不会 start mnld |
+| `GPS_CHIP_CFG=0` | `/data/misc/GPS_CHIP.cfg` 没种上 | gps_prep 的 mkdir/chown 是否被 avc 挡（`15_selinux.txt`） |
+| 节点都在、mnld 在跑、无卫星 | NVRAM/XTRA 网络/冷启动时间 | `08_gps` 的 NVRAM 目录 + logcat `mnld`；户外冷启动要几分钟 |
 
 ### 5.4 音频
 
 | 现象 | 结论 | 下一步 |
 |---|---|---|
-| `AUDIO_CARDS=0`（`/proc/asound/cards` 是 "no soundcards"） | ASoC 机器驱动没注册（gabin8/MT6572 未 bind） | dmesg `snd`/`asoc`/`dai`/`snd_soc_register_card` |
+| `AUDIO_CARDS=0`（`/proc/asound/cards` 是 "no soundcards"） | ASoC 机器驱动没注册（gabin8/MT6572 未 bind） | 先确认 `AUDIO_LOADER=1`（`/system/lib/modules/load_audio.sh` 存在并跑过）；再看 dmesg `snd`/`asoc`/`dai` |
 | cards>0 但 `AUDIO_SND_NODES=0` | 卡在但 PCM 没注册 | `/proc/asound/pcm`、dts 里 DAI link |
 | `tinymix` 有控件但 `tinyplay` 完成却无声 | codec 供电/路由/外部 PA、MT6323 电源 | `tinymix` 里 DAC/PA 是否 unmute；PMIC regulator |
-| `dumpsys media.audio_flinger` 无 output track / HAL load 失败 | 用户态 HAL（`audio.primary.mt6572.so`）没加载 | `09_audio` 的 `audio HAL libraries`、`getprop | grep audio` |
+| `dumpsys media.audio_flinger` 无 output track / HAL load 失败 | 用户态 HAL 没加载 | `09_audio` 的 HAL 清单——注意 HAL 有两个名字：`audio.primary.mt6572.so`（legacy）和 `android.hardware.audio@2.0-impl.so`（HIDL），脚本两个都查 |
 | dmesg 无任何 `snd`/`afe` 行 | 音频驱动压根没编进内核 | 先确认内核 config/模块 |
 
 > 脚本能证明"内核 PCM 通不通"，**不能**证明喇叭出声——最后一步永远要人站在机器前面。
@@ -359,3 +368,9 @@ Z1DIAG_DEVS="/dev/input/event2" sh /data/local/z1diag/z1_diag_keys.sh all  # 只
 - `z1_diag_keys.sh all` 用假 `getevent` 跑通完整引导流程（21 个窗口、`SUMMARY.txt`、
   `MISSING_KEYS.txt` 均正确生成）
 - 音频噪声 WAV 头逐字节核对：`file` 判定 "RIFF WAVE, Microsoft PCM, 16 bit, stereo 44100 Hz"
+- 四个**触发**分支也用 fake 工具链实测走完（不只是被动模式）：WiFi `func-on→wlan0→carrier→
+  scan(含 3 次重试)`、BT `开关→观察栈→还原`、定位 `开→60s→还原`、音频
+  `tinyplay 后台 + PCM status 并发采样 → tinycap → 音量键`
+- `z1_diag_summarize.py` 三档实测：健康合成包 `OK=8/FAIL=0`；故障合成包 `FAIL=11` 且每条 hint
+  都对得上（Invalid module format / request_firmware failed / am_kill foreground / avc 120）；
+  单子系统深挖包只报 1 真 FAIL + `INFO 未覆盖`，不再误报
