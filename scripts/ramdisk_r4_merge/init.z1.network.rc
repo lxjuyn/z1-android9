@@ -1,0 +1,122 @@
+# R4 merged init.z1.network.rc (2026-10-27): superset of the v11 line
+# (GPS/keypad: z1_mnld + z1_gps_prep.sh + z1_diag_onboot) and the wifi_v10
+# line (B1/B2/B3). Both sides' insmod chain and audio/probe sections are
+# byte-identical, so they are carried once.
+#   [B1] service exec path stays /z1_wpa_start.sh (ramdisk root). v11 kept
+#        the broken /system/bin/z1_wpa_start.sh (not in system.img); resolved
+#        in favour of WiFi per the R4 merge rules.
+#   [B2] seclabel u:r:init:s0 (both sides already agreed).
+#   [B3] synchronous pre-stage exec of /z1_wifi_pre.sh BEFORE wlan_gen2.ko
+#        is insmoded (v11 had neither the section nor the script).
+# Generated from rebuilt module dependencies; load after /system mounts.
+# netd starts later in class main. Keep this paired with its kernel.
+on post-fs
+    insmod /system/lib/modules/z1-network/fuse.ko
+    insmod /system/lib/modules/z1-network/x_tables.ko
+    insmod /system/lib/modules/z1-network/ip6_tables.ko
+    insmod /system/lib/modules/z1-network/ipv6.ko
+    insmod /system/lib/modules/z1-network/nf_reject_ipv6.ko
+    insmod /system/lib/modules/z1-network/ip6t_REJECT.ko
+    insmod /system/lib/modules/z1-network/ip6t_rpfilter.ko
+    insmod /system/lib/modules/z1-network/ip6table_filter.ko
+    insmod /system/lib/modules/z1-network/ip6table_mangle.ko
+    insmod /system/lib/modules/z1-network/ip6table_raw.ko
+    insmod /system/lib/modules/z1-network/ip_tables.ko
+    insmod /system/lib/modules/z1-network/nf_reject_ipv4.ko
+    insmod /system/lib/modules/z1-network/ipt_REJECT.ko
+    insmod /system/lib/modules/z1-network/iptable_filter.ko
+    insmod /system/lib/modules/z1-network/iptable_mangle.ko
+    insmod /system/lib/modules/z1-network/nf_defrag_ipv4.ko
+    insmod /system/lib/modules/z1-network/nf_defrag_ipv6.ko
+    insmod /system/lib/modules/z1-network/nf_conntrack.ko
+    insmod /system/lib/modules/z1-network/nf_nat.ko
+    insmod /system/lib/modules/z1-network/iptable_nat.ko
+    insmod /system/lib/modules/z1-network/iptable_raw.ko
+    insmod /system/lib/modules/z1-network/nf_conntrack_ftp.ko
+    insmod /system/lib/modules/z1-network/nf_nat_ftp.ko
+    insmod /system/lib/modules/z1-network/nfnetlink.ko
+    insmod /system/lib/modules/z1-network/nfnetlink_log.ko
+    insmod /system/lib/modules/z1-network/xfrm_algo.ko
+    insmod /system/lib/modules/z1-network/xfrm_user.ko
+    insmod /system/lib/modules/z1-network/xt_CT.ko
+    insmod /system/lib/modules/z1-network/xt_IDLETIMER.ko
+    insmod /system/lib/modules/z1-network/xt_MASQUERADE.ko
+    insmod /system/lib/modules/z1-network/xt_NFLOG.ko
+    insmod /system/lib/modules/z1-network/xt_TCPMSS.ko
+    insmod /system/lib/modules/z1-network/xt_connmark.ko
+    insmod /system/lib/modules/z1-network/xt_mark.ko
+    insmod /system/lib/modules/z1-network/xt_nat.ko
+    insmod /system/lib/modules/z1-network/xt_owner.ko
+    insmod /system/lib/modules/z1-network/xt_policy.ko
+    insmod /system/lib/modules/z1-network/xt_quota2.ko
+    insmod /system/lib/modules/z1-network/xt_state.ko
+    insmod /system/lib/modules/z1-network/xt_tcpudp.ko
+    insmod /system/lib/modules/z1-network/xt_u32.ko
+
+# [B3] Must be a blocking "exec": init.z1.rc starts
+# /system/bin/z1_linux7_radio_init.sh (which insmods wlan_gen2.ko) in the same
+# post-fs wave, and the driver opens /etc/firmware/nvram/WIFI during its init.
+# Keep this line above the radio_init exec_background line in init.z1.rc.
+on post-fs
+    exec u:r:init:s0 root root -- /system/bin/sh /z1_wifi_pre.sh
+
+# Z1 WiFi: manual supplicant layer over the MT6620 SoC WLAN driver.
+# NOTE: wlan.driver.status is a KitKat-era property. Android 9's WifiService
+# never reads it (it goes through the wifi HIDL HAL, which this image does not
+# have), so these two setprop lines are diagnostics only.
+service z1_wpa_supplicant /system/bin/sh /z1_wpa_start.sh
+    class main
+    socket wpa_wlan0 dgram 660 wifi wifi
+    disabled
+    seclabel u:r:init:s0
+
+on property:init.svc.z1_wpa_supplicant=running
+    setprop wlan.driver.status ok
+
+on property:init.svc.z1_wpa_supplicant=stopped
+    setprop wlan.driver.status unloaded
+
+on property:sys.wlan0.up=1
+    start z1_wpa_supplicant
+
+# Z1 audio: load the gabin8 ASoC stack (MT6572 AFE + MT6323 codec + machine
+# driver) once /system is mounted. Idempotent: load_audio.sh skips modules
+# already present. The A9 audio HAL (vendor/lib/hw/android.hardware.audio@2.0-impl
+# + audio.primary.mt6572.so) is lazy-loaded by hwservicemanager; it only
+# produces a card when these modules are in.
+on post-fs
+    exec_background u:r:init:s0 root root -- /system/bin/sh /system/lib/modules/load_audio.sh
+
+# Publish readiness for debugging (dmesg/ logcat tag Z1Audio).
+on property:sys.boot_completed=1
+    exec_background u:r:init:s0 root root -- /system/bin/sh /system/bin/z1_audio_probe.sh
+
+# Z1 GPS: MTK mnld userspace daemon. It talks to the modem/GPS transport over
+# /dev/stpgps and serves the legacy GPS HAL (vendor/lib/hw/gps.default.so),
+# which the A9 gnss@1.0 HIDL impl loads through hw_get_module("gps").
+# Started only after the radio transport is up, and it self-exits if the
+# device node never appears.
+service z1_mnld /vendor/bin/mnld
+    class main
+    user system
+    group system inet media net_bt
+    socket mnld stream 0660 system system
+    disabled
+    seclabel u:r:init:s0
+
+on property:sys.z1.radio.modules_ready=1
+    exec_background u:r:init:s0 root root -- /system/bin/sh /z1_gps_prep.sh
+
+# Unattended evidence capture: 90 s after boot_completed, dump every subsystem
+# into /data/local/z1diag/ so a boot that later dies still leaves a bundle.
+# Kill switch: touch /data/local/z1diag/onboot.disabled
+service z1_diag_onboot /system/bin/sh /system/bin/z1diag/z1_diag_onboot.sh
+    class late_start
+    user root
+    group root system
+    oneshot
+    disabled
+    seclabel u:r:init:s0
+
+on property:sys.boot_completed=1
+    start z1_diag_onboot
