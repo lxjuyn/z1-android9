@@ -22,3 +22,5 @@ fi
 # Bluetooth: kernel modules already loaded above (mtk_stp_bt).
 # Userspace: libbt-vendor.so dlopens libbluetoothdrv.so (factory, in /system/lib)
 # requiring libstdc++.so (factory 4.4 libc++ replacement, also in /system/lib).
+# wpa_supplicant (LOS14 binary, deps all present in A9 /system/lib) starts via
+# init.z1.network.rc service z1_wpa_supplicant on sys.wlan0.up=1 (v7d+).
