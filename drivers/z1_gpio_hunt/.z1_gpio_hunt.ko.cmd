@@ -1,0 +1,1 @@
+savedcmd_z1_gpio_hunt.ko := arm-linux-gnueabihf-ld -r -EL -z noexecstack --no-warn-rwx-segments --build-id=sha1  -T /home/lxj/claude/6572/fork_linux/scripts/module.lds -o z1_gpio_hunt.ko z1_gpio_hunt.o z1_gpio_hunt.mod.o .module-common.o
