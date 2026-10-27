@@ -64,8 +64,9 @@ esac
 SELFDIR=$(dirname "$SELF" 2>/dev/null)
 
 ALL=
-for c in "$SELFDIR/z1_diag_all.sh" /system/bin/z1_diag_all.sh \
-         /system/etc/z1_diag_all.sh /data/local/z1diag/z1_diag_all.sh; do
+for c in "$SELFDIR/z1_diag_all.sh" /z1_diag_all.sh \
+         /system/bin/z1_diag_all.sh /system/etc/z1_diag_all.sh \
+         /data/local/z1diag/z1_diag_all.sh /cache/z1diag/z1_diag_all.sh; do
     if [ -f "$c" ]; then
         ALL=$c
         break

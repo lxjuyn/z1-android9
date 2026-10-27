@@ -100,9 +100,19 @@ pcount() {
 note() { printf '\n--- NOTE: %s\n' "$1" >> "$CUR" 2>/dev/null || true; }
 
 # --- run setup -------------------------------------------------------------
+# /data/local/z1diag is the directory stock/z1_logpersist.sh already uses from
+# the init domain, so writing it from init is proven to work on this device.
+# /cache/z1diag is the same script's no-/data fallback: if /data is missing,
+# full, or not yet mounted we still leave evidence somewhere.
+BASE_FALLBACK=/cache/z1diag
 if ! mkdir -p "$BASE" 2>/dev/null; then
-    echo "z1_diag_all: cannot create $BASE (selinux/permissions?)"
-    exit 1
+    echo "z1_diag_all: cannot create $BASE, falling back to $BASE_FALLBACK"
+    BASE=$BASE_FALLBACK
+    LOCK=$BASE/.running
+    if ! mkdir -p "$BASE" 2>/dev/null; then
+        echo "z1_diag_all: cannot create $BASE either - aborting"
+        exit 1
+    fi
 fi
 
 if mkdir "$LOCK" 2>/dev/null; then
@@ -514,6 +524,30 @@ cap "$CUR" "/proc/filesystems" "cat /proc/filesystems"
 cap "$CUR" "kernel command line + boot reason" \
     "cat /proc/cmdline; getprop ro.boot.bootreason; cat /proc/sys/kernel/random/boot_id 2>/dev/null"
 cap "$CUR" "data partition usage of diag dir" "du -sk /data/local/z1diag 2>/dev/null"
+
+# ---------------------------------------------------------------------------
+# 17 logpersist history - evidence that predates this collection
+#
+# stock/z1_logpersist.sh keeps writing /data/local/z1diag/{beats,dmesg,snap}.txt
+# (and /cache/z1diag/*) from init. That is the ONLY record of what happened
+# before we ran, e.g. a freeze or an lmkd kill an hour ago. We fold it in by
+# reference (tails + sizes) instead of copying megabytes around.
+# ---------------------------------------------------------------------------
+CUR=$OUT/17_logpersist_history.txt
+hdr "history written by z1_logpersist.sh before this run" "$CUR"
+cap "$CUR" "files present" \
+    "ls -l /data/local/z1diag/*.txt /cache/z1diag/*.txt 2>/dev/null"
+cap "$CUR" "beats.txt tail (uptime timeline of earlier runs)" \
+    "tail -n 200 /data/local/z1diag/beats.txt 2>/dev/null; echo '--- cache ---'; tail -n 100 /cache/z1diag/beats.txt 2>/dev/null"
+cap "$CUR" "snap.txt (last wider snapshot)" \
+    "cat /data/local/z1diag/snap.txt 2>/dev/null; echo '--- cache ---'; cat /cache/z1diag/snap.txt 2>/dev/null"
+cap "$CUR" "dmesg.txt tail (pre-collection kernel log)" \
+    "tail -n 3000 /data/local/z1diag/dmesg.txt 2>/dev/null"
+cap "$CUR" "sizes" \
+    "wc -c /data/local/z1diag/dmesg.txt /data/local/z1diag/snap.txt /data/local/z1diag/beats.txt 2>/dev/null"
+fact LOGPERSIST_DIR "$(ls -d /data/local/z1diag 2>/dev/null | wc -l)"
+fact LOGPERSIST_DMESG_BYTES "$(wc -c < /data/local/z1diag/dmesg.txt 2>/dev/null)"
+fact LOGPERSIST_BEATS_LINES "$(wc -l < /data/local/z1diag/beats.txt 2>/dev/null)"
 
 # ---------------------------------------------------------------------------
 # index + tar

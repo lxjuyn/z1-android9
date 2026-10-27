@@ -1,0 +1,12 @@
+
+# Z1 audio: load the gabin8 ASoC stack (MT6572 AFE + MT6323 codec + machine
+# driver) once /system is mounted. Idempotent: load_audio.sh skips modules
+# already present. The A9 audio HAL (vendor/lib/hw/android.hardware.audio@2.0-impl
+# + audio.primary.mt6572.so) is lazy-loaded by hwservicemanager; it only
+# produces a card when these modules are in.
+on post-fs
+    exec_background u:r:init:s0 root root -- /system/bin/sh /system/lib/modules/load_audio.sh
+
+# Publish readiness for debugging (dmesg/ logcat tag Z1Audio).
+on property:sys.boot_completed=1
+    exec_background u:r:init:s0 root root -- /system/bin/sh /system/bin/z1_audio_probe.sh

@@ -23,17 +23,19 @@ Z1 (MT6572 / Android 9 / arm32) **刷机后立刻取证**用的一套 shell 脚�
 | `z1_diag_audio.sh` | 音频深挖 | `trigger` 时 tinyplay 噪声 WAV / tinycap / 音量键出声（三路按可用性依次试） |
 | `z1_diag_keys.sh` | 按键逐键抓事件（引导式） | `all` 逐个键提示你按，每键一个窗口 |
 | `z1_diag_onboot.sh` | 开机 90s 后自动跑 `z1_diag_all.sh`（无人值守） | 无 |
+| `z1_diag_summarize.py` | **主机侧**：读包出判定表，不进镜像 | — |
 
-行数（`wc -l`，共 1641 行）：
+行数（`wc -l`，设备侧脚本 1676 行 + 主机侧判定器 410 行）：
 
 ```
-z1_diag_all.sh      573
-z1_diag_keys.sh     274
-z1_diag_audio.sh    184
-z1_diag_wifi.sh     177
-z1_diag_bt.sh       156
-z1_diag_gps.sh      145
-z1_diag_onboot.sh   132
+z1_diag_all.sh        607
+z1_diag_keys.sh       274
+z1_diag_audio.sh      184
+z1_diag_wifi.sh       177
+z1_diag_bt.sh         156
+z1_diag_gps.sh        145
+z1_diag_onboot.sh     133
+z1_diag_summarize.py  410   (主机侧，不进镜像)
 ```
 
 ---
@@ -55,29 +57,49 @@ mkdir -p /data/local/z1diag
 # 然后在 console 里粘贴脚本内容，或 ttyGS0 传过去
 ```
 
-### 2.2 进 system.img（正式版，主线程部署）
+### 2.2 进 system.img / ramdisk（正式版，主线程部署）
 
-脚本放 `/system/bin/`，权限 755：
+本项目已有的惯例（见 `device.mk` 的 `PRODUCT_COPY_FILES`）：给 rc 执行的脚本放**ramdisk 根**，
+开机即可用、`u:r:init:s0` 直接 exec，路径是 `/z1_xxx.sh` 而不是 `/system/bin/z1_xxx.sh`
+（对照 `stock/z1_fbcon_takeover.sh:root/z1_fbcon_takeover.sh`）。
 
+两种放法按需选：
+
+**A. ramdisk 根（推荐，rc 里 `/z1_diag_onboot.sh`）** — 加进 `device.mk` 两个变体各自的
+`PRODUCT_COPY_FILES` 块（stock 变体和 mainline 变体都有，别只加一边）：
+
+```make
+    $(DEVICE_PATH)/scripts/diag/z1_diag_all.sh:root/z1_diag_all.sh \
+    $(DEVICE_PATH)/scripts/diag/z1_diag_wifi.sh:root/z1_diag_wifi.sh \
+    $(DEVICE_PATH)/scripts/diag/z1_diag_bt.sh:root/z1_diag_bt.sh \
+    $(DEVICE_PATH)/scripts/diag/z1_diag_gps.sh:root/z1_diag_gps.sh \
+    $(DEVICE_PATH)/scripts/diag/z1_diag_audio.sh:root/z1_diag_audio.sh \
+    $(DEVICE_PATH)/scripts/diag/z1_diag_keys.sh:root/z1_diag_keys.sh \
+    $(DEVICE_PATH)/scripts/diag/z1_diag_onboot.sh:root/z1_diag_onboot.sh
 ```
-/system/bin/z1_diag_all.sh
-/system/bin/z1_diag_wifi.sh
-/system/bin/z1_diag_bt.sh
-/system/bin/z1_diag_gps.sh
-/system/bin/z1_diag_audio.sh
-/system/bin/z1_diag_keys.sh
-/system/bin/z1_diag_onboot.sh
-```
 
-`z1_diag_onboot.sh` 会自动找同目录或 `/system/bin`、`/data/local/z1diag` 下的
-`z1_diag_all.sh`，所以丢哪都能跑。
+7 个脚本合计约 85 KB，对 6 MB boot 分区可以接受；但**如果这轮 ramdisk 已经很紧，就只放
+`z1_diag_onboot.sh` + `z1_diag_all.sh`（约 33 KB）**，其余深挖脚本用 `adb push` 临时丢到
+`/data/local/z1diag/` 即可（`z1_diag_onboot.sh` 也会去那儿找 collector）。
+
+**B. /system/bin（持久可用）** — 改成 `:$(TARGET_COPY_OUT_SYSTEM)/bin/z1_diag_all.sh`
+等对应目标；注意 system 是只读挂载，权限由 build 保证 755。
+
+> `z1_diag_onboot.sh` 会自动在"自己所在目录 / `/` / `/system/bin` / `/system/etc` /
+> `/data/local/z1diag` / `/cache/z1diag`"里找 `z1_diag_all.sh`，放哪都能跑。
+
+> 输出目录 `/data/local/z1diag` 不是新造的：`stock/z1_logpersist.sh` 已经在往那儿写
+> `beats.txt`/`dmesg.txt`/`snap.txt`，所以 init 域写这个目录在本机**已被证明不会被 avc 挡**。
+> 采集器不会覆盖这些文件，反而会把它们的内容（tail）作为 `17_logpersist_history.txt`
+> 纳入包里——那是"我们这次采集之前"唯一的历史记录。`/data` 不可用时自动退回 `/cache/z1diag`
+> （与 logpersist 的兜底一致）。
 
 ### 2.3 开机自动取证（无人值守）
 
 `rootdir/init.z1.rc` / ramdisk rc 里加：
 
 ```
-service z1_diag_onboot /system/bin/sh /system/bin/z1_diag_onboot.sh
+service z1_diag_onboot /system/bin/sh /z1_diag_onboot.sh
     class late_start
     user root
     group root system
@@ -87,6 +109,8 @@ service z1_diag_onboot /system/bin/sh /system/bin/z1_diag_onboot.sh
 on property:sys.boot_completed=1
     start z1_diag_onboot
 ```
+
+（脚本在 `/system/bin` 就把路径改成 `/system/bin/z1_diag_onboot.sh`。）
 
 关掉：`touch /data/local/z1diag/onboot.disabled`
 改延迟：`setprop` 不管用，直接改脚本里的 `DELAY` 或用 `Z1DIAG_ONBOOT_DELAY=180`
@@ -137,6 +161,30 @@ cat facts.txt            # 先看这个
 sed -n '1,80p' 06_wireless.txt
 ```
 
+### 3.4 主机侧一键判定（推荐）
+
+`z1_diag_summarize.py` 把下面第 5 节的判定表变成可执行规则，直接把包读成结论：
+
+```sh
+./z1_diag_summarize.py collect_20261027_120000.tar.gz      # 直接读 tar.gz
+./z1_diag_summarize.py /path/to/collect_20261027_120000/   # 或解开的目录
+./z1_diag_summarize.py bundle.tar.gz -v                    # 附带打印 facts 全量
+./z1_diag_summarize.py bundle.tar.gz --json > verdict.json # 机器可读
+```
+
+输出示例：
+
+```
+ Z1 diag verdict    FAIL=2 WARN=1 OK=7 INFO=2
+FAIL   WiFi      func-on 写入了但 wlan0 一直没出现
+                  -> dmesg | grep -iE 'wlan|hif|sdio'；查固件目录与 wlan_mt6620 加载
+...
+ P0 先解决（按顺序）:
+  1. [Kernel/modules] 模块 vermagic 不匹配（insmod 失败）
+```
+
+退出码：`0` 无 FAIL、`1` 有 FAIL、`2` 包打不开。纯 stdlib，无第三方依赖。
+
 ---
 
 ## 4. `z1_diag_all.sh` 分节说明
@@ -160,6 +208,7 @@ sed -n '1,80p' 06_wireless.txt
 | `14_crash_logcat.txt` | tombstones/anr/dropbox 列表、`-b crash`、`-b all` | 谁崩了、为什么 |
 | `15_selinux.txt` | `getenforce`、avc 去重计数 top40 | 权限拒绝是否卡住某个 HAL |
 | `16_system_snapshot.txt` | ps、mount、df、interrupts、partitions | 兜底全景 |
+| `17_logpersist_history.txt` | `z1_logpersist.sh` 早先写的 `beats.txt`/`snap.txt`/`dmesg.txt` 的尾部 | **本次采集之前**发生了什么（冻结、被杀、重启） |
 | `facts.txt` | `KEY=VALUE` 机器可读判定表 | **先看它**，再看分节 |
 
 `facts.txt` 关键键：`DEV_STPBT/DEV_STPGPS/DEV_WMTWIFI/DEV_TTYGS0`、`WLAN0_EXISTS`、
