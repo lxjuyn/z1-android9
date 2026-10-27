@@ -1,0 +1,82 @@
+BUILD.txt —— products_wmt_emi_20261028_005306
+============================================================
+
+⚠️ 状态：两枚 .ko 均【未上板验证】。R4 刷写件未动、任何在跑镜像未并入。
+   等板上 R4 的 WMT insmod 日志到手后，由主会话按本文裁决矩阵决定是否换入。
+
+## 背景与审计链
+
+R3c 板上 kmsg（mainline_recon/z1_r3c_replay_20261025.log:536-564）：
+  WARNING arch/arm/mm/ioremap.c:318 ← __arm_ioremap_caller ← mtk_wcn_consys_hw_init+0x60 [mtk_stp_wmt_soc]
+  [WMT-CONSYS-HW][E]mtk_wcn_consys_hw_init(663):EMI mapping fail
+  → 后果链 z1_r3c_replay_20261025.log:675 "radio bring-up skipped: cannot assign WMT ownership"
+
+在役 .ko 反汇编（out/z1_wifi_stage/modules/mtk_stp_wmt_soc.ko，mtk_wcn_consys_hw_init @0x1e298）：
+  movw r0,#0 ; movt r0,#0x8008 ; mov r1,#0x5c00 ; movt r1,#5 ; bl ioremap
+  = ioremap(0x80080000, 0x55c00)，随后 mmioset(virt,0,0x55c00)
+
+## 契约核查结论（详见 CONTRACT_EXCERPT_gabin8.md，行号可复核）
+
+1. 参考仓 gabin8/mt6572-connsys-modules 的 EMI 基址就是硬编码 0x80080000
+   （conn_soc/mt6572/include/mtk_wcn_consys_hw.h:166 CONSYS_EMI_AP_PHY_BASE），
+   尺寸 343KB（CONSYS_EMI_MEM_SIZE），不从 dts reg 来（驱动只 of_iomap MCU/TOPCKGEN 两段）。
+   【Z1 的 0x80080000 不是移植抄错，是上游契约值。】
+2. 上游配套契约 = dts reserved-memory no-map 该窗（mtk_wcn_consys_hw.c:604-608
+   "Reserved memory by device tree!" + "the region lies outside kernel-managed RAM"）。
+   FW 侧固定 0xf0080000 透视到 AP 0x80080000，片上无 remap 寄存器。
+3. Z1 在役 .ko 与上游原样同源：报错行号 663 与上游 hw.c:663 逐字对齐；pinctrl W
+   "no consys pinctrl (ok on mt6572)" 也为上游原句（hw.c:181）；本轮 A 版重编后
+   mtk_wcn_consys_hw_init 与在役版指令序列逐指令相同（仅分支目标地址随布局漂移）。
+4. 审计 A8-4 选项 (b)（模块改 0xbe080000）在上游仓中【无任何依据】：0xbe080000 只出现在
+   Z1 自研 in-tree 驱动 fork_linux/drivers/soc/mediatek/mtk6572-connsys.c 的旧 workaround
+   语境（其 dts 节点已 status="disabled"；a9_wt dts 注释自认 "vendor CONN firmware may be
+   built against a fixed shared-EMI base of 0x80080000"）。且因片上无 remap 寄存器，
+   模块改映射到 0xbe080000 存在 AP/FW 共享窗错位风险（AP 清零/读写 0xbe080000，
+   FW 仍透视 0x80080000）——上板可判：若 B 版 EMI mapping OK 但 WMT patch 下载仍挂，
+   即为此错位。
+5. 审计 A8-4 对选项 (a) 的否决理由（"mmioset 清零落在活动 RAM"）与上游契约矛盾：
+   no-map 之后该窗已不是 kernel-managed RAM，清零落在 CONSYS 共享窗上正是上游设计
+   （参考平台实测 working 的组合）。但 Z1 上直接 no-map @0x80080000 有两个本机风险需
+   主会话裁决：(i) zImage 解压/内核 Image 活动区就在 0x80008000 起的 RAM 低区，
+   343KB 窗（0x80080000..0x800d5c00）与内核映像物理重叠的后果未在本机验证；
+   (ii) dts 注释记录该处曾是 "Z1 LK/preloader 早启动使用的低 RAM 区"（当年因此才把
+   carveout 挪去 0xbe000000）。这两点使 no-map 路线不能仅凭上游契约直接落 dts。
+
+## 本目录两枚 .ko
+
+构建：git clone --depth 1 gabin8/mt6572-connsys-modules（main，2026-10-28）+
+compat_wakeup_*.diff（osal.h/osal.c/wmt_plat_alps.c；mainline 7.x 已删
+wakeup_source_init/trash，复刻在役 .ko 的形态：内嵌 struct → 指针 + register/unregister，
+反汇编对照 out/z1_wifi_stage 在役版 osal_wake_lock_init @0x11990 确认）+
+
+  A 版（= 上游原样基址）：
+    make -C fork_linux M=<clone>/conn_soc ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- \
+      KBUILD_EXTRA_SYMBOLS=fork_linux/net/wireless/Module.symvers KBUILD_MODPOST_WARN=1 modules
+  B 版：A 版基础上仅 emi_base_0xbe080000.diff（mtk_wcn_consys_hw.h:166 单宏）。
+
+vermagic（两版相同，/sbin/modinfo -F vermagic）：
+  7.0.0-rc7-z1+ SMP mod_unload ARMv7 p2v8    ← 与在役 .ko 一致
+
+objdump 复证（arm-linux-gnueabihf-objdump）：
+  A 版 mtk_wcn_consys_hw_init @0x1e60c：movt r0,#32776 (0x8008) → ioremap(0x80080000,0x55c00)
+  B 版同函数        @0x1e60c：movt r0,#48648 (0xbe08) → ioremap(0xbe080000,0x55c00)
+  B 版 mtk_wcn_consys_hw_restore @0x1e5ac：movt r0,#0xbe08（restore 同宏生效）
+  A 版与在役 .ko 的 init 函数指令序列 diff 仅分支目标地址（重定位），机器码全同。
+
+附：conn_soc 其余三枚 .ko（bt/wifi/gps）A 轮也编出，未随档（本轮裁决对象仅 wmt_soc）。
+
+## 换入裁决矩阵（主会话用）
+
+| 路线 | 动作 | 上游契约 | 上板预期 | 风险 |
+|---|---|---|---|---|
+| 现状不动 | 无 | ✗（缺 no-map） | EMI mapping fail 复现（已知） | 0 |
+| B 版换 .ko | 换 mtk_stp_wmt_soc.ko（B） | ✗（上游无此值） | ioremap 成功（0xbe 窗在 Z1 dts no-map carveout 内）；若 FW 透视不可重定向，patch 下载仍挂 | FW 窗错位（见上 4） |
+| dts no-map 回 0x8008 | dts 加 0x80080000..0x800d5c00 no-map + 现役 .ko 不动 | ✓（上游原配） | 契约路径；但需先裁本机两项风险（见上 5） | 内核 Image/LK 低区冲突未验证 |
+| R4 日志先行 | 先刷 R4 取 WMT insmod 日志再裁决 | - | - | 无（本轮默认路径） |
+
+产物清单：
+  mtk_stp_wmt_soc.ko.A_upstream_0x80080000  sha256 见 SHA256SUMS
+  mtk_stp_wmt_soc.ko.B_emi_0xbe080000
+  compat_wakeup_osal_h.diff / compat_wakeup_osal_c.diff / compat_wakeup_wmt_plat_alps.diff
+  emi_base_0xbe080000.diff
+  CONTRACT_EXCERPT_gabin8.md

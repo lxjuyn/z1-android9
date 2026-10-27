@@ -1,0 +1,14 @@
+--- conn_soc/linux/include/osal.h.orig	2026-10-28 00:43:34.219395376 +0800
++++ conn_soc/linux/include/osal.h	2026-10-28 00:44:46.138786814 +0800
+@@ -192,7 +192,10 @@
+ 
+ typedef struct _OSAL_WAKE_LOCK_ {
+ 	#ifdef CONFIG_PM_WAKELOCKS
+-	struct wakeup_source wake_lock;
++	/* mainline 7.x removed wakeup_source_init/trash (embed-API); the
++	 * register/unregister pair hands out a heap struct, so keep a pointer
++	 * here (matches the previously shipped mtk_stp_wmt_soc.ko build). */
++	struct wakeup_source *wake_lock;
+ 	#else
+ 	struct wake_lock wake_lock;
+ 	#endif

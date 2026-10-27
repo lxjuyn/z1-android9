@@ -1,0 +1,70 @@
+--- conn_soc/mt6572/wmt_plat_alps.c.orig	2026-10-28 00:43:34.212580878 +0800
++++ conn_soc/mt6572/wmt_plat_alps.c	2026-10-28 00:51:26.193978912 +0800
+@@ -124,7 +124,10 @@
+ #if CFG_WMT_WAKELOCK_SUPPORT
+ static struct mutex gOsSLock;
+ #ifdef CONFIG_PM_WAKELOCKS
+-static struct wakeup_source wmtWakeLock;
++/* mainline 7.x removed wakeup_source_init/trash; register/unregister hand
++ * out a heap struct, so hold a pointer (matches the previously shipped
++ * mtk_stp_wmt_soc.ko build). */
++static struct wakeup_source *wmtWakeLock;
+ #else
+ static struct wake_lock wmtWakeLock;
+ #endif
+@@ -328,7 +331,7 @@
+ 	iret = mtk_wcn_cmb_stub_reg(&stub_cb);
+ #ifdef CFG_WMT_WAKELOCK_SUPPORT
+ #ifdef CONFIG_PM_WAKELOCKS
+-	wakeup_source_init(&wmtWakeLock, "wmtFuncCtrl");
++	wmtWakeLock = wakeup_source_register(NULL, "wmtFuncCtrl");
+ #else
+ 	wake_lock_init(&wmtWakeLock, WAKE_LOCK_SUSPEND, "wmtFuncCtrl");
+ #endif
+@@ -358,13 +361,9 @@
+ 	/*3. wmt wakelock deinit */
+ #ifdef CFG_WMT_WAKELOCK_SUPPORT
+ #ifdef CONFIG_PM_WAKELOCKS
+-printk(KERN_ALERT "DEBUG: Passed %s %d now calling wakeup_source_trash\n",__FUNCTION__,__LINE__);
+-	wakeup_source_trash(&wmtWakeLock);
++	wakeup_source_unregister(wmtWakeLock);
++	wmtWakeLock = NULL;
+ #else
+-printk(KERN_ALERT "DEBUG: Passed %s %d now calling wake lock destroy %d\n",__FUNCTION__,__LINE__,(int)&wmtWakeLock);
+-//destroy calls wakeup_source_trash with &lock->ws
+-printk(KERN_ALERT "DEBUG: Passed %s %d now wmtWakeLock:%d\n",__FUNCTION__,__LINE__,(int)&wmtWakeLock);
+-printk(KERN_ALERT "DEBUG: Passed %s %d now wmtWakeLock->ws: %d\n",__FUNCTION__,__LINE__,(int)&(wmtWakeLock.ws));
+ 	wake_lock_destroy(&wmtWakeLock);
+ #endif
+ printk(KERN_ALERT "DEBUG: Passed %s %d now calling mutex_destroy\n",__FUNCTION__,__LINE__);
+@@ -854,8 +853,8 @@
+ 	mutex_unlock(&gOsSLock);
+ 	if (WL_OP_GET == opId && counter == 1) {
+ 		#ifdef CONFIG_PM_WAKELOCKS
+-		__pm_stay_awake(&wmtWakeLock);
+-		status = wmtWakeLock.active;
++		__pm_stay_awake(wmtWakeLock);
++		status = wmtWakeLock->active;
+ 		#else
+ 		wake_lock(&wmtWakeLock);
+ 		status = wake_lock_active(&wmtWakeLock);
+@@ -864,8 +863,8 @@
+ 
+ 	} else if (WL_OP_PUT == opId && counter == 0) {
+ 		#ifdef CONFIG_PM_WAKELOCKS
+-		__pm_relax(&wmtWakeLock);
+-		status = wmtWakeLock.active;
++		__pm_relax(wmtWakeLock);
++		status = wmtWakeLock->active;
+ 		#else
+ 		wake_unlock(&wmtWakeLock);
+ 		status = wake_lock_active(&wmtWakeLock);
+@@ -873,7 +872,7 @@
+ 		WMT_PLAT_DBG_FUNC("WMT-PLAT: after wake_unlock(%d), counter(%d)\n", status, counter);
+ 	} else {
+ 		#ifdef CONFIG_PM_WAKELOCKS
+-		status = wmtWakeLock.active;
++		status = wmtWakeLock ? wmtWakeLock->active : 0;
+ 		#else
+ 		status = wake_lock_active(&wmtWakeLock);
+ 		#endif

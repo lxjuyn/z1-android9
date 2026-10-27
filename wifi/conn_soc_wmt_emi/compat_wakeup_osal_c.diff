@@ -1,0 +1,54 @@
+--- conn_soc/linux/pub/osal.c.orig	2026-10-28 00:43:34.216184352 +0800
++++ conn_soc/linux/pub/osal.c	2026-10-28 00:48:04.535426408 +0800
+@@ -991,7 +991,9 @@
+ 		return -1;
+ 
+ 	#ifdef CONFIG_PM_WAKELOCKS
+-	wakeup_source_init(&pLock->wake_lock, pLock->name);
++	pLock->wake_lock = wakeup_source_register(NULL, pLock->name);
++	if (!pLock->wake_lock)
++		return -12;
+ 	#else
+ 	wake_lock_init(&pLock->wake_lock, WAKE_LOCK_SUSPEND, pLock->name);
+ 	#endif
+@@ -1004,7 +1006,8 @@
+ 		return -1;
+ 
+ 	#ifdef CONFIG_PM_WAKELOCKS
+-	wakeup_source_trash(&pLock->wake_lock);
++	wakeup_source_unregister(pLock->wake_lock);
++	pLock->wake_lock = NULL;
+ 	#else
+ 	wake_lock_destroy(&pLock->wake_lock);
+ 	#endif
+@@ -1017,7 +1020,9 @@
+ 		return -1;
+ 
+ 	#ifdef CONFIG_PM_WAKELOCKS
+-	__pm_stay_awake(&pLock->wake_lock);
++	if (!pLock->wake_lock)
++		return -12;
++	__pm_stay_awake(pLock->wake_lock);
+ 	#else
+ 	wake_lock(&pLock->wake_lock);
+ 	#endif
+@@ -1031,7 +1036,9 @@
+ 		return -1;
+ 
+ 	#ifdef CONFIG_PM_WAKELOCKS
+-	__pm_relax(&pLock->wake_lock);
++	if (!pLock->wake_lock)
++		return -12;
++	__pm_relax(pLock->wake_lock);
+ 	#else
+ 	wake_unlock(&pLock->wake_lock);
+ 	#endif
+@@ -1048,7 +1055,7 @@
+ 		return -1;
+ 
+ 	#ifdef CONFIG_PM_WAKELOCKS
+-	count = pLock->wake_lock.active;
++	count = pLock->wake_lock ? pLock->wake_lock->active : 0;
+ 	#else
+ 	count = wake_lock_active(&pLock->wake_lock);
+ 	#endif

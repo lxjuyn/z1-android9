@@ -1,0 +1,11 @@
+--- conn_soc/mt6572/include/mtk_wcn_consys_hw.h.orig	2026-10-28 00:51:26.185791938 +0800
++++ /dev/fd/63	2026-10-28 00:53:10.353012326 +0800
+@@ -163,7 +163,7 @@
+ /* EMI part mapping & ctrl*/
+ #define KBYTE								(1024*sizeof(char))
+ #define CONSYS_EMI_AP_PHY_OFFSET			(0x80000)
+-#define CONSYS_EMI_AP_PHY_BASE				(0x80080000)
++#define CONSYS_EMI_AP_PHY_BASE				(0xbe080000)
+ #define CONSYS_EMI_FW_PHY_BASE				(0xf0080000)
+ #define CONSYS_EMI_MEM_SIZE					(343*KBYTE)	/*coredump space , 343K is enough */
+ #define CONSYS_EMI_PAGED_TRACE_OFFSET		(0x400)
