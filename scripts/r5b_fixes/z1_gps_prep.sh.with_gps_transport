@@ -1,0 +1,67 @@
+#!/system/bin/sh
+# Z1 GPS preparation: create the runtime dirs mnld expects, seed GPS_CHIP.cfg
+# on first boot, then start the mnld service when /dev/stpgps is present.
+log() { printf '<6>[z1gps] %s\n' "$*" > /dev/kmsg 2>/dev/null || true; }
+
+mkdir -p /data/misc 2>/dev/null
+chown system:system /data/misc 2>/dev/null
+chmod 0771 /data/misc 2>/dev/null
+
+if [ ! -s /data/misc/GPS_CHIP.cfg ]; then
+    printf 'MTK_GPS_CHIP=MT6620\n' > /data/misc/GPS_CHIP.cfg 2>/dev/null
+    chown system:system /data/misc/GPS_CHIP.cfg 2>/dev/null
+    chmod 0644 /data/misc/GPS_CHIP.cfg 2>/dev/null
+    log "seeded /data/misc/GPS_CHIP.cfg"
+fi
+
+# --- GPS transport: load the module and create the node -------------------
+# The STP-GPS driver (mtk_stp_gps_soc.ko) only calls register_chrdev_region()
+# with GPS_DEV_MAJOR 191 (stp_chrdev_gps.c:26) -- it never calls
+# device_create(), so nothing ever makes /dev/stpgps. Loading the module is
+# therefore only half the job: the node has to be mknod'd by hand, at major 191
+# minor 0. Without this, mnld waits forever for a node that cannot appear.
+#
+# Everything up to and including the mknod is safe to fail: if the module or
+# the STP core it depends on is missing, we log it and carry on rather than
+# blocking boot.
+MODDIR=/system/lib/modules/z1-radio
+GPS_KO=$MODDIR/mtk_stp_gps_soc.ko
+
+if [ -d /sys/module/mtk_stp_gps_soc ]; then
+    log "mtk_stp_gps_soc already loaded"
+elif [ ! -f "$GPS_KO" ]; then
+    log "MISSING $GPS_KO (GPS transport unavailable)"
+else
+    gerr=$(insmod "$GPS_KO" 2>&1)
+    if [ $? -eq 0 ]; then
+        log "insmod OK mtk_stp_gps_soc.ko"
+    else
+        log "insmod FAIL mtk_stp_gps_soc.ko: $gerr"
+    fi
+fi
+
+# Create the node the driver cannot create for itself (major 191, minor 0).
+if [ ! -c /dev/stpgps ]; then
+    /system/bin/mknod /dev/stpgps c 191 0 2>/dev/null
+    if [ -c /dev/stpgps ]; then
+        log "mknod /dev/stpgps c 191 0 created"
+    else
+        log "mknod /dev/stpgps failed (transport driver absent?)"
+    fi
+fi
+
+# Wait (briefly) for the node, then hand off to mnld.
+i=0
+while [ ! -c /dev/stpgps ] && [ $i -lt 40 ]; do
+    sleep 2
+    i=$((i + 2))
+done
+
+if [ -c /dev/stpgps ]; then
+    chmod 0660 /dev/stpgps 2>/dev/null
+    chown 1000:1000 /dev/stpgps 2>/dev/null
+    log "/dev/stpgps ready after ${i}s; starting mnld"
+    start z1_mnld
+else
+    log "/dev/stpgps absent after ${i}s; GPS transport driver missing (mnld not started)"
+fi
