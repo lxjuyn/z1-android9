@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Z1 (mainline Linux 7 + LOS16): WiFi/BT HIDL stack is shipped
+     (/vendor/bin/hw/android.hardware.wifi@1.0-service, wpa_supplicant,
+     bluetooth@1.0-service) and declared in /vendor/etc/vintf/manifest.xml,
+     so wifi/bluetooth must NOT be declared unavailable here -- doing so made
+     PackageManager report the features as absent and hid them from the
+     framework entirely.
+     SIP/VoIP remain genuinely unsupported (Z1 has no SIM slot / modem). -->
+<permissions>
+    <unavailable-feature name="android.software.sip" />
+    <unavailable-feature name="android.software.sip.voip" />
+</permissions>
