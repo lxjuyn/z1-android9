@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Copyright (C) 2012-2013, The Linux Foundation. All rights reserved.
+     Not a contribution.
+
+     Copyright (C) 2012 The Android Open Source Project
+
+     Licensed under the Apache License, Version 2.0 (the "License");
+     you may not use this file except in compliance with the License.
+     You may obtain a copy of the License at
+
+          http://www.apache.org/licenses/LICENSE-2.0
+
+     Unless required by applicable law or agreed to in writing, software
+     distributed under the License is distributed on an "AS IS" BASIS,
+     WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     See the License for the specific language governing permissions and
+     limitations under the License.
+-->
+
+<!--
+Z1 (MT6572) codec list
+ ______________________________________________________
+ | Codec    | W       H       fps     Mbps    MB/s    |
+ |__________|_________________________________________|
+ | h264     | 1920    1088    30      20      244800  |
+ | mpeg4    | 1920    1088    30      20      244800  |
+ | h263     | 800     480     30      6       45000   |
+ |__________|_________________________________________|
+
+ Z1 (MT6572) decoder list
+ ______________________________________________________
+ | Codec    | W       H       fps     Mbps    MB/s    |
+ |__________|_________________________________________|
+ | h264     | 1920    1088    30      20      244800  |
+ | mpeg4    | 1920    1088    30      20      244800  |
+ | vc1      | 1920    1088    30      20      244800  |
+ | divx3    | 720     480     30      2       40500   |
+ | div4/5/6 | 1920    1088    30      20      244800  |
+ | h263     | 800     480     30      6       45000   |
+ | mpeg2    | 1920    1088    30      20      244800  |
+ |__________|_________________________________________|
+
+-->
+<MediaCodecs>
+    <Include href="media_codecs_google_audio.xml" />
+    <Include href="media_codecs_google_telephony.xml" />
+    <Settings>
+        <Setting name="supports-secure-with-non-secure-codec" value="false" />
+        <Setting name="supports-multiple-secure-codecs" value="false" />
+        <Setting name="max-video-encoder-input-buffers" value="11" />
+    </Settings>
+    <Encoders>
+    </Encoders>
+    <Decoders>
+    </Decoders>
+    <Include href="media_codecs_google_video_le.xml" />
+</MediaCodecs>

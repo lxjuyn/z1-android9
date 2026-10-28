@@ -42,3 +42,23 @@ rewrite /lib/modules/load_audio.sh "$D/load_audio.sh.with_charger" 0100755
 
 echo "done -> $OUT"
 echo "verify: e2fsck -fn $OUT"
+
+# --- A2: media_codecs family into /vendor/etc -------------------------------
+# A listening device with no media_codecs.xml cannot decode anything: the board
+# log shows "MediaCodecsXmlParser: Cannot find media_codecs.xml", and neither
+# /etc nor /vendor/etc carried any media_codecs*.xml while every OMX.google.*
+# software decoder it names (libstagefright_soft_{aac,mp3,amr,flac,vorbis,avc}
+# dec, g711, opus, raw, ...) was already installed in /lib.
+#
+# The material comes from the LOS16 jfltexx tree (the base this rootfs is built
+# from), with its Qualcomm-only OMX.qcom.* entries stripped: those name 8960
+# hardware codecs that do not exist on MT6572 and would only be dead entries.
+echo "A2: /vendor/etc/media_codecs*.xml"
+for f in media_codecs.xml media_codecs_google_audio.xml \
+         media_codecs_google_performance.xml media_codecs_google_telephony.xml \
+         media_codecs_google_video_le.xml media_codecs_performance.xml; do
+  [ -f "$D/media_codecs/$f" ] || { echo "  missing $D/media_codecs/$f" >&2; exit 1; }
+  debugfs -w -R "rm /vendor/etc/$f" "$OUT" >/dev/null 2>&1 || true
+  debugfs -w -R "write $D/media_codecs/$f /vendor/etc/$f" "$OUT" >/dev/null 2>&1
+  setmode "/vendor/etc/$f" 0100644
+done
