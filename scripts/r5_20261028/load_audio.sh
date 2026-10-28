@@ -1,0 +1,86 @@
+#!/system/bin/sh
+# Z1 (MT6572 + MT6323) audio module loader
+#
+# 2026-10-28 修正（三处 bug）:
+#   1. （本条作废，见下方说明）原以为 BASE 路径错: 本镜像 system.img 挂到 /system
+#      （fstab.z1: mmcblk0p4 -> /system），故镜像内 /lib/modules 运行时即
+#      /system/lib/modules，原 BASE 本来就对，无需改。
+#   2. 缺 mt6323-accdet.ko: machine 驱动 mt6572-mt6323.ko 依赖
+#      mt6323_accdet_enable_jack_detect（EXPORT_SYMBOL_GPL），缺它则
+#      insmod machine 必然 "Unknown symbol" → 声卡绑不上。
+#   3. 顺序错: accdet 必须在 machine 之前；amplifier 也不得早于 snd-soc-core。
+#
+# 加载顺序依据各 .ko 的 depends（modinfo 实测）:
+#   soundcore                    (根)
+#   snd            <- soundcore
+#   snd-timer      <- snd
+#   snd-pcm        <- snd, snd-timer
+#   snd-soc-core   <- snd-pcm, snd
+#   snd-soc-mtk-common   <- snd-soc-core, snd-pcm
+#   snd-soc-mt6323       <- snd-soc-core
+#   snd-soc-simple-amplifier <- snd-soc-core
+#   mt6323-accdet        <- snd-soc-core, snd
+#   mt6572-afe-pcm       <- snd-pcm, snd-soc-core
+#   mt6572-mt6323        <- snd-soc-core, mt6323-accdet, snd-soc-mtk-common
+#
+# 幂等: 已加载的模块会跳过（/sys/module/<name> 存在即视为已加载）。
+# 每次结果都打到 kmsg，便于 ACM/串口取证。
+
+BASE=/system/lib/modules
+log() { printf '<6>[Z1Audio] %s\n' "$*" > /dev/kmsg 2>/dev/null; }
+
+# modname: 不带 .ko 的文件名；同时给出 /sys/module 下的名字（下划线）
+load() {
+    ko="$1"
+    mod="${2:-$(echo "${1%.ko}" | tr '-' '_')}"
+    if [ -d "/sys/module/$mod" ]; then
+        log "skip $ko (already loaded as $mod)"
+        return 0
+    fi
+    if [ ! -f "$BASE/$ko" ]; then
+        log "MISSING $BASE/$ko"
+        return 1
+    fi
+    err=$(insmod "$BASE/$ko" 2>&1)
+    if [ $? -eq 0 ]; then
+        log "insmod OK   $ko"
+        return 0
+    fi
+    log "insmod FAIL $ko: $err"
+    return 1
+}
+
+log "=== Z1 audio module load start (kernel $(uname -r)) ==="
+
+# 核心栈
+load soundcore.ko      soundcore
+load snd.ko            snd
+load snd-timer.ko      snd_timer
+load snd-pcm.ko        snd_pcm
+load snd-soc-core.ko   snd_soc_core
+
+# 平台层
+load snd-soc-mtk-common.ko       snd_soc_mtk_common
+load snd-soc-mt6323.ko           snd_soc_mt6323
+load snd-soc-simple-amplifier.ko snd_soc_simple_amplifier
+
+# 耳机检测（machine 依赖它，必须在 machine 之前）
+load mt6323-accdet.ko  mt6323_accdet
+
+# AFE + machine
+load mt6572-afe-pcm.ko   mt6572_afe_pcm
+load mt6572-mt6323.ko    mt6572_mt6323
+
+# 结果取证
+if [ -f /proc/asound/cards ]; then
+    log "--- /proc/asound/cards ---"
+    while read -r line; do
+        [ -n "$line" ] && log "  $line"
+    done < /proc/asound/cards
+else
+    log "/proc/asound/cards absent (snd core did not register a card)"
+fi
+
+n=$(grep -c '^mt\|^snd\|^sound' /proc/modules 2>/dev/null)
+log "=== audio load done: $n audio modules in /proc/modules ==="
+exit 0
