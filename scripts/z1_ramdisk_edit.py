@@ -45,6 +45,25 @@ def encode(hdr, data):
     return set_size(hdr, len(data)) + data + b"\x00" * pad
 
 
+def _fix_mode(hdr, name, modes):
+    """Return hdr with a valid st_mode (type bits present).
+
+    Explicit --mode wins; otherwise keep the existing permissions and OR in
+    S_IFREG when the record carries no type bits at all.
+    """
+    hdr = bytearray(hdr)
+    cur = int(bytes(hdr[14:22]), 16)
+    if name in modes:
+        want = modes[name]
+        mode = want if (want & 0o170000) else (want | 0o100000)
+    elif cur & 0o170000:
+        return bytes(hdr)          # already well formed
+    else:
+        mode = cur | 0o100000      # regular file
+    hdr[14:22] = ("%08X" % mode).encode()
+    return bytes(hdr)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("input")
@@ -83,6 +102,18 @@ def main():
         if r['name'] in repl:
             content = repl[r['name']]
             seen.add(r['name'])
+        # Normalise the st_mode type bits on EVERY record we emit, including
+        # records inherited unchanged from the input image.
+        #
+        # The cpio newc mode field is a full st_mode.  A record carrying bare
+        # permission bits (0o755) has no file type, and the kernel's initramfs
+        # do_name() recognises only S_IFREG/S_IFDIR/S_IFBLK/S_IFCHR/S_IFIFO/
+        # S_IFSOCK -- so such a record matches no branch and the file is
+        # silently dropped from the unpacked initramfs (it never appears, and
+        # no error is printed).  Older revisions of this tool wrote 0o755, and
+        # historically built ramdisks still carry those malformed records, so
+        # repairing them here is what actually rescues the affected scripts.
+        hdr = _fix_mode(hdr, r['name'], modes)
         out += encode(hdr, content)
 
     missing = set(repl) - seen
@@ -109,11 +140,7 @@ def main():
             head[6 + i * 8:14 + i * 8] = ("%08X" % v).encode()
         namepad = ((110 + len(nbytes) + ALIGN - 1) & ~(ALIGN - 1)) - (110 + len(nbytes))
         hdr = bytes(head) + nbytes + b"\x00" * namepad
-        if name in modes:
-            m = ("%08X" % modes[name]).encode()
-            hdr = bytearray(hdr)
-            hdr[14:22] = m
-            hdr = bytes(hdr)
+        hdr = _fix_mode(hdr, name, modes)
         add_bytes += encode(hdr, data)
 
     out = out[:trailer_rec_start] + add_bytes + out[trailer_rec_start:]

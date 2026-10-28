@@ -210,9 +210,9 @@ r4map = {r["name"]: r for r in recs}
 wifi_expect = {
     "init.z1.network.rc": ("replace", 0o100750, "ee598ea5f742"),
     "z1_wifi_probe.sh": ("replace", None, "d90cc0892fae"),
-    "z1_wpa_start.sh": ("replace", 0o755, None),
-    "z1_wifi_pre.sh": ("add", 0o755, None),
-    "z1_wifi_connect.sh": ("add", 0o755, None),
+    "z1_wpa_start.sh": ("replace", 0o100755, None),
+    "z1_wifi_pre.sh": ("add", 0o100755, None),
+    "z1_wifi_connect.sh": ("add", 0o100755, None),
 }
 for name, (kind, mode, prefix) in wifi_expect.items():
     src = (SRC / name).read_bytes()
@@ -227,13 +227,18 @@ for name, (kind, mode, prefix) in wifi_expect.items():
         detail += f" mode {oct(rec['fields'][1])}"
     check(f"记录 {name} == 决策源件逐字节（{kind}）", ok, detail)
 
-# 8b. wpa_start 头形态：重用 v11 原生追加记录头（mode 0o755，树内 .sh 追加先例
-#     z1_gps_prep.sh 同；initramfs 解包 sys_open 忽略类型位，无坑 10 之虞）
+# 8b. wpa_start 头形态。
+#     校正: cpio newc 的 mode 字段是完整 st_mode, 必须带 S_IFREG (0o100000)。
+#     早先这里断言 mode == 0o755 并注释"initramfs 解包 sys_open 忽略类型位",
+#     该假设是错的 —— 内核 initramfs do_name() 只认 S_IFREG/S_IFDIR/S_IFBLK/
+#     S_IFCHR/S_IFIFO/S_IFSOCK, 裸 0o755 不落任何分支, 文件被静默丢弃。
+#     这条断言把 bug 判成了 PASS, 现改为要求类型位存在。
 rec = r4map["z1_wpa_start.sh"]
-check("z1_wpa_start.sh mode=0o755(=v11/w10 原生) 且内容==w10 修复版(2828B)",
-      rec["fields"][1] == 0o755 and len(rec["data"]) == 2828
+check("z1_wpa_start.sh mode 带 S_IFREG(0o100755) 且内容==w10 修复版(2828B)",
+      (rec["fields"][1] & 0o170000) == 0o100000
+      and rec["fields"][1] == 0o100755 and len(rec["data"]) == 2828
       and rec["data"] == (SRC / "z1_wpa_start.sh").read_bytes()
-      and v11map["z1_gps_prep.sh"]["fields"][1] == 0o755)
+      and (v11map["z1_gps_prep.sh"]["fields"][1] & 0o170000) == 0o100000)
 
 # 8c. 其余 69 条与 v11 逐条逐字节一致
 changed = [n for n in names if n not in wifi_expect]
