@@ -11,7 +11,8 @@
 #
 # 用法:
 #   sudo bash deploy_media.sh [in.img] [out.img] [--no-audio] [--no-tts] [--no-perf] [--no-rs]
-#     in.img  缺省 = /home/lxj/claude/6572/out/z1_r5_system/system.img.r5i_final
+#     in.img  缺省 = /home/lxj/claude/6572/out/z1_r5_system/system.img.r5k_final
+#             （2026-10-31 起默认 r5k 谱系——设备现行 system 即 r5k 系，任务书钉死；旧默认 r5i 仍可显式传参）
 #     out.img 缺省 = <in.img 去掉扩展名>.media.img；**绝不原地改输入**
 #     --no-audio  跳过 A（播放器 + RS 库）
 #     --no-tts    跳过 C
@@ -64,13 +65,16 @@ set -euo pipefail
 ROOT=/home/lxj/claude/6572
 STAGE=$ROOT/out/z1_media_stage/stage
 SUMS=$ROOT/out/z1_media_stage/SHA256SUMS
-DEF_IN=$ROOT/out/z1_r5_system/system.img.r5i_final
+DEF_IN=$ROOT/out/z1_r5_system/system.img.r5k_final
 
-# 四件只读基线：绝不允许作为输出路径（项目固定规则）
+# 四件只读基线（2026-10-31 任务书钉死：r5k_final/r5i_final/r5c_boot/z1_ash_boot）
+# + 历史只读件 r5h_final/r41 boot 一并保护。绝不允许作为输出路径（项目固定规则）
 BASELINE=(
+  $ROOT/out/z1_r5_system/system.img.r5k_final
   $ROOT/out/z1_r5_system/system.img.r5i_final
   $ROOT/out/z1_r5_system/system.img.r5h_final
   $ROOT/out/z1_r5c_boot/boot.img
+  $ROOT/out/z1_ash_boot/boot.img
   $ROOT/out/z1_r41_final/boot.img
 )
 
