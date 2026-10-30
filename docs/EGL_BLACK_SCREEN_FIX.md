@@ -467,3 +467,73 @@ Z1_VERIFY=0 tools/flash_with_retry.sh android \
   - `init: Failed to bind socket 'pdx/system/vr/display/*'` —— A9 VR 服务，Z1 无此硬件，**正常噪声**。
 - 主会话"r5d/r5f 正常、r5i 黑屏"的属性对照表 —— 与我的实测一致（§1），
   但其中"p12_r2 属性为空"一条经穷举审计**不成立**（§2 更正 A'）。
+
+---
+
+## 9. 与并行提交 `docs/BLACK_SCREEN_ROOTCAUSE.md` 的裁决（重要）
+
+工作期间另一个 agent 提交了 `7131085`（`docs/BLACK_SCREEN_ROOTCAUSE.md`），
+断言根因是 **"r5h 改了 tag 却没提供 `libEGL_mesa.so` → `/lib/libEGL.so` 按
+`libEGL_<tag>.so` 拼名找不到驱动 → SF 崩"**，并建议"放回 `libEGL_mesa.so` + 修其 DRI 路径"。
+
+**该结论不成立**，理由三条（均可复现）：
+
+| # | 检验 | 结果 |
+|---|---|---|
+| 1 | **r5i 里有没有 `libGLES_mesa.so`？** | **有**（`/vendor/lib/egl/libGLES_mesa.so`, 94,488 B, inode 2604）。该文档的对照表只列了 `libGLES_mesa.so` **在 r5i 也存在**却未纳入推理，等于漏掉了真正的 EGL 提供者。 |
+| 2 | **loader 到底先找谁？** | `Loader.cpp::open()` 第 228 行 `load_driver("GLES", cnx, EGL\|GLESv1_CM\|GLESv2)` —— **先**找 `libGLES_<tag>.so`；命中则 `hnd` 已成立，**`load_driver("EGL")` 只是 `else` 分支，永远不会执行**。tag=mesa 时 `libGLES_mesa.so` **存在** → **第一分支命中 → `libEGL_mesa.so` 从头到尾不被加载**，它缺失不构成崩溃原因。 |
+| 3 | **上板实证加载的是哪个？** | 全量统计**本机所有 log** 的 `D libEGL : loaded ...` 行：**`libGLES_mesa.so` 81 次（分布在 18 个 log）**；`libEGL_mesa.so` **0 次**。见下方"天然实验"。 |
+
+而串口 log（§3.5）也**正面否证**了该结论：SF 每次崩前都在访问 `/dev/dri`（214 处），
+证明**驱动已装载**；若真是"驱动找不到"，`LOG_ALWAYS_FATAL_IF(!hnd, ...)` 会在
+碰 DRM **之前**就 abort（源码第 241 行），不会有任何 `/dev/dri` 访问。
+
+**正确的因果是**：mesa 栈**能装载、能起来**（`libGLES_mesa.so` 在位且承全部 API），
+**崩在初始化内部** —— 因为 `/lib/libglapi.so`(24.0.9, dispatch 表 1927)
+被 `/lib`→`/system/lib` 优先搜到，顶掉了 19.1.8 的 `/vendor/lib/libglapi.so`(1677)。
+
+**对修法建议的影响**：
+- `BLACK_SCREEN_ROOTCAUSE.md` 建议的"放回 `libEGL_mesa.so` + 修 DRI 路径
+  （造 `/usr/local/lib/dri -> /vendor/lib/dri` symlink）"**是无用的** ——
+  那个文件在 tag=mesa 下**根本不会被加载**（理由 2），放回去不改变任何行为。
+- **不需要** `libEGL_mesa.so`，**不需要**造 `/usr/local/lib/dri` symlink，**不需要**二进制 patch。
+- 唯一需要的动作：**删 `/lib/libglapi.so`**（r5k_final 已做）。
+- 该文档"上板前应做的基本静态检查：`ro.hardware.egl` 的值 ↔ `libEGL_<值>.so` 是否存在"
+  这条**检查方法本身就是错的** —— 正确的检查对象是 **`libGLES_<值>.so`**（第一分支），
+  以及**同名库在 `/lib` 与 `/vendor/lib` 下是否被顶替**（本次真正的坑）。
+  按它那个检查法做，`libGLES_mesa.so` 在位会被判"通过"，而真正的 `libglapi` 顶替
+  **照样漏过** —— 这正是 r5d→r5i 一路漏检的原因（§3.4）。
+
+> 附：两份文档不冲突的部分 —— "r5f 走 swiftshader 所以正常、r5i 走 mesa 所以暴露问题"
+> 这一层两边一致；分歧只在"崩在哪一步"。本报告的 `/dev/dri` 计数（214 vs 0）
+> 是区分二者的判决性证据。
+
+### 9.1 一个天然实验：`libEGL_mesa.so` 全机从未被加载过（决定性）
+
+`z1_r5_system/system.img.r5d_final` / `r5f_final` 的 `/vendor/lib/egl/` 里
+**同时有 `libEGL_mesa.so`（24.0.9）和 3 个 swiftshader 件，但 `libGLES_mesa.so` 不存在**。
+拿这套镜像上板（10-23~10-25 那批 log）时，属性是 `swiftshader`：
+
+```
+loaded /vendor/lib/egl/libEGL_swiftshader.so         38 次
+loaded /vendor/lib/egl/libGLESv1_CM_swiftshader.so   38 次
+loaded /vendor/lib/egl/libGLESv2_swiftshader.so      38 次
+```
+
+**注意：`libEGL_mesa.so` 就躺在同一个目录里、名字完全符合 `<kind>_<tag>` 拼法，
+但它一次都没被加载** —— 因为 tag 是 `swiftshader`，loader 拼的是 `libEGL_swiftshader.so`。
+
+全机合计（`mainline_recon/*.log` + `out/*.log`）：
+
+| 被加载的驱动 | 次数 |
+|---|---|
+| `libGLES_mesa.so` | **81** |
+| `libGLESv2_swiftshader.so` | 38 |
+| `libGLESv1_CM_swiftshader.so` | 38 |
+| `libEGL_swiftshader.so` | 38 |
+| **`libEGL_mesa.so`** | **0** |
+
+**结论**：`libEGL_mesa.so` 在本项目**全部上板历史里从未被加载过一次**。
+10-20 跑出 Mali400 靠的是 `libGLES_mesa.so`（81 次中的那些），
+`libEGL_mesa.so` 的存在与否**与能否出画面无关** —— 这直接否证了
+`BLACK_SCREEN_ROOTCAUSE.md` 的核心论断，也说明"放回它 + 修 DRI 路径"是空操作。
