@@ -16,7 +16,17 @@
 修法（置信度 **高**）：**删掉这一个文件**。产物 r5k_final 已验证。
 配套 boot.img `out/z1_r5c_boot/boot.img` 不变。
 
-**同时必须更正主会话给我的两处前提**（见 §2，有实测证据）——它们会误导后续判断。
+**2026-10-30 10:41 串口实测已正面证实本结论**（`mainline_recon/z1_uart921_20261030_104102.log`）：
+SurfaceFlinger 在 SIGABRT 死循环里反复崩（pid 6446→6585→6690→…→8410+，779 处 surfaceflinger、
+20+ 次 `received signal 6`），每次崩溃触发 `restart zygote` → 屏幕永远没内容。
+**关键：SF 每次崩之前都在访问 `/dev/dri`（214 处 `comm="surfaceflinger" ... name="dri"`），
+而历史上所有 swiftshader 期的 log 里这个计数是 0。**
+这证明 **mesa 驱动已装载成功并走到 DRM 初始化阶段** —— 若驱动找不到，
+`LOG_ALWAYS_FATAL_IF(!hnd, "couldn't find an OpenGL ES implementation")` 会在碰 DRM
+**之前**就 abort（见 §2-B1 源码）。即：**"驱动缺失"被排除，"装载后在初始化内部崩"被证实**，
+与 §3 的 dispatch 表尺寸不匹配完全吻合。
+
+**同时必须更正主会话给我的三处前提**（见 §2，有实测证据）——它们会误导后续判断。
 
 ---
 
@@ -41,9 +51,13 @@ r5h 干的事是"把属性切成 mesa + 补 p12 那套可用 mesa 19.1.8"——�
 
 **结论：这不是"r5i 相对 r5f 的显示回归"，而是"第一次真正尝试走 mesa 硬件路径"的首次上板。**
 
+**串口证据对这个对照组的补充**：新 log 里 SF 反复崩、且每次都先摸 `/dev/dri`；
+而 r5f/r5d 那套走 swiftshader 时**根本不碰 `/dev/dri`**（0 处）。这正是"r5d/r5f 走的是另一条路
+（软件渲染，不碰 DRM）"的独立佐证 —— 与属性对照表一致。
+
 ---
 
-## 2. 必须更正的两处前提（实测证据）
+## 2. 必须更正的三处前提（实测证据）
 
 ### 更正 A：p12_r2 的 `ro.hardware.egl` **不是空的，就是 `mesa`**
 
@@ -55,6 +69,50 @@ $ debugfs -R "cat /build.prop" out/A9_flashpkg_p12_r2/system.img | grep -n egl
 ```
 （同一条也在 `out/a9sys_r2/system_mainline.img:51`。该文件 mode 0600 root-only，
 普通 `grep` 报"权限不够"，我用 debugfs 直读绕开。）
+
+### 更正 A'：那个"属性为空但有 `libGLES_mesa.so`"的模型**在本机不存在**，且**不可能是 p12 的状态**
+
+主会话第二次给的表仍写"r5f/r5i 的 `ro.hardware.egl` 分别是 swiftshader/mesa"，同时说
+"p12_r2 的属性是空的、`/vendor/lib/egl/` 里只有 `libGLES_mesa.so`"。这两条**互相矛盾**，
+我用穷举审计裁决：**本机每个 system 镜像的 (属性, `/vendor/lib/egl` 内容) 都列出来了**：
+
+| 镜像 | `ro.hardware.egl` | `/vendor/lib/egl/` |
+|---|---|---|
+| `A9_flashpkg_p12_r2/system.img` | **`mesa`** | `libGLES_mesa.so` |
+| `A9_flashpkg_p12_r2_D4/system.img` | **`mesa`** | `libGLES_mesa.so` |
+| `a9sys_r2/system_mainline.img` | **`mesa`** | `libGLES_mesa.so` |
+| `z1a9_r2/system.raw.img` | **`mesa`** | `libGLES_mesa.so` |
+| `z1_r5_system/system.img.r5d/r5f_final` | `swiftshader` | `libEGL_mesa.so` + 3×swiftshader |
+| `z1_r5_system/system.img.r5h/r5i_final` | `mesa` | `libGLES_mesa.so` + 3×swiftshader |
+| `out/A9_p13/system_p13.img` | `swiftshader` | `libGLES_mesa.so` + 3×swiftshader |
+| `Z1_A9_CANDIDATES_*` (r1/r2/rollback_r9) | `swiftshader` | 3×swiftshader |
+
+**凡是装了 `libGLES_mesa.so` 的镜像，属性一律是 `mesa`（p12 系列 4 个无一例外）；
+本机没有任何一个镜像同时满足"属性空 + 只有 libGLES_mesa.so"。**
+
+而且这个"空属性"模型**在机理上也走不通**（与 §2-B1 的 loader 语义冲突）：
+
+- `load_driver("GLES")` 只走 `load_updated_driver()`，即
+  **`libGLES_` + `ro.hardware.egl` + `.so`** —— 属性为空时它先试 `libGLES_.so`
+  （或者说 `property_get` 返回 0 → 该 key 被跳过），**都失败 → 返回 NULL**；
+- 然后 `load_driver("EGL")` 同理需要 `libEGL_` + tag + `.so` / `libEGL.so`；
+  `load_driver("GLESv2")` 需要 `libGLESv2_` + tag + `.so` / `libGLESv2.so`。
+  注意 `MatchFile::find()` 里**根本没有 `libGLES.so` 这个拼法的字面量**
+  （`strings` 实测：`/vendor/lib/egl/lib` + `libGLES_android.so` + `_swiftshader.so` + `_emulation.so`，无 `libGLES.so`）；
+- 镜像里也没有 `/vendor/lib/egl/libGLES.so` 或 `libEGL.so`（审计已列），
+  更关键的是 **`libGLES_mesa.so` 是个完整 ELF，按 `<kind>_<tag>.so` 拼法只有 tag=mesa 能拼出它的名字**。
+- 所以"属性空"时三条 `load_driver` 全空 → `LOG_ALWAYS_FATAL_IF(!hnd, ...)` → **SurfaceFlinger 每次都会打印
+  `couldn't find an OpenGL ES implementation` 然后 abort**，**根本不可能**出现
+  10-20 log 里那 15 次 `vendor:lima / renderer:Mali400 / Mesa 19.1.8`。
+- **反证（tag 必须是 mesa 才拼得出这个文件名）**：10-20 的 log 里那两行
+  `Loading /vendor/lib/egl/libGLES_mesa.so` + `loaded /vendor/lib/egl/libGLES_mesa.so`
+  同时出现 **2 次 / 3 次**（`z1_android9_acm_20261019_221509_818916.log`、
+  `z1_android9_acm_20261020_180334_356207.log`，`grep -c` 实测）。
+  `load_updated_driver` 传的是裸名 `libGLES_mesa.so`，只有在
+  **`ro.hardware.egl=mesa`** 时才拼得出来 → **p12_r2 上板时属性必然是 `mesa`**。
+
+**结论：主会话"p12 属性为空"的这条应作废**（很可能是探查时踩了 `build.prop` 是 0600、
+普通 `grep` 报权限不够而误判成"空"）。**p12 就是 `mesa`，靠 `libGLES_mesa.so` 出画面。**
 
 ### 更正 B：p12_r2 **确实没有** `libEGL_mesa.so`，但**也不需要**它——它有 `libGLES_mesa.so`，
 而那个文件**本身就是完整的 Mesa EGL 驱动**（导出全部 `egl*` 入口）
@@ -179,6 +237,37 @@ MATCH f8420adaf32306b4  /lib/libglapi.so                                 ← r5h
 **没有查 `/lib/` 下的同名副本**。同一份文档 `MAIN_SESSION_VERIFY_NOTES.md:132` 也只列了
 `/vendor/lib/libglapi.so 173,184 B`。于是这个 379,112 B 的冒名顶替者一路混过 r5d→r5f→r5h→r5i。
 
+**注意 r5h 的脚本逻辑本身是对的**：它按"删掉 mesa24 全套、换上 mesa19 全套"来做，
+`libglapi.so` 的"两边同尺寸所以不动"是**在错误的假设下**得出的（假设两边指
+`/vendor/lib` 与 p12 的 `/vendor/lib`，而真正被落下的副本在 `/lib`）。
+所以这不是"脚本 bug"，是"审计清单漏了一个库目录"。
+
+### 3.5 铁证五（串口实测，2026-10-30 10:41）：SF 死在"已装载、正初始化"的阶段
+
+`mainline_recon/z1_uart921_20261030_104102.log` 给出两个决定性计数：
+
+| 计数项 | r5i（黑屏，mesa 路径） | 历史 swiftshader 期 log |
+|---|---|---|
+| `comm="surfaceflinger" ... name="dri"` | **214** | **0** |
+| `Service 'surfaceflinger' (pid N) received signal 6` | **20+**（pid 一直换） | 0 |
+| surfaceflinger 相关行 | 779 | — |
+
+**含义**：swiftshader 路径下 SF 完全不碰 DRM；r5i 下 SF 反复去开 `/dev/dri`
+然后 SIGABRT。结合 §2-B1 的 `LOG_ALWAYS_FATAL_IF(!hnd, "couldn't find an OpenGL ES implementation")`
+（**在碰 DRM 之前**就会 abort），可知：
+**驱动已经装载成功（否则走不到碰 DRM 那一步），崩溃发生在 mesa 初始化内部** ——
+与 §3.2 的 dispatch 表尺寸不匹配（1927 vs 1677）是同一个故事。
+
+**这条实测把"是不是驱动根本没找到"这个分支彻底排除了**，也使 §7-2 的风险项降级。
+
+日志类型说明（避免误读）：该 log 是**内核 + init 日志**（`dmesg`/串口），
+**不含 logcat 的 `libEGL` ALOGD 行**（那些走 logcat 缓冲）。所以"看不到
+`loaded /vendor/lib/egl/libGLES_mesa.so`"**不等于**驱动没装载 —— 判据应看
+"SF 有没有走到碰 `/dev/dri`"，本次是走到了。
+另注：该 log 里 `renderD128` **0 命中**，但那是因为内核/init 日志不打这条；
+`/dev/dri` 目录本身**确实存在**（`avc denied ... name="dri" dev="tmpfs" ino=85 tclass=dir`
+是"对已存在目录访问被拒"，permissive 下不阻断）。
+
 ---
 
 ## 4. 候选修法对比
@@ -248,6 +337,14 @@ Z1_VERIFY=0 tools/flash_with_retry.sh android \
 
 ### 判据（按序）
 
+> **判据 ⓪ 最重要（串口即可判，不必等 logcat）**：看 SF 是否**不再 SIGABRT 循环**。
+> ```sh
+> # 串口 921600 抓，或 dmesg
+> grep -c "Service 'surfaceflinger' .* received signal 6" <log>
+> ```
+> - **期望：0**（r5i 是 20+）。若归零且 zygote 不再被 `restart zygote` 拖着重启 →
+>   修复已生效，屏幕应出画面。**这是最省事、最硬的判据**（10-30 的 log 就是这么抓的）。
+
 **① 判据一：EGL 驱动装载（决定 mesa 有没有真起来）**
 ```sh
 logcat -d | grep -nE "libEGL|vndksupport" | grep -iE "mesa|loaded|dlopen|load_driver"
@@ -255,6 +352,8 @@ logcat -d | grep -nE "libEGL|vndksupport" | grep -iE "mesa|loaded|dlopen|load_dr
 - **期望**：`D libEGL  : loaded /vendor/lib/egl/libGLES_mesa.so`（正是 p12 那条）
 - 若出现 `load_driver(...): ...` 或 `couldn't find an OpenGL ES implementation` → mesa 仍未起，
   看 §分叉。
+- ⚠️ **必须用 logcat，不能用串口 dmesg 判这条** —— `libEGL` 的 ALOGD 走 logcat 缓冲。
+  10-30 那份串口 log 里查不到这行，**是日志通道问题，不是驱动没装载**（见 §3.5）。
 
 **② 判据二：SF 拿到的 renderer（决定"是不是真 GPU"）**
 ```sh
@@ -284,8 +383,9 @@ logcat -d | grep -oE "Davey! duration=[0-9]+ms" | sort -t= -k2 -n | tail -20
 
 | 现象 | 指向 | 下一步 |
 |---|---|---|
-| 仍全黑；logcat 有 `libEGL: loaded .../libGLES_mesa.so` + `renderer: Mali400` | mesa **已起来**，问题在**显示管线**（gralloc/hwcomposer/DRM commit） | 查 `dumpsys SurfaceFlinger \| head -40`（看是否 `Display 0 HWC`）、查内核 `[drm]`/`lima` 有无原子提交报错；**下一个单变量 = gralloc.z1/hwcomposer.z1 换回 p12 版**（这是 §5 提到的既有差异） |
-| 仍全黑；logcat **无** `loaded .../libGLES_mesa.so`，有 `load_driver(...)` 失败 | mesa 仍未装载 | 抓 `logcat -d \| grep -iE "EGL-MAIN\|dri\|renderD128\|dlopen"`；重点看 `/dev/dri/renderD128` 是否存在（历史 log 有 `EGL-MAIN: droid_open_device() Failed to open DRM device /dev/dri/renderD128` + 一条 SELinux `avc denied ... tcontext=u:object_r:gpu_device:s0 tclass=dir`，虽然当前 permissive 不拦，但**节点存不存在是另一回事**） |
+| **SF 不再 SIGABRT** 且出画面 | ✅ 修复成功 | 转 §判据④ 看帧耗时；再单独处理 GPU 时钟（R6） |
+| 仍全黑；logcat 有 `libEGL: loaded .../libGLES_mesa.so` + `renderer: Mali400`，SF 不再崩 | mesa **已起来且不再崩**，问题在**显示管线**（gralloc/hwcomposer/DRM commit） | 查 `dumpsys SurfaceFlinger \| head -40`（看是否 `Display 0 HWC`）、查内核 `[drm]`/`lima` 有无原子提交报错；**下一个单变量 = gralloc.z1/hwcomposer.z1 换回 p12 版**（§5 末的既有差异） |
+| SF **仍** SIGABRT 循环（`received signal 6` 计数没降） | 说明还有第二个"初始化期崩"的因 | 抓 `logcat -d \| grep -iE "EGL-MAIN\|dri\|renderD128\|dlopen\|libGLES_mesa"` + `grep -i abort` 看 tombstone；重点核 `/dev/dri/renderD128` 是否真存在（历史 log 有 `EGL-MAIN: droid_open_device() Failed to open DRM device /dev/dri/renderD128`）。**注意**：这条**不再是"驱动缺失"**（§3.5 已排除），而是"驱动起来了但拿不到 DRM 设备" |
 | SF 起来但 renderer = SwiftShader | `ro.hardware.egl` 没生效 | 核对 `/build.prop:51` 实为 `mesa`；查 `persist.sys.*` 覆盖 |
 | 开机进不了系统 / bootloop | 与本次改动无关（只删了一个非必需库） | 回刷 r5i_final 确认可复现，再单独查 |
 
@@ -302,17 +402,21 @@ Z1_VERIFY=0 tools/flash_with_retry.sh android \
 
 ## 7. 未决风险
 
-1. **本机没有任何 r5h/r5i/r5c 的上板 log**（最晚 10-25）。所以"r5i 黑屏"这个**现象本身**
-   我没有第一手 log 佐证，只有主会话口述 + 镜像静态取证。§3 的因果链是**静态+机理**推出来的，
-   强度很高（三项铁证互锁），但**"上板第一次就出画面"仍非必然** —— 见 §6 分叉表。
-   **需要什么证据**：刷 r5k 后一份完整 `logcat -d > x.log`。若它显示 `libGLES_mesa.so` +
-   `Mali400` 却仍黑，那就证明 §3 是"必要条件已满足但还有第二因"，需按 §6 分叉表第二行查。
+1. **本机没有 r5h/r5i 的 logcat**（10-30 10:41 那份是**内核/init 日志**，不是 logcat）。
+   所以 §3 的因果链靠静态取证 + 机理 + 这份内核日志的间接证据锁定，**强度高**，
+   但**"上板第一次就出画面"仍非必然** —— 见 §6 分叉表。
+   **需要什么证据**：刷 r5k 后一份完整 `logcat -d > x.log`（要看 `SurfaceFlinger: renderer` 那三行）。
+   **已不再需要**：证明"驱动有没有装载"—— §3.5 的 `/dev/dri` 计数（214 vs 0）已证明装载了。
 
-2. **`/dev/dri/renderD128` 是否真存在，仍未证实**。历史 log 里 `renderD128` 只以**打开失败**
-   的形式出现过（`droid_open_device() Failed to open DRM device`），`/dev/dri` 也是以
-   `avc denied ... name="dri"` 的形式出现。**这暗示节点当时不存在**。
-   但 p12 那 15 次是**真跑出 Mali400 的**，说明至少那时 mesa 能拿到设备。
-   **需要什么证据**：上板 `ls -l /dev/dri/` + `logcat -d | grep -c renderD128`。
+2. **`/dev/dri/renderD128` 是否存在，仍未证实**（这条是当前**最大的剩余不确定项**）。
+   §3.5 已证明 `/dev/dri` **目录存在**（`ino=85 tclass=dir`），但**目录里有没有 `renderD128` 节点**
+   仍未知。历史 log 里 `renderD128` 只以**打开失败**的形式出现过
+   （`EGL-MAIN: droid_open_device() Failed to open DRM device /dev/dri/renderD128`）。
+   **若节点不存在，mesa 会"装载成功但在初始化时崩"** —— 这与观测到的现象**同样吻合**，
+   所以**不能排除"删 libglapi 是必要但不充分"**。
+   **需要什么证据**：上板 `ls -l /dev/dri/`。
+   **注意**：若最终确认节点不存在，那是**内核/init 侧问题（归 R6，与本镜像无关）**，
+   而不是本次改动的缺陷。
    若不存在：这是内核/init 侧问题（**与本镜像无关，属 R6**），且它**会独立地让 mesa 失败** ——
    即"删 libglapi 是必要但不充分"的可能性**不能排除**。
 
@@ -353,3 +457,13 @@ Z1_VERIFY=0 tools/flash_with_retry.sh android \
 - 未刷写、未接触设备
 - 未在 `/tmp` 留大镜像（用完即删）；本次仅在 `/tmp` 做了只读挂载与文本比对，结束前已全部 umount
 - 备份纪律：`r5i_final` 本身就是带时间戳形态的公证基线，且已复制出 r5k 独立产物，原基线未覆盖
+
+**本次并入的外部证据（主会话提供，10-30 10:41 串口实测）**
+- `mainline_recon/z1_uart921_20261030_104102.log` —— 用作 §3.5 的"SF 已装载、正初始化时崩"
+  正面实证，以及 §1 对照组（swiftshader 不碰 `/dev/dri`）的旁证。
+  该 log 是**内核+init 日志**，不含 logcat；其中：
+  - `avc: denied { read/open } name="dri"`（SF/bootanim/allocator）—— permissive 下不阻断，**非本次因**；
+  - `[z1wifi] 6620_launcher never appeared in 120s; abort` —— **独立问题，与 GPU/EGL 无关**；
+  - `init: Failed to bind socket 'pdx/system/vr/display/*'` —— A9 VR 服务，Z1 无此硬件，**正常噪声**。
+- 主会话"r5d/r5f 正常、r5i 黑屏"的属性对照表 —— 与我的实测一致（§1），
+  但其中"p12_r2 属性为空"一条经穷举审计**不成立**（§2 更正 A'）。
