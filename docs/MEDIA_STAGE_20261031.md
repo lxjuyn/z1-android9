@@ -427,3 +427,57 @@ sudo bash out/z1_media_stage/deploy_media.sh
 | `out/z1_media_stage/SHA256SUMS` | 加 feature xml 一行（备份 `bridge_backups/SHA256SUMS.pre_tts_features_20261031_*`） |
 | `out/z1_r5_system/system.img.r5k_final.media.img` | 产出（大文件记 sha 不进 git；归档见 T3.2） |
 | 四件只读基线 | **零改动**（只读挂载/debugfs -R 取证） |
+
+# 归档归位与抽查复核（2026-10-31 归档复核员）
+
+## A1. 归位布局与 MANIFEST
+
+任务"小文件归位 out/z1_media_stage/{player,tts,gps,fm}/"执行结果（**源路径一律不动**：`deploy_media.sh` 仍引用 `stage/`、`src_los16/` 等，四目录是按线归位的归档副本，不影响已实跑验证的部署链）：
+
+| 目录 | 内容 | 件数 |
+|---|---|---|
+| `player/` | 出货 LOS16 三件 priv-app（Eleven 8,679,786B / Recorder 2,599,105B / AudioFX 3,014,629B）+ RS 支撑库 3 件（librsjni 59,984B / libRSSupport 1,730,048B / libblasV8 986,392B）+ `Eleven/lib/arm/librsjni.so` app-local 软链（→/system/lib/librsjni.so）+ los14 留档件 Eleven.apk 3,066,895B + 原厂备选 `src_factory/app/`（Music/MusicFX/SoundRecorder 及 odex） | 13 文件 + 1 软链 |
+| `tts/` | PicoTts.apk 23,379B + libttspico.so 240,572B + libttscompat.so 22,324B + 12 语音 bin（6,383,884B）+ z1-media-features.xml 1,158B | 16 文件 |
+| `gps/` | **自 `gps_libs/` 迁名**（grep 全工作区脚本零引用 gps_libs，迁名无损）：8 qcom loc 库 + qmi 五件套 + gps.msm8960.so + 2 件 r5k 对照（gps.default.so.FROM_r5k.img / mnld.FROM_r5k.img）+ SHA256SUMS | 17 文件 |
+| `fm/` | 原位未动：factory_4.4/ + los14_7.1/（六小件+固件组）+ FM_PLAN_20261031.md + FM_MATERIALS.sha256 | 33 文件 |
+
+- **MANIFEST**：`out/z1_media_stage/MANIFEST.sha256`（79 件逐件 sha256 + 大文件注释区；79 = 四目录**纯文件**数 13+16+17+33，软链 1 条不参与 sha 校验、在 ls 回读中单独列出）。回读校验 `cd /home/lxj/claude/6572/out/z1_media_stage && sha256sum -c MANIFEST.sha256` → **79/79 OK，exit=0**（LC_ALL=C，本会话实跑两遍）。
+- `ls -R player tts gps` 回读：布局与上表一致（本会话实跑）。
+- 磁盘：归位前 df `/`=3.0G 可用，归位后仍 3.0G（新增约 30MB，未越 2.8G 红线口径内的"只收小文件"约束；四目录小文件合计 ≈52MB<100MB）。
+
+## A2. 大文件（只记路径+sha，2026-10-31 本机实测）
+
+| sha256 | 字节 | 路径 | 角色 |
+|---|---|---|---|
+| `b567885796eae85d…802ba1be` | 943,718,400 | `out/z1_r5_system/system.img.r5k_final` | **只读基线**（与播放器线记录一致=零改动实证） |
+| `35616bfd23320b32…a44fd1af` | 943,718,400 | `out/z1_r5_system/system.img.r5i_final` | 只读基线 |
+| `96f00d03265add4b…2180535da7` | 6,209,536 | `out/z1_r5c_boot/boot.img` | 只读基线 |
+| `9f729189667ff59d…1a67b18` | 6,215,680 | `out/z1_ash_boot/boot.img` | 只读基线 |
+| `c0a9cf172c2c362a…99ed8579` | 943,718,400 | `out/z1_r5_system/system.img.r5k_final.media.img` | r5k 谱系部署产物（与 TTS 线记录一致；归档 `bridge_backups/products/products_media_r5k_20261031_0151/`） |
+| `2dd41702e839ec25…578eaab5` | 6,291,456 | `1/boot.img` | 原厂回滚件 |
+
+另有历史镜像 `out/z1_r5_system/system.img.r5_final` / `r5f_final`（非本轮谱系，只记路径，sha 未测）。
+
+## A3. 抽查复核（任务点名两项 + 顺带对账，**结论：零不一致**）
+
+**① GPS 库 arm32 判定（自己 readelf，非引用原结论）**：对 `gps/` 全部 16 件（14 so + 2 r5k 对照件）双法实测——
+- 法1 `LC_ALL=C readelf -h`：**16/16 全 ELF32 / ARM / 2's complement little endian**（初跑 awk 按英文标签取值为空，系 readelf 中文 locale 输出，LC_ALL=C 重跑修正，非文件问题）；
+- 法2 `file`：16/16 全 `ELF 32-bit LSB shared object, ARM, EABI5`。
+- sha 前缀对账：`gps/` 14 件归位副本 sha 前缀与 GPS 线原结论 **14/14 逐件相同**（1252b4bf/3a453b37/a95ad678/01217e49/0202f320/1a2645ee/72f5f15e/b3684233 + qmi 五件 cd6aa857/c591ad3d/1b04cdb9/5704bb3d/6b4c87a3 + gps.msm8960 7ff01d1a）。
+
+**② Eleven native 架构（自己 unzip -l）**：
+- los14 件 `player/src_los14/priv-app/Eleven/Eleven.apk`：**137 files，lib/ 条目 0**——与播放器线原结论"unzip -l 全 137 files 无 lib//.so"逐字一致；
+- LOS16 出货件 `player/Eleven/Eleven.apk`：**326 files，lib/ 条目 0**——原结论未显式声明出货件 APK 内部是否内置 native 库，本轮补全：**出货件同样零内置 .so**，RS 依赖全落在平台侧（/system/lib 三件支撑库已随层部署 + app-local 软链），与部署方案自洽，**非矛盾，属补全**；
+- 顺查 Recorder.apk（lib/ .so = 0）与 AudioFX.apk（无 lib/ 条目）：均零内置 native。
+
+**③ 其余对账（全过）**：源件↔归位副本双侧 sha **11/11 一致**（Eleven/Recorder/AudioFX/RS 三件/los14 件/PicoTts 三件/feature xml，前缀 6baeab02、daef2594、bbc064d0、292b42b3、a60081a3、3c4fef35、60ecd69d、94d7232e、784d928e、309dbb4c 全与原结论相合）；12 语音 bin 用同构方法（`cd <lang_pico> && LC_ALL=C sha256sum *.bin | sha256sum`）三侧（归位 tts/、stage/、los14 源树）复合 sha **同为 `12aa46c2df6219ad`**，且逐件 diff 12/12 一致——注意首次用"含路径的 find 复合"算法得到三值不同纯属**算法不同构**（路径不同必不同值），不是数据差异，已用同构法排除。
+
+## A4. r5k 谱系部署注意（合批必读）
+
+1. **主命令**：`sudo bash out/z1_media_stage/deploy_media.sh` → 产出 `out/z1_r5_system/system.img.r5k_final.media.img`（943,718,400B）。DEF_IN 已钉 r5k_final，BASELINE 四件硬拒绝（r5k_final/r5i_final/`out/z1_r5c_boot/boot.img`/`out/z1_ash_boot/boot.img`）——**四件只读基线全程零写入**（本轮 df/sha 复证 r5k_final 未动）。
+2. **system-as-root 路径**：r5k 镜像系统库在 `/lib`（非 `/system/lib`）、应用在 `/app`、`/priv-app`；部署落位表见播放器线 §5/TTS 线 T3.2，全部按 debugfs 实测 Inode 断言过，勿按传统 AOSP 路径想当然。
+3. **SELinux 标签**：新件统一 `u:object_r:system_file:s0`（邻件 getfattr 实测），`/vendor/etc` 两件为 `vendor_configs_file`；软链不打 xattr（permissive 下无害）。
+4. **镜像字节不重现**：每次从输入重 cp+mount rw 变 superblock/日志，两次生成 sha 不同是预期；合批流程以**文件层回读断言**为准（脚本自检链：素材 sha→xattr 回读→内容回读→权限断言→e2fsck -fn clean）。
+5. **刷写**（本轮未执行，不碰设备）：`Z1_VERIFY=0 tools/flash_with_retry.sh android out/z1_r5_system/system.img.r5k_final.media.img <回滚件> 8`；回滚兜底 `1/boot.img`（sha `2dd41702…`）。
+6. **上板顺序纪律**：**先验音频出声（audio.primary.mt6572.so 是 mixer_ 命中 0 的 PoC），再验播放器/TTS/录音**；FM 卡内核 /dev/fm 整层缺失属另立工程（FmPlan 章）；GPS 项零部署、只上板验证（gnss service/mnld//dev/gps）。
+7. **git**：本报告与 `MANIFEST.sha256` 副本提交 `z1a9_gpt`（=lxjuyn/z1-android9）；四目录小文件与大镜像**不进 git**（大文件走路径+sha）。
