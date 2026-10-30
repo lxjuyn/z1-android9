@@ -211,6 +211,10 @@ if [ "$DO_TTS" -eq 1 ]; then
   for v in en-US_lh0_sg.bin en-US_ta.bin en-GB_kh0_sg.bin en-GB_ta.bin; do
     put "tts/lang_pico/$v" "/tts/lang_pico/$v" 0644
   done
+  # 2026-10-31: feature 声明（audio.output + software.tts）——r5k 的 /etc/permissions
+  # 24 件里两者均未声明（grep 实测 0 命中）；不搬 handheld_core_hardware.xml 全集
+  # （会连带声明 camera/compass 等不存在的 feature）。
+  put etc/permissions/z1-media-features.xml /etc/permissions/z1-media-features.xml 0644
 fi
 
 # ---- D. media_profiles ----
@@ -249,7 +253,8 @@ if [ "$DO_TTS" -eq 1 ]; then
 /tts/lang_pico/en-US_lh0_sg.bin	u:object_r:system_file:s0	同上
 /tts/lang_pico/en-US_ta.bin	u:object_r:system_file:s0	同上
 /tts/lang_pico/en-GB_kh0_sg.bin	u:object_r:system_file:s0	同上
-/tts/lang_pico/en-GB_ta.bin	u:object_r:system_file:s0	同上"
+/tts/lang_pico/en-GB_ta.bin	u:object_r:system_file:s0	同上
+/etc/permissions/z1-media-features.xml	u:object_r:system_file:s0	邻:/etc/permissions/platform.xml 实测（r5k 2026-10-31）"
 fi
 [ "$DO_PERF" -eq 1 ] && LABELS="$LABELS
 /vendor/etc/media_profiles_V1_0.xml	u:object_r:vendor_configs_file:s0	邻:/vendor/etc/media_codecs.xml 实测"
@@ -335,6 +340,7 @@ if [ "$DO_TTS" -eq 1 ]; then
   expect /lib/libttspico.so       a60081a3d4166e491999823ed4bfcd41d34a7764ed3afbfd199d9933390855ba "TTS"
   expect /lib/libttscompat.so     3c4fef35fffeab87217178af030c387a3029e1b4b68b9949ba3b08fa487e6788 "TTS"
   expect /tts/lang_pico/en-US_lh0_sg.bin d6946526696d9eb085f7b23b1fbdf7a9986caca658b645e9eb73c6514fd4789d "TTS语音"
+  expect /etc/permissions/z1-media-features.xml 60ecd69dd3669bd59d21da8e42f392b62b7a0f4055ed982392c08653cda9c3aa "TTS feature"
 fi
 [ "$DO_PERF" -eq 1 ] && expect /vendor/etc/media_profiles_V1_0.xml f698f4c4bbdcf34e6503c69b3b49d74f67fdb2b73d3fb799e91b10105c80657c "media_profiles"
 

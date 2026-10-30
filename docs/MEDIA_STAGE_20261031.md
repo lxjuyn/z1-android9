@@ -310,3 +310,120 @@ Z1_VERIFY=0 tools/flash_with_retry.sh android <产物> <上一块已验证 syste
 | `out/MEDIA_STAGE_20261031.md` 播放器线章（本章） | 新增 |
 | `z1a9_gpt/scripts/media_deploy/{deploy_media.sh,SHA256SUMS}` + 本章副本 | git 提交（仅脚本/校验和/文档，无二进制） |
 | 四件只读基线 | **零改动**（§6.2 证据） |
+
+# TTS 线（TtsPlan）— 2026-10-31
+
+任务：los14 PicoTts 全套逐件盘点 → A9 兼容双验证 → r5k 谱系部署方案（含无网备选）。
+接手半成品 `out/z1_media_stage/{stage,SHA256SUMS,deploy_media.sh}`（不推倒重来）；fm/、jfltexx GPS 归 GPS/FM 线，本章未动。
+
+## T0. TTS 结论速览
+
+| # | 结论 | 证据 |
+|---|---|---|
+| 1 | PicoTts 全套 16 件（1 apk + 2 so + 12 语库）盘点完成，stage 血统与 los14 源树逐字节一致，全套 ≈6.67 MB | §T1 两法比对 |
+| 2 | **A9 兼容成立（三面闭合）**：机制层/DEX 层/native 层；**不必须 priv-app，/app 即可** | §T2 |
+| 3 | system_server（7.1 与 A9 皆然）不承担 TTS 引擎发现/绑定——引擎扫描是 app 进程内 Intent 扫描 | §T2.1 双镜像 services.jar 零命中对照 |
+| 4 | PicoTts dex 自带 `com.android.tts.compat.{CompatTtsService,SynthProxy}` 类定义 → A9 上无 framework hidden 依赖 | §T2.2 dex class_defs 解析 |
+| 5 | r5k 依赖零缺失：两 so 的 NEEDED 去重 11 个平台库全部在位 | §T2.3 debugfs 逐一 stat |
+| 6 | feature 声明缺口补齐：新增 `/etc/permissions/z1-media-features.xml`（audio.output + software.tts）并已随本轮实跑入镜像 | §T3.2 |
+| 7 | 部署实跑落地：r5k_final → `system.img.r5k_final.media.img`，sha `c0a9cf17…`，e2fsck clean + 双路回读一致 | §T3.2 |
+| 8 | 中文 TTS 仍不可能（维持上轮三重证据），英文离线 TTS 可交付 | §T1/上轮报告 |
+
+## T1. los14 PicoTts 全套逐件盘点
+
+源树 `/home/lxj/claude/6572/los14/`（LOS14 = Android 7.1）。16 件 sha256 全部本机实算：
+
+**引擎三件**（los14/system/ 下）：
+
+| 路径 | 大小 B | sha256（前16） |
+|---|---|---|
+| app/PicoTts/PicoTts.apk | 23,379 | `292b42b38cfb5ad7` |
+| lib/libttspico.so | 240,572 | `a60081a3d4166e49` |
+| lib/libttscompat.so | 22,324 | `3c4fef35fffeab87` |
+
+**语音数据 tts/lang_pico/（12 .bin，合计 6,383,884 B）**：de-DE_gl0_sg `39147b81…` / de-DE_ta `df29282…` / en-GB_kh0_sg `8f9f5d13…` / en-GB_ta `57998f64…` / en-US_lh0_sg `d6946526…` / en-US_ta `3a2a4d23…` / es-ES_ta `b18c60ba…` / es-ES_zl0_sg `82e724d3…` / fr-FR_nk0_sg `85e2d63c…` / fr-FR_ta `d9da5eb3…` / it-IT_cm0_sg `c48be4dc…` / it-IT_ta `9b243c34…`（六语系，无中文——与上轮报告三重证据一致）。
+
+**血统两法**：① 三主件 sha 与 stage 逐项相同；② 12 .bin 目录级 sha256（`(cd 源 && sha256sum *.bin) | sha256sum`）los14 与 stage 同为 `12aa46c2df6219ad…`。
+
+## T2. A9 兼容双验证
+
+### T2.1 TtsEngines 机制在 A9 未变（两法）
+
+- **法1（AOSP 源码知识）**：TTS 引擎发现/绑定不经过 system_server——framework 的 `TextToSpeech`（app 进程）用 `Intent("android.intent.action.TTS_SERVICE")` 枚举 + bindService 直连引擎；`initTts()` 顺序：显式引擎 → `Settings.Secure.TTS_DEFAULT_SYNTH`（键名 `tts_default_synth`）→ 第一引擎兜底。
+- **法2（双镜像实证）**：r5k A9 `boot-framework.vdex`（18,980,788 B）grep：`android/speech/tts/TextToSpeech`×28、`TextToSpeechService`×19、`TTS_SERVICE`×1、`tts_default_synth`×1——**framework 侧 API 与设置键全在**。system_server 侧：r5k `services.jar` classes.dex（9,037,564 B）`com/android/server/tts/`、`TtsEngines`、`TextToSpeechManagerService` **零命中**（grep 有效性以 PowerManagerService 命中对照）；**los14 7.1 的 services.jar 同样零命中**——两代一致，"未变"不靠记忆。
+- **native 路径**：`strings libttspico.so` 硬编码 `/system/tts/lang_pico/`——部署落位即命中，与 AOSP Pico 约定一致。
+
+### T2.2 hidden 类依赖（本轮排掉的最大风险）——APK 自带
+
+PicoTts dex 引用 `Lcom/android/tts/compat/{CompatTtsService,SynthProxy};`。三重证据定案自带：
+1. dex `class_defs` 解析（python 实跑，13 类）：两类**在类定义表**，与 `com.svox.pico.*` 9 类全自带；
+2. los14 `framework.jar` dex（10,169,524 B）grep `Lcom/android/tts/compat/` = 0——7.1 framework 不提供，能跑的唯一来源是自带；
+3. r5k `boot-framework.vdex` grep 同串 = 0——A9 与 7.1 行为一致。
+
+### T2.3 native readelf + 依赖在位
+
+`readelf -h`：两 so 均 **ELF32 LSB ARM EABI5**，interpreter `/system/bin/linker`，stripped。`readelf -d` NEEDED：libttspico.so = libcutils/libexpat/libutils/liblog/libc++/libdl/libc/libm；libttscompat.so = libandroid_runtime/libnativehelper/libmedia/libutils/libcutils/liblog/libdl/libc++/libc/libm。**r5k 11 个库名逐一 `debugfs -R stat /lib/<so>` 全部 regular 0644 在位**（libc++ inode 255、libexpat 50、libutils 70、libcutils 149、liblog 473、libmedia 107、libandroid_runtime 464、libnativehelper 76、libdl 19、libc 158、libm 260）——上轮担心的 `libc++.so` 问题在 r5k 闭环。
+
+APK：`parse_axml.py` 解 manifest = **minSdk/targetSdk 25**（≤28 向前兼容）、package `com.svox.pico`、service `.PicoService`（TTS_SERVICE + tts_lang categories eng/GBR/USA/deu/fra/ita/spa）。
+
+### T2.4 priv-app 必要性 —— 不必须，/app 即可
+
+1. 机制（AOSP 知识）：TTS 引擎只需 `FLAG_SYSTEM`（/app 与 /priv-app 均置位）；"默认引擎必须系统引擎"校验位于 system_server 的 TtsEngines——r5k 实测无此类（T2.1），该层校验在目标镜像上不存在。
+2. 权限面（manifest 实测）：uses-permission 全集仅 `DELETE_PACKAGES`（signature）+ `WRITE_EXTERNAL_STORAGE`（dangerous），**无 privileged 级** → 不触发白名单强制；r5k 两份 privapp-permissions*.xml grep `svox` 均 0 条（实测）。
+3. 先例：los14 出厂在 `/system/app/PicoTts`；Z1 原厂 4.4 在 `/app/PicoTts.apk`。
+
+**未确定**：PicoTts.apk 证书与 r5k platform 同钥与否未验；若异钥，`DELETE_PACKAGES`（signature）被拒——仅影响语音包安装/卸载辅助（Z1 无市场场景），**不影响合成主链**。
+
+### T2.5 离线性
+
+dex 无任何网络字符串（`http|INTERNET|socket|url.open` grep = 0）；数据全在 system 分区。小坑复核：引擎引用 6 个 `*_utpp.bin` 用户词表 los14 未随包、`/sdcard/svox/` 用户词表路径 Z1 无外置存储——均为 log 级告警，不影响合成（12 主数据 sg/ta 齐全，so 内 locale 表 24 处命中与 .bin 一致）。
+
+## T3. r5k 谱系部署方案
+
+### T3.1 r5k 现状（本轮只读取证）
+
+`debugfs`（只读）+ sudo ro 挂载于 `system.img.r5k_final`（943,718,400 B，只读铁律件，播放器线 §6.2 录 sha `b5678857…`）：`/tts`、`/app/PicoTts`、`/lib/libttspico.so`、`/lib/libttscompat.so` **全不存在**（stat → `File not found by ext2_lookup`，对照件 `/lib/libc++.so` 命中排除语法误判）；`/etc/permissions` 24 件**无 handheld_core_hardware.xml、无 audio.output/software.tts 声明**；标签邻件（getfattr）：`/lib`、`/app`、`/app/Terminal`、`/lib/libRS.so`、`/priv-app/Settings/Settings.apk`、`/etc/permissions/platform.xml` = `system_file`，`/vendor/etc/audio_policy_configuration.xml` = `vendor_configs_file`——与播放器线 §5.1 表一致，双会话互认。
+
+### T3.2 落位表 + 本轮实跑（不是纸面方案）
+
+TTS 组件（脚本 C 段；目录 0755，文件 0644，root:root）：
+
+| 镜像内路径 | 标签 | 依据 |
+|---|---|---|
+| `/app/PicoTts/PicoTts.apk` | system_file | 邻 `/app/Terminal` 实测 |
+| `/lib/libttspico.so`、`/lib/libttscompat.so` | system_file | 邻 `/lib/libRS.so` 实测 |
+| `/tts/lang_pico/{en-US_lh0_sg,en-US_ta,en-GB_kh0_sg,en-GB_ta}.bin` | system_file | `plat_file_contexts:45 /system(/.*)?`；A9 sepolicy 无 tts_file（上轮 0 命中） |
+| `/etc/permissions/z1-media-features.xml`（**本轮新增**，1,158 B，sha `60ecd69dd3669bd5…`） | system_file | 邻 platform.xml 实测 |
+
+z1-media-features.xml 声明 `android.hardware.audio.output`（格式照抄 los14 handheld_core_hardware.xml:26）+ `android.software.tts`；**不搬 handheld 全集**（会连带声明 camera/compass 等不存在的 feature）。注：los14 全树 grep `android.software.tts` = 0——7.1 出厂同样不声明，此行是超出 los14 基线的增强而非对齐项。`/etc/public.libraries.txt` 追加维持上轮"可选保险"定位，未实施（先例：base 出厂 Eleven 同样依赖 /lib 下非 public 的 librsjni.so）。
+
+**实跑（2026-10-31 01:51，全量 A+B+C+D，在播放器线脚本修正之上叠加 feature 三处）**：
+
+```
+sudo bash out/z1_media_stage/deploy_media.sh
+→ 输出 out/z1_r5_system/system.img.r5k_final.media.img（943,718,400 B）
+  sha256 c0a9cf172c2c362a0dfc0ce9267c250d262a2d2f55831fc9086b5afc99ed8579
+```
+
+- 脚本自检链：素材 sha256 -c 23 项成功 → 23 条 xattr 写入回读 → **13 项内容回读全 OK**（TTS 6 项含 feature xml）→ 权限断言无异常 → e2fsck -fn clean；
+- **独立复核（不依赖脚本断言）**：`debugfs stat` 六 TTS 件 Inode 2681/2682/2683/2685/2688/2689 全 Mode 0644；`debugfs cat` feature xml 内容读回一致；
+- 归档 `bridge_backups/products/products_media_r5k_20261031_0151/`（硬链）；输入备份 `bridge_backups/system.img.r5k_final.pre_media_20261031_015115.bak`；
+- 与播放器线 §6.2 轮 1（/tmp 测试轮，22 条 xattr/12 项回读）差值恰为 feature xml 一件——两轮互证幂等框架稳定。
+
+**上板验收（本轮未刷、不碰设备）**：`settings get secure tts_default_synth`（期望 `com.svox.pico`；为空时 TextToSpeech 走第一引擎兜底）+ `am start -a android.speech.tts.engine.CHECK_TTS_DATA -n com.svox.pico/.CheckVoiceData` + 日志 grep `pico`。**前置纪律（继承上轮）：先验音频出声再判 TTS——audio.primary.mt6572.so 是 mixer_ 命中数 0 的 PoC，TTS 的 PCM 落不到喇叭时失败是静默的。**
+
+### T3.3 备选方案（无网环境）
+
+- **备选 A（主方案即是）**：引擎+数据全预置 system 分区，零网络依赖（T2.5 实证）——无网不是障碍是默认状态。
+- **备选 B（设备侧手工）**：root shell `mount -o remount,rw /system` 后按 T3.2 表 `cp + chown 0:0 + chmod 644` + 标签同表执行；无幂等/回读断言，仅单板应急。
+- **备选 C（不可行，留证）**：apk 走 `adb install` 进 /data、不动 /system——引擎 native 硬编码 `/system/tts/lang_pico/`（T2.1），数据缺失则 CheckVoiceData 失败、引擎初始化失败；数据无法绕开 system 分区。
+
+### T3.4 TTS 线文件改动
+
+| 路径 | 动作 |
+|---|---|
+| `out/z1_media_stage/stage/etc/permissions/z1-media-features.xml` | **新增**（1,158 B，sha `60ecd69d…`） |
+| `out/z1_media_stage/deploy_media.sh` | C 段 put / LABELS / expect 三处补 feature xml（改前备份 `bridge_backups/deploy_media.sh.pre_tts_features_20261031_*`） |
+| `out/z1_media_stage/SHA256SUMS` | 加 feature xml 一行（备份 `bridge_backups/SHA256SUMS.pre_tts_features_20261031_*`） |
+| `out/z1_r5_system/system.img.r5k_final.media.img` | 产出（大文件记 sha 不进 git；归档见 T3.2） |
+| 四件只读基线 | **零改动**（只读挂载/debugfs -R 取证） |
