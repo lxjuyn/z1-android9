@@ -1,4 +1,43 @@
-# 黑屏根因确认（2026-10-30，串口实证）
+# ⚠️ 本文档的根因判断已被推翻 —— 请以 out/EGL_BLACK_SCREEN_FIX.md 为准
+
+**更正时间：2026-10-30（同日晚，eglfix agent 提出反证后主会话复核确认）**
+
+本文档原判定"r5h 改了 tag 却没提供 `libEGL_mesa.so` → 找不到驱动 → SF 崩"。
+**该链条第一环就是错的**，三条可复现证据：
+
+1. **A9 的 loader 先找 `libGLES_<tag>.so`，命中即不再加载 `libEGL_mesa.so`**
+   （`Loader.cpp::open()`：`dso = load_driver("GLES", ...)` 成功则 `load_driver("EGL", ...)`
+   只是 else 分支、永不执行）。
+2. **`libGLES_mesa.so` 本身就是完整的 Mesa EGL 驱动** —— 主会话实测它导出 **44 个 `egl*` 入口**
+   （`eglGetDisplay` / `eglInitialize` / `eglCreateContext` / `eglSwapBuffers` 全在）。
+   它在 r5i 里**是在的**（94,488 B），本文档的对照表漏掉了它。
+3. **`libEGL_mesa.so` 在本项目整个上板历史上从未被加载过一次**
+   （全库 log 统计：`libGLES_mesa.so` 加载 81 次 / 18 个 log；`libEGL_mesa.so` **0 次**）。
+   → 放回它、修它的 DRI 路径、造 `/usr/local/lib/dri` symlink **全是空操作**。
+
+**串口实证进一步正面排除"驱动没装载"**：
+`LOG_ALWAYS_FATAL_IF(!hnd, "couldn't find an OpenGL ES implementation")` 在碰 DRM **之前**就 abort，
+而 r5i 的 log 里 `comm="surfaceflinger" + name="dri"` 计数 **406 次**
+（swiftshader 期 log 全部 **0 次**）→ 驱动装载成功、已走到 DRM/mesa 初始化，崩在**内部**。
+
+**因此本文档下面"修复方向"里建议的检查法（`ro.hardware.egl` ↔ `libEGL_<值>.so`）也是错的**：
+应查 `libGLES_<值>.so`，且**要查同名库是否在 `/lib` 与 `/vendor/lib` 之间被顶替**（这次真正的坑）。
+
+---
+
+## 真正的根因（正确版，见 out/EGL_BLACK_SCREEN_FIX.md）
+
+镜像里遗留了一份 **Mesa 24.0.9** 的 `/lib/libglapi.so`（379,112 B），
+它按 soname 抢在 `/vendor/lib/libglapi.so`（Mesa 19.1.8，173,184 B）之前被解析，
+把 GLES 的 dispatch 表尺寸从 **1677 撑成 1927** → mesa 初始化早期崩 → EGL 装载失败 → SF SIGABRT → 黑屏。
+
+**修法：删掉那一个文件**（产物 `out/z1_r5_system/system.img.r5k_final`）。
+
+---
+
+# （以下为已被推翻的原始分析，保留供追溯）
+
+# 黑屏根因分析（原始版，已推翻）
 
 ## 结论（100% 确认）
 
