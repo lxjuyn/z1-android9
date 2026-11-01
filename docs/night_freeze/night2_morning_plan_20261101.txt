@@ -1,0 +1,68 @@
+# 首渲染冻结 —— 夜间裁决员修复/取证执行单（2026-11-01 深夜产出，明早按序执行）
+# 前置: CH340 直插主板后置 USB（hub 下挂 error -71 坑，LIVEPROBE_DEVICE_OFFLINE_20261101.md 实录），
+#       Z1_CAPTURE_BAUD=921600，先起 mtkclient/抓包脚本再上电。设备正常开机后拔下载线。
+# 配套判决书: out/night_freeze/VERDICT_FREEZE_20261101.md
+# 对 config_fix.txt（实验A）的修正: 见本文件 §5 —— 实验 A 已冗余，勿重编重刷。
+
+## 0. 零刷写取证（最先，~10 分钟，决定 R1 微观挂点）
+控制台 uid 2000 + loglevel7 洪水 → 全部走"写文件两步法"（先 heredoc/echo 落 /data/local/tmp，
+再 sh 执行，输出重定向文件后 cat 截段拉回）。
+  a) 栈取证（三个进程各一份）:
+     for p in $(pidof surfaceflinger) $(pidof zygote) $(pidof bootanim) $(pidof vendor.gralloc-2-0) $(pidof vendor.hwcomposer-2-1); do
+       for t in /proc/$p/task/*; do echo "== $p $(cat $t/comm) wchan=$(cat $t/wchan)"; cat $t/stack 2>/dev/null | head -12; done
+     done > /data/local/tmp/stacks.txt 2>&1
+  b) debuggerd（userdebug 可用; 若挂起进程 ptrace 失败则用 kill -QUIT 触发 tombstone）:
+     debuggerd -b $(pidof surfaceflinger) > /data/local/tmp/sf_bt.txt 2>&1
+     debuggerd -b $(pidof zygote)       > /data/local/tmp/zy_bt.txt 2>&1
+  c) binder 侧: cat /proc/binder/proc/$(pidof surfaceflinger) 与 $(pidof vendor.gralloc-2-0) > /data/local/tmp/binder.txt
+     cat /sys/kernel/debug/binder/failed_transaction_log 2>/dev/null >> 同文件
+  d) SF 自述: head -c 65536 /cache/z1diag/sf.txt 拉回; ls /data/tombstones/ （zygote 若反复退必留痕）
+  e) 判读矩阵:
+     - 栈顶在 ashmem_ioctl/ashmem_mmap/ashmem 页 fault(-down_read mmap_sem, D 状态) → R1(a) 内核侧, 进入 §3 补丁线
+     - 栈顶在 binder_thread_read/ioctl(BINDER_WRITE_READ), 对端 allocator 栈在 gralloc 内部 → R1(b)/(c) 分侧定案
+     - 栈顶在 gralloc 的 fb ioctl(FBIOPAN_DISPLAY)/sync_wait(fence) → R1(c) payload gralloc, 进入 §4 payload 线
+     - zygote 栈在 ART heap/ashmem/futex → R2 与 R1 同源性判定; /data/tombstones 有 ART abort → 读 abort message
+     - 栈顶在 futex_wait 与 marl/Subzero/llvmpipe 符号 → R5 升级, 走实验 4
+
+## 1. 旁路实验（零刷写零重编，各 ~3 分钟，可逆）
+  A) 让 SF 走 fbdev fallback（复刻 10-20 之前时代的通路）:
+     setprop ctl.stop vendor.hwcomposer-2-1; setprop ctl.restart surfaceflinger
+     预期: SF getService 失败→HWComposer fbdev 路径。若 bootanim 动/桌面出 → 卡点锁定 HWC2/allocator 路径
+     （R1(a)/(b) 加重，且此即降级通路候选）; 若依旧冻 → 卡点在更底层(分配/传输)。
+     回退: setprop ctl.start vendor.hwcomposer-2-1; setprop ctl.restart surfaceflinger
+  B) 观察与 A 串联的 allocator 行为: stop vendor.gralloc-2-0 后 SF 若 FATAL 属预期（P 侧可能无 fallback），
+     仅作信息点，不作为修复。回退: setprop ctl.start vendor.gralloc-2-0。
+
+## 2. 内核 A/B 决定性实验（一次刷写，~15 分钟，R1/R3/R4 仲裁）
+  刷桌面世代内核 + 现行 system 不动:
+    tools/flash_with_retry.sh bootimg out/boot_r2_p13.img /home/lxj/claude/6572/1/boot.img 8
+  （out/boot_r2_p13.img = #110 内核 + p13 ramdisk，6,170,624B，sha256 63d2c7d2…，
+    initrd-end 0x842dc5ab 配对已在 out/PACKAGE_NOTE_a9_p13.md §3 验过）
+  判读:
+    - 到桌面/过 bootanim → 内核无辜，R4 升级为头号 → payload 线（§4）；随后再刷 #113 boot 验证可复现挂，闭环。
+    - 同点冻结 → 内核侧实锤（R1(a)/R3）→ bisect: 以 ash_113.config 为底，先关
+      CONFIG_CGROUP_*、CONFIG_PSI、CONFIG_DMABUF_HEAPS*、CONFIG_CPUSETS* 重编（补丁格式见 config_fix.txt §三，
+      关 config 后必须 make clean；产物 ≤6MB 校验；vermagic 不动）。
+  风险与回退: p13 ramdisk 与现行 system 跨代配对——若卡在更早阶段（init/fstab）判"配对不洁"而非内核无罪，
+  此时改用"回退 system 到 r3f 世代"反推; 刷写失败 flash_with_retry.sh 自动回滚 1/boot.img（原厂）。
+
+## 3. 内核补丁线（仅当 §0 判读指向内核 ashmem/分配路径）
+  ashmem.c 三代同源（sha256 74d3c0da…），无"版本回退"可退; 修复方向 = 与上游 4.14+ ashmem 逐 ioctl 对拍
+  （ASHMEM_SET_NAME/SET_SIZE/PIN_UNPIN/mmap fault），补丁先落 out/night_fixes/ 由主会话审后应用。
+  快速旁证实验（零改动）: cat /sys/kernel/debug/dma_buf/bufinfo、反复 dd 读 /dev/ashmem 看是否复现挂。
+
+## 4. payload 线（仅当 §2 判"内核无辜"）
+  - 对拍现行 gralloc.default.so（58.43Hz rev）与 10-20 好轮 rev（bridge_backups/products/ 找 p13 世代 system），
+    差异定位后 debugfs 替换（流程照 p13 §2.1: rm+write，禁 set_inode_field mode——坑 10，写后 stat 断言
+    Type: regular + e2fsck -fn）。
+  - zygote 线: 若 tombstone 指 dalvik-cache/boot.art → 清 /data/dalvik-cache 或核对 OAT 版本（patchoat 假说，
+    探针员检索 c 已给回退依据）。
+
+## 5. 对 config_fix.txt 实验A 的修正（重要）
+  CONFIG_ANDROID_ASHMEM=n 诊断重编【勿做】: r112 板上日志已实证其结果 = SF `FmqInternal.cpp:25] Check failed`
+  SIGABRT 循环（z1_r112_20261030_185451.log:1786），重刷只会复现已知结论，浪费一轮刷写。
+  原 A1/A2/A3 解读矩阵由本文件 §0/§1/§2 的三个更便宜实验取代。
+
+## 6. 兜底
+  原厂镜像 /home/lxj/claude/6572/1/boot.img 永远是第 3 参回滚件; 每轮实验先记录 out/ 与镜像 sha256;
+  每步通过即 git add/commit/push（代理 ss -lnt | grep 789 先行自检）。
