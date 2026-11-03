@@ -31,12 +31,50 @@
 - `z1_sf_dump` 只出现一次，不再每 4 秒重复
 - 触摸能点
 
+## A2. system_fix3 —— 两个 P0 单行修复（和 fix2 boot 一起刷）
+
+| 项 | 值 |
+|---|---|
+| system.img | `out/z1_fix3_system/system_fix3.img` |
+| sha256 | `51d565935f97cb84eb48e3ec5230ebb780d50c225c3aebfdc4e08dbdef81dcc5` |
+
+基于 `system_hafm.img` 改两处：
+
+1. **`/build.prop` 权限 0664 → 0644**。init 的 `load_properties_from_file()` 见到
+   `S_IWGRP` 就判定 "insecure" 整份跳过 —— 所以 `ro.build.fingerprint` 一直是空的
+   （`unknown/unknown/unknown:9/...`），更要紧的是 `dalvik.vm.heapsize=256m` 这类
+   **ART 堆参数全部没生效**。开机日志里 `free` 从 950MB 掉到 241MB 的内存锯齿，
+   很可能就是它放大的。
+2. **`/etc/init/android.hidl.allocator@1.0-service.rc`**：原文件是
+   ```
+   service hidl_memory /system/bin/hw/android.hidl.allocator@1.0-service
+       disabled
+       class hal
+       user system
+       group system
+   ```
+   `disabled` + **没有 `interface` 行** → 服务永远不启动，init 也不知道它承载
+   `android.hidl.allocator@1.0::IAllocator/ashmem`，所以 `interface_start` 永远失败。
+   开机日志里 system_server / SystemUI / media 各自 `Waited one second for ...IAllocator/ashmem`
+   卡 5 秒，时间点紧贴第一次 Watchdog。改成：
+   ```
+   service hidl_memory /system/bin/hw/android.hidl.allocator@1.0-service
+       class hal
+       user system
+       group system
+       interface android.hidl.allocator@1.0::IAllocator ashmem
+   ```
+   实例名是 **`ashmem`** 不是 `default` —— 从二进制 strings 里 `registerAsService` 和
+   调用方日志的 `/ashmem` 两处对上。
+
+`e2fsck -fn` 干净（2701/57600 inodes）。
+
 ## B. GPU —— Mesa/lima 硬件加速（fix2 验完再刷，**要同时刷 boot + system**）
 
 | 项 | 值 |
 |---|---|
 | boot.img | `out/z1_gpu_boot/boot.img` sha256 `4df61d4f175debd4bec86c3d5ac95d9a36974ff62f75f2eeb1650713300a17cd` |
-| system.img | `out/z1_gpu_system/system_gpu.img` sha256 `4eb8c483c3f4a8a3b49e8e26d66d6f19f7578200e16220221812e02312025030` |
+| system.img | `out/z1_gpu_system/system_gpu.img` sha256 `b1d90bf3ab9a6e3a790f21f2072db64bd38d46ccb43341f94b4be5ccb309f2b9` |
 
 boot 侧（在 fix2 基础上再改两处）：
 - ramdisk `/default.prop`：`ro.hardware.egl=swiftshader` → `mesa`
@@ -46,7 +84,7 @@ boot 侧（在 fix2 基础上再改两处）：
     （mesa 在调用者进程内 dlopen，app 也要 open 渲染节点）
   - 新增 `/dev/dma_heap/system 0666 root system`
 
-system 侧（基于 `system_hafm.img` 复制后改）：
+system 侧（基于 **`system_fix3.img`** 再叠，所以上面两个 P0 修复也一起带上）：
 | 路径 | 大小 | 说明 |
 |---|---|---|
 | `/lib/hw/gralloc.z1.so` | 6,352 | 换成 `out/gralloc.z1.so`：alloc 走 `/dev/dma_heap/system` 产出真 dma-buf，失败自动回落 ashmem |
