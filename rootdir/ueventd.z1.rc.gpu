@@ -1,0 +1,14 @@
+# Mainline DRM render node used by Lima and the Z1 dma-buf gralloc path.
+# 2026-11-03: widened 0660 system:graphics -> 0666 root:graphics. Mesa is
+# dlopen()ed inside the *caller's* process (surfaceflinger, and any app that
+# uses GLES), so the opening uid is not always system and not always in the
+# graphics group. ueventd.rc's global "/dev/dri/* 0666 root graphics" rule is
+# overridden by this more specific line, hence the explicit 0666 here.
+/dev/dri/renderD128 0666 root graphics
+
+# dma-buf heaps. gralloc.z1.so allocates GraphicBuffers from
+# /dev/dma_heap/system instead of ashmem so that lima can
+# drmPrimeFDToHandle() them (ashmem fds are not dma-bufs; that mismatch was
+# the "failed to create DRI image from FD" wall in the 10-20 mesa attempt).
+# ueventd creates the /dev/dma_heap directory itself.
+/dev/dma_heap/system 0666 root system
