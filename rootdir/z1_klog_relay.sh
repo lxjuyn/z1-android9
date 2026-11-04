@@ -45,12 +45,20 @@ deep_dump() {
       | grep -aE 'FATAL|AndroidRuntime|Process:|Exception|Caused by|^[[:space:]]+at ' \
       | head -250 | relay z1java
 
+    # 2026-11-04: AOSP 9 AMS.processClass() reports FLAG_SYSTEM packages as
+    # "system_app", so Settings / Home / com.android.phone crashes land in
+    # **system_app_crash@*.txt**, not data_app_crash@*.txt.  v2/v4 only globbed
+    # the data_app_ form, which is why we kept reporting "no crash files".
     n=0
-    for f in $(ls -t /data/system/dropbox/data_app_crash@*.txt 2>/dev/null | head -4); do
+    for f in $(ls -t /data/system/dropbox/system_app_crash@*.txt /data/system/dropbox/data_app_crash@*.txt 2>/dev/null | head -6); do
         n=$((n+1)); log "---- dropbox ${f##*/} ----"
-        head -60 "$f" 2>/dev/null | relay z1drop
+        head -70 "$f" 2>/dev/null | relay z1drop
     done
-    [ "$n" = 0 ] && log "no data_app_crash files under /data/system/dropbox"
+    [ "$n" = 0 ] && log "no system_app_crash/data_app_crash files under /data/system/dropbox"
+    log "---- dumpsys dropbox --print system_app_crash (head 120) ----"
+    /system/bin/dumpsys dropbox --print system_app_crash 2>/dev/null | head -120 | relay z1drop
+    log "---- dumpsys dropbox --print data_app_crash (head 80) ----"
+    /system/bin/dumpsys dropbox --print data_app_crash 2>/dev/null | head -80 | relay z1drop
 
     for t in $(ls -t /data/tombstones/tombstone_* 2>/dev/null | head -3); do
         log "---- tombstone ${t##*/} (head 45) ----"
