@@ -6,7 +6,7 @@
 
 | 镜像 | 路径 | sha256 | 大小 |
 |---|---|---|---|
-| boot | `out/z1_fix3_boot/boot.img` | `8859f6611e7b2424e5206e4ae8cb24a66fb0b3c42f5e7ec30203d70b30e0c436` | 6,219,776 |
+| boot | `out/z1_fix3_boot/boot.img` | `94fb83e5421967f014c34f047ee1d10bbaf3fa9e5a1dd8cf4c6a82cf7ac77675` | 6,219,776 |
 | system | `out/z1_fix3_system/system_fix3.img` | `51d565935f97cb84eb48e3ec5230ebb780d50c225c3aebfdc4e08dbdef81dcc5` | 943,718,400 |
 
 boot 侧改动（相对 11-03 线上那版）：
@@ -47,7 +47,7 @@ system 侧改动：
 
 | 镜像 | 路径 | sha256 | 大小 |
 |---|---|---|---|
-| boot | `out/z1_gpu_boot/boot.img` | `4fcd899878a841d18fab2c460d125b21849fbbc9e25519256e229f957651e621` | 6,221,824 |
+| boot | `out/z1_gpu_boot/boot.img` | `bae316cea771c34e4a070a27722bf144d73cd26336b4a95353f1108df656ca24` | 6,221,824 |
 | system | `out/z1_gpu_system/system_gpu.img` | `b1d90bf3ab9a6e3a790f21f2072db64bd38d46ccb43341f94b4be5ccb309f2b9` | 943,718,400 |
 
 boot 侧在步骤 1 基础上再加两处：
@@ -78,7 +78,9 @@ ashmem fd 不是 dma-buf，mesa 的 `drmPrimeFDToHandle()` 必然 EINVAL
   若渲染错乱，退回步骤 1 即可；长期需重编 Mesa 24+/26+（修 SONAME 与 DRI 路径两个链接参数）。
 
 ## 校验记录（生成时逐项跑过）
-两套 boot：`ANDROID!` magic / MTK `KERNEL`+`ROOTFS` 双头 / Android 头 size 与 MTK 头一致 /
+两套 boot：`ANDROID!` magic / MTK `KERNEL`+`ROOTFS` 双头 /
+**Android 头 kernel_size == MTK KERNEL size + 512、ramdisk_size == MTK ROOTFS size + 512** /
+dtb 完整落在 LK 实际拷贝的 payload 内（`4215296+20742 <= 4236038`）/
 dtb `d00dfeed` 在 zImage 末尾 / `initrd-end` 与实际 blob 长度逐字节吻合 /
 gzip 流完整无残留 / 78 条 cpio 记录 0 条缺类型位 / `z1_provision.sh` 在位 /
 rc 里没有残留的 service 内 `exec_background`。
@@ -89,3 +91,23 @@ rc 里没有残留的 service 内 `exec_background`。
 - 任一步异常：刷回 `out/z1_hafm_boot/boot.img` + `out/z1_r5_system/system_hafm.img`
 - 彻底兜底：原厂 `1/boot.img`（sha256 `2dd41702e839ec2547ce0dea2bbd3603a5d019786502d939ebba4a6b578eaab5`）
 - 命令：`Z1_VERIFY=0 tools/flash_with_retry.sh bootimg <img> <rollback> 12`
+
+## 2026-11-04 22:07 修正：kernel_size 少算 512 字节（刷前拦下）
+
+第一次打包时 `tools/z1_pack_mtk_bootimg.py` 把 Android 头的 `kernel_size` 写成了
+"zImage + dtb" 的长度（4,236,038），而 **LK 是从 MTK KERNEL 头的位置开始读
+`kernel_size` 字节**，所以这个字段必须含那 512 字节的头：正确值是 4,236,550。
+
+对照硬证据（两个镜像的 diff 恒等于 512）：
+| 镜像 | Android kernel_size | MTK KERNEL size | diff |
+|---|---|---|---|
+| 原厂 `1/boot.img` | 3,337,288 | 3,336,776 | 512 |
+| 已知能开机的 `z1_hafm_boot/boot.img` | 4,236,534 | 4,236,022 | 512 |
+| **修正前 fix3** | 4,236,038 | 4,236,038 | **0** ← 错 |
+| 修正后 fix3 | 4,236,550 | 4,236,038 | 512 ✅ |
+
+写小了 512 字节的后果：LK 只拷 `kernel_size - 512` 字节，**appended DT 尾部被截掉
+512 字节**，DT 解析失败 → 内核拿不到 machine / bootargs。这类错误不刷上板看不出来，
+而且我原来的校验脚本把"两字段相等"写成了期望值，等于把 bug 断言成了 PASS。
+
+现在校验脚本的断言已改成正确方向，并额外检查"dtb 完整落在 LK 拷贝的 payload 内"。

@@ -57,7 +57,13 @@ def main():
 
     # ---- Android header (2048) ----
     hdr = bytearray(tpl[:PAGE])
-    struct.pack_into('<I', hdr, 8, len(kernel))          # kernel_size
+    # LK reads kernel_size bytes starting at the MTK header (not at the
+    # payload), so the Android field is the payload PLUS the 512-byte MTK
+    # header.  Verified against both the factory image (3337288 vs 3336776)
+    # and the known-good z1_hafm_boot image (4236534 vs 4236022): diff is
+    # always exactly 512.  Writing the payload length here truncates the
+    # appended DT by 512 bytes and the DT fails to parse.
+    struct.pack_into('<I', hdr, 8, len(kernel) + 512)    # kernel_size
     struct.pack_into('<I', hdr, 16, len(rootfs))         # ramdisk_size
     if a.cmdline is not None:
         cb = a.cmdline.encode()
