@@ -246,6 +246,14 @@ static int cst836u_probe(struct i2c_client *client)
     __set_bit(KEY_MENU, ts->input->keybit);
     input_set_abs_params(ts->input, ABS_X, 0, max_x - 1, 0, 0);
     input_set_abs_params(ts->input, ABS_Y, 0, max_y - 1, 0, 0);
+    /*
+     * Android 9's InputReader only classifies a device as a touchscreen when
+     * INPUT_PROP_DIRECT is set; without it the device is treated as a generic
+     * pointer even if an IDC says touchScreen (on-board /proc/bus/input/devices
+     * showed "B: PROP=0" for z1_cst836u).  Set the property in the driver so
+     * the classification does not depend on /system/usr/idc being present.
+     */
+    __set_bit(INPUT_PROP_DIRECT, ts->input->propbit);
 
     error = input_register_device(ts->input);
     if (error)
