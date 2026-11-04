@@ -1,0 +1,328 @@
+# CLAUDE.md — 佳伯听力机 Z1 Linux 移植项目
+
+> 项目固定规则书。每次进本目录自动加载。所有 agent，以及**仅当当前 runtime 实际提供时**的 workflow，必须遵守。
+> 主会话会不定期更新本文件(编译命令/当前卡点/规则)。
+
+## 0.0 总纲:先假设可行 + 做全做细 + 每步反思(用户 2026-11-04 定,最高优先级)
+
+做**每个项目之前**先记住这五条:
+
+1. **先假设是能行的**。从"能够实现"的角度思考,先想清楚**这个功能怎么落地、怎么做**,把实现路径列出来再评估难点。**实在不行了再说不行的部分**——不要一上来就先找做不到的理由、先把范围缩小、先交"做不到清单"。
+2. **项目要做全、做细、质量要硬**。不交半成品,不跳过难点只做容易的部分;难的部分要么做完,要么明确说清楚卡在哪、缺什么、下一步怎么补。
+3. **做项目、写代码、检查时尽可能仔细检查**。每个结论至少要有**一条可复核的证据**(日志行号 / sha256 / 反汇编 / 读回校验 / e2fsck / 上板实测),不要凭"应该没问题"下结论;单一来源的结论必须交叉验证。
+4. **思考时每一步都反思自己的思考有没有偏**。自问:我现在解的是根因还是症状?这个假设被证伪过吗?范围是不是被我自己悄悄缩小了?是不是钻牛角尖了?发现偏了就退回来重想。
+5. **不要吝啬 token**。该多查一遍、多派一个 agent 交叉验证、多读一个文件、多跑一次读回校验,就去做。
+
+**为什么**:本项目历史上多次失败都是"先认定做不到/先缩小范围"造成的——先把 dma_heap 当黑屏解药(真因是 ashmem 缺失)、先认定 ACM gadget 能用(实际从未枚举)、先认定 lima 没 probe(实际日志缺早期段)。反过来,从"怎么让它跑起来"出发的排查(触摸 GPIO145 复位、DISP 电源域、gralloc ashmem→dma-buf、ramdisk rc 语法、build.prop 权限 0664)全部拿到了硬证据并修好。
+
+## 0. 工作方式规则(CHILD AGENT + WORKFLOW 必读,高优先级)
+
+- **默认派 agent 干活**: 多步/并行/多文件任务优先并派 subagent；只有当前 runtime 明确提供 workflow 工具时才可搭 workflow，别一条主线串行手做到底。
+- **任务分细**: subagent、agent team 和（**仅当当前 runtime 明确提供该工具时**的）workflow 里的 agent 调用都要**细粒度**——一个 agent 查一类错/一个文件/一个 API,别让一个 agent 包大类。短 scope 不易 parse-dead,并行更快。
+- **模型分工与成本（用户 2026-07-29 更新，覆盖旧映射规则）**: 当前可派遣模型按**从小到大、默认逐级升级**的顺序为 **Haiku=`astron-code-latest` → Sonnet=`sen/glm-5.2` → Opus=`lx/gpt-5.6-terra` → Fable=`lx/gpt-5.6-sol`**。先使用能安全完成任务的最小模型；只有 scope、风险、交叉依赖或前级失败确实要求时，才上调一级，不能把普通调研直接派给 Opus/Fable。
+    - **Haiku（小）**: 小型、细粒度、重复性、文档、单文件/API 核对、manifest/日志初筛、批量低风险只读调研。它是 workflow/agent-team 的默认 fan-out 入口；每个 agent 只拿一个目录、一类错误或一个明确问题。
+    - **Sonnet（中）**: 中型实现、编译/调试、两到三个相关文件的闭环验证、对 Haiku 初筛结论的技术复核、无硬件动作的中等方案设计。不能跳过既有板级 NO-GO。
+    - **Opus（大）**: 大型任务、跨目录架构判断、复杂实现、重要独立审计和多个中型结论的综合。少派；应先带上较小模型已产出的精确证据和待决问题。
+    - **Fable（关键大）**: 最高优先级的跨系统综合、最终关键决策、硬件安全门禁、不可逆动作前的最终审计，以及 Opus/Sonnet 已给出相互矛盾或不足结论时的兜底。贵且慢，不得用于普通搜寻或重复编译。
+    - **派遣阶梯**: `Haiku` 先做细粒度 fan-out → Sonnet 复核/实现可组合中任务 → Opus 只解决完整大型工作包 → Fable 只处理关键安全/最终决策。若模型容量/上游错误，记录失败原因；先缩小 scope 后同级重派一次，再按此阶梯升级，不能无休止重试同一不可用模型。
+    - 当前上游可用性以实际 agent 工具为准；不得假定旧 qwen/glm 或任何未列模型可用。可使用 subagent 和 agent team；workflow 仅限当前工具清单明确提供时使用，仍须遵守以上由小到大的派遣阶梯。
+- **盯活 + 死了重开**: 主会话定期（15–30 分钟，或 agent 跑超过这个量级）检查 subagent/agent team 是否还活着。死了就关闭旧 agent，重新派更细 scope 继续未完成任务。**Claude Code 的 Workflow 是其 runtime 功能；只有当前工具清单实际提供 Workflow 时才可调用其 resume。当前 Codex runtime 未暴露 Workflow 工具，必须用 `spawn_agent`/`close_agent`/重派和主会话计划续做，不能书写或假装执行 `Workflow(...)`。** 不要 SendMessage 唤醒已 parse-dead 的 agent。
+- **loop 的边界**: `z1-driver-supervisor.service` 是本机 systemd user loop，默认每 5 分钟检查源码/manifest/产品/活动进程/USB 节点并写入 `mainline_recon/z1_driver_supervisor_loop.log`；它能监督本地状态，但不能凭空唤醒已经退出的模型 API 会话。主会话必须在继续运行时检查 agent 状态并重派；如果需要无人值守唤醒模型，必须接入当前 runtime 实际可用的外部编排器，不能把 systemd 检查脚本误称为模型自唤醒。
+- **用不上就关掉**: 派出去的 subagent/agent-team 成员如果已经不需要（结论已自行查通、任务被取代、方向弃用），立刻用当前工具的 `close_agent` 关掉释放并行槽；若其子任务仍需要，则关掉旧的后**重派一个更细 scope 的新 agent**续做（传“前卡到哪/产出在哪”不重头）。别让没用的 agent 占着槽空跑烧 token。
+- **改前备份**: 任何实质改源/刷固件/改 img/改脚本前先备份带时间戳到 `~/claude/6572/bridge_backups/`。教训: 原版桥被覆盖丢失过。
+- **每步修复必 git 上传(用户 2026-08-12 明确要求, 高优先级)**: **每一步实质修复/改动完成后, 立即 `git add` + `git commit` + `git push origin main`** 到 GitHub 仓库 `lxjuyn/z1-mt6572-mainline`(remote 已配 PAT)。不要攒着等一批才提交; 修复验证通过(哪怕只是编译通过/上板通过)就立刻上传, 防止丢失。提交信息要写清楚"改了什么 + 为什么 + 验证状态"。仓库是公开的, 严禁提交任何密钥/PAT/隐私内容(git remote URL 里的 PAT 不入库)。
+    - **GitHub PAT**: `<REDACTED_PAT>` (2026-08-16 用户提供)
+    - **Remote URL**: `https://<REDACTED_PAT>@github.com/lxjuyn/z1-mt6572-mainline.git`
+    - **提交前检查**: `git status` 确认无 `.env`/`credentials`/密钥文件
+- **产物也要备份(用户 2026-07-11 明确要求)**: 每次编出的关键产物(.ko / zImage / dtb / boot.img / 提取的 blob 等)编出后**立刻**复制一份带时间戳存档到 `~/claude/6572/bridge_backups/products/`(或对应产物归档目录),别只留原位——源树 `make clean`、重编失败、误删都会让成品丢。产物备份命名 `产物名_版本_时间戳`(如 `wlan_mt6620.ko_20260711_1353`、`mtk_stp_wmt.ko_20260711_1502`)。多个产物同一轮出来的,统一一个带时间戳子目录 `products_<编译轮>_<时间戳>/` 一并存。
+- **合理并派，不浪费高阶 token**: 对独立、低风险的小任务可多派 Haiku；需要交叉验证时先用 Sonnet。Opus/Fable 必须有明确的大型/关键理由、输入证据和可交付物，失败重派前先缩小 scope。
+- **强制用 agent team 提升准确性+速度**（用户 2026-07-11 明确要求）: 凡剩余工作量大（≥3 个独立文件/多类错误并行可做）、或需交叉验证准确性的任务，**必须建立 agent team**，不要一条主线串行手做。若当前 runtime 明确提供 Workflow，可将同一团队定义放入 workflow；若未提供，则由主会话用 `spawn_agent`、`wait_agent`、`close_agent`、`update_plan` 编排。正确用法:
+    - **并行 fan-out**: 将独立子任务（如“每个 .c 文件各派一个 agent 修 mainline API 兼容”）并行派给不同 agent；每个 agent 细粒度只管一类错/一个文件，scope 短不易 parse-dead、墙钟快。
+    - **交叉验证提准确**: 关键判断(签名是否真匹配 mainline、改动是否引入新错)派多个 agent 独立看,多数同意才采信;主会话下结论前先让 agent 验。
+    - **discover→fix→verify 三段**: 先派 agent 探测列错(产出错误清单+根因),再按文件/错误类并行派 fix agent,最后并行派 verify agent 跑编译确认无回归。每段之间主会话看产出再决定下一段。
+    - **改前备份交给 agent**: 要改源的 agent 自身先 `cp` 备份到 `bridge_backups/` 再改（或主会话预先批量备份）。
+    - **死了续跑**: 当前 Codex runtime 没有 `Workflow` 工具时，agent 死亡就关闭并以更细 scope 重派；有 Workflow 工具时才按该工具自己的恢复接口执行。改源冲突风险大时，同文件只派一个 agent 串行改，不同文件并行改，绝不让两个 agent 同时改同一文件。
+
+## 1. 关键环境参数
+
+| 项 | 值 |
+|---|---|
+| sudo 密码 | `1` |
+| 桥 (C3 SuperMini) | 921600 透传, 常亮=ready, PC↔/dev/ttyACM0↔C3↔UART1↔Z1 ttyMT0 |
+| Z1 板 | MT6572, 原厂 kernel 3.4.67 (#1 SMP hongyao@R630, gcc 4.7, Aug 2022), 1GB RAM |
+| Z1 USB 注意 | Z1 接电脑 USB 会干扰 boot(进重启循环)——**刷写才插 USB,正常开机拔掉**。MTK preloader 看 USB LineState 判模式 |
+| 交叉编译器 | `/usr/bin/arm-linux-gnueabihf-gcc` (外编 wlan/wmt 用) |
+| 主线 mainline 源树 | `/home/lxj/claude/6572/fork_linux` (Linux 7.0-rc7 + mt6572-mainline fork 驱动已合并) |
+| 当前 boot 产物 | `out/boot_mainline_z1_stable.img` (5.8MB, Alpine switch_root, console=ttyS0@115200) |
+| Alpine rootfs | `out/system_alpine.img` (40MB ext4, Alpine 3.24 armv7, 含 adbd + CONNSYS .ko) |
+
+## 2. 编译命令
+
+### 2a. mainline Z1 boot.img (已编通)
+```
+cd /home/lxj/claude/6572/fork_linux
+make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- mt6572-z1.dtb zImage   # 产物 arch/arm/boot/zImage + dts/mediatek/mt6572-z1.dtb
+# 然后打包成 boot.img (ANDROD!! magic, 见 BUILD_Z1_REPORT.md 字段表)
+```
+.config 须含: CONFIG_ARM=y CONFIG_ARCH_MEDIATEK=y CONFIG_MACH_MT6572=y
+
+### 2b. WiFi wlan.ko 外编 (当前卡点,见 §4)
+```
+cd /home/lxj/claude/6572/fork_linux
+make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- M=drivers/misc/mediatek/connectivity/drv_wlan/mt6620/wlan modules
+```
+- 外编 M= **不读根 .config autoconf.h**, 源码里 `#if CONFIG_XXX` 撞 #error / undeclared 时, 要在该 wlan/Makefile 里 `ccflags-y += -DCONFIG_XXX=1` 手动喂。
+- 已喂: `-DCONFIG_NL80211_TESTMODE=1`, `-isystem $(gcc -print-file-name=include)` (解决 stddef.h fatal)
+- **待加(已确认根因): `-DCONFIG_WIRELESS_EXT=1`** — mainline netdevice.h 把 `ieee80211_ptr` 成员包在 `#ifdef CONFIG_WIRELESS_EXT` 里, 外编没喂 → gl_init.c:2165/2938/2941 报 "no member"。加此 flag 消三错。
+
+## 3. 目录结构
+
+```
+~/claude/6572/
+├── fork_linux/                 # mainline 7.0-rc7 + fork 驱动 (编译树)
+│   └── drivers/misc/mediatek/connectivity/
+│       ├── drv_wlan/mt6620/wlan/os/linux/gl_init.c  ← 当前卡点文件
+│       └── stub_includes/       # agent 建的桩头(wakelock/earlysuspend/aee/xlog/mach)
+├── mainline_recon/              # 调研报告 + 编译日志(全在这里)
+│   ├── REPORT.md  BUILD_Z1_REPORT.md  W2_BUILD_PROGRESS.md  W2_FACTORY_DUMP.md
+│   ├── cfg80211_*.md  AUDIO_ADAPTATION_PLAN.md  WIFI_FW_BLOB.md  WIFI_SRC_DEPS.md
+│   ├── wlan_build_raw.log  wlan_errors_summary.txt   ← 最新编译错误
+│   └── fork_files/  torvalds/   # 备料
+├── bridge_backups/              # 改前备份(带时间戳), 含 wifi_w2_initial/ 原版桥
+├── wifi_recon/                  # drsami(3.4.5, 不对齐Z1的3.4.67) / aquaris_bq / TestMT6572 调研源
+├── out/                         # boot.img / eMMC 提取料 / z1_factory_drv/ 厂商 blob
+├── tools/                       # ash脚本 make_alpine_rootfs.sh 等
+├── PLAN.md  SUMMARY.md  STATUS_睡前.md   # 历史进度文档
+└── z1_auto_switch.sh / z1cmd.sh   # C3 桥交互工具
+```
+
+## 4. 当前卡点 (会随进展更新)
+
+### 4.0 最新状态 (2026-11-04 上板实测)
+
+**已验证通过(硬证据在 `mainline_recon/z1_boot_mainline_20261104_221018.log`)**
+- **触摸活了**: `z1_gpio_hunt insmod OK` → `CST836U identity: fw=0011 module=01 project=01 chip=0013`
+  → `input: z1_cst836u as .../input/input2` → `chip ACKed (byte read) at 0x15 on i2c-0`
+  根因是 `init.z1.rc` 把 5 条 `exec_background` 写进了 `service z1_sf_dump` 块(init 报
+  `Invalid keyword` 整行丢弃), 导致 `/z1_touch_load.sh` 从 10-30 起从未执行。
+- **显示链路端到端通了**: `simplefb` 注册在 `0xbfd00000`, LK 跳内核前最后一条
+  `LCD_ConfigOVL layer=2 addr=0xbfd00000 pitch=512` 与之逐字段吻合; 置
+  `device_provisioned=1` + `am start HOME` 后用户能看到系统界面。
+- **框架能起到 `sys.boot_completed=1`**(456s, SwiftShader 软渲染下偏慢)。
+- 开机时间从 428s 降到 ~21s 跑完被丢弃的那批脚本。
+
+**镜像约定(boot.img 打包, 踩过坑)**
+- Android 头 `kernel_size` **必须等于 MTK KERNEL size + 512**(LK 从 MTK 头位置开始读),
+  `ramdisk_size` 同理 = MTK ROOTFS size + 512。写小了 512 字节会截掉 appended DT 尾部。
+  用 `tools/z1_pack_mtk_bootimg.py`(已内置该校验)。
+- ramdisk 记录 mode 必须带类型位(S_IFREG), 否则内核 `do_name()` 静默丢弃;
+  用 `z1a9_gpt/scripts/z1_ramdisk_edit.py`(已修)。
+- `ro.hardware.egl` **唯一生效来源是 ramdisk 的 `/default.prop`**;
+  改 `/system/build.prop` 或 `/etc/prop.default` 都无效。
+
+**当前未解决**
+- 内置 app(设置等)闪退: 已确认是 **native 崩溃**(`/data/tombstones/tombstone_41`, 41 个),
+  不是 Java 异常; 堆栈待挖。参见 `out/APP_CRASH_FIX_20261104.md`。
+- 壁纸不显示: 镜像里唯一的桌面是 `com.example.android.home`(AOSP 示例 launcher, 不支持壁纸)。
+- `z1_mnld` 每 5 秒崩一次(status 1); v5 boot 已加 `oneshot` 止血, 真因未查。
+- 音频路由: `z1_audio_route.sh` 原来用 `tinymix set`/`tinymix controls`(A9 的 tinymix 没这两个子命令),
+  五条路由从未生效; v2 system 已改, 未上板验证。
+- WiFi: `z1_wifi_probe.sh` 的 `6620_launcher*` 前缀匹配全路径 cmdline 永不命中,
+  function-on 从未执行; v5 boot 已改, 未上板验证。
+
+**回滚链**
+`out/z1_fix3_boot/boot.img` + `out/z1_fix3_system/system_fix3.img`(能进系统那版)
+→ `out/z1_r5_system/system_hafm.img` → 原厂 `1/boot.img`。
+
+
+**路E — v13 WDT 安全网镜像 — 已打包待刷 (2026-08-25 23:20, 见 mainline_recon/V13_PACKED_20260825.md)**
+
+`out/boot_mainline_v12.img` 作废 (zImage 编于 08-23, 漏 4dcaf6c64 的 mtk_wdt.c WDT 安全网 → ~30s 静默重启 bootloop)。v13 从 HEAD=86e8a98bb 重编重打: `out/boot_mainline_v13.img` (4.66MB ≤ 6MB, ANDROID! ✅, kernel 段=新 zImage+dtb cat 拼接 sha 校验过, ramdisk/cmdline 与 v12 逐字节一致)。归档 `bridge_backups/products/products_v13_20260825_231934/`。
+- **刷**: `tools/flash_with_retry.sh bootimg out/boot_mainline_v13.img /home/lxj/claude/6572/1/boot.img 8` (mtkclient 先起等待再按开机键)
+- **验证点**: dmesg 出 `WDT safety net: scheduling disable in 18s if no user-space feed`
+- **纪律**: `tools/z1_make_bootimg.sh` 默认 cmdline 是 ttyS0,115200, 与 v11/v12 实际 ttyMT0,921600 不符, 打 v13 时按实解参数手打, 别直接跑默认值。
+- git HEAD=origin/main=86e8a98bb, 源码树无未提交变更。
+
+**路D — Alpine Linux 发行版启动 — 已启动 ✅ (2026-08-16)**
+
+Alpine 3.24 armv7 通过 p4 分区 (android, 0x04340000, 900MB) 启动成功：
+- **boot.img**: `out/boot_mainline_z1_stable.img` (5.8MB, initramfs 含 switch_root 逻辑)
+- **rootfs**: `out/system_alpine.img` (40MB ext4, 含 adbd + 13 个 .ko + OpenRC 服务)
+- **启动流程**: LK → kernel → initramfs `/init` → switch_root 到 p4 → Alpine OpenRC → login prompt
+- **上板验证**: Alpine 启动成功，显示 "Welcome to Alpine Linux 3.24, Kernel 7.0.0-rc7-z1+"
+
+**当前问题**: USB gadget 不工作 (`/dev/ttyGS0` 不存在)
+- Kernel log 显示 `g_serial ready` 但实际 UDC 没绑定
+- PHY probe 成功 (0.097s)，MUSB probe 成功 (6.516s)，但 `can't open /dev/ttyGS0` 循环
+- 可能原因: HS slew-rate 校准超时 (PHY 降级运行) / VBUS dummy supply / USB 物理连接时序
+- **ADB 无法使用**，需要通过 CH340 串口调试或修 USB PHY 问题
+
+**关键脚本** (已加入 git):
+- `scripts/z1_alpine_switch_init.sh` — initramfs `/init`，switch_root 到 p4
+- `scripts/z1_adb_setup.sh` — USB gadget 配置 + adbd 启动
+- `scripts/z1_deploy_alpine_rootfs.sh` — Alpine rootfs 部署到 p4
+- `scripts/z1_modprobe_connsys.sh` — CONNSYS 驱动加载
+
+**路A — 外编 wlan.ko + connectivity/common 全 .ko — 已编通 ✅ (2026-07-11)**
+
+7 个 .ko 全部产出, 归档 `bridge_backups/products/products_common_all6_205255/`:
+- `wlan_mt6620.ko` (2.17MB) — WiFi 主驱动 (62 .o)
+- `mtk_stp_wmt.ko` (864K) — WMT 核心 (最重)
+- `mtk_hif_sdio.ko` (221K) — HIF SDIO
+- `mtk_stp_bt.ko` (53K) / `mtk_stp_uart.ko` (46K) / `mtk_stp_gps.ko` (46K) / `mtk_wmt_wifi.ko` (35K)
+
+编译命令 (两个子树, 都 KBUILD_MODPOST_WARN=1 绕 modpost 缺符号):
+```
+cd /home/lxj/claude/6572/fork_linux
+# WiFi
+make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- M=drivers/misc/mediatek/connectivity/drv_wlan/mt6620/wlan KBUILD_MODPOST_WARN=1 modules
+# connectivity/common (6 模块)
+make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- M=drivers/misc/mediatek/connectivity/common KBUILD_MODPOST_WARN=1 modules
+```
+
+已完成的 mainline 适配 (WiFi 12 文件 + common 8 文件，历史上由并行 agent/workflow 完成):
+- WiFi: cfg80211_ops 回调签名全同步 / set_fs 删 / timer_setup / genl (gl_rst) / **__DATE__/__TIME__ 关** (swcr) / alloc_netdev_mq 5参 等
+- common: tty_ldisc API (stp_uart) / genl (stp_dbg) / class_create 单参 (hif_sdio_chrdev) / do_gettimeofday→ktime_get_real_ts64 / 删 set_fs / export 非 static
+- 桩头补齐 (stub_includes/): `asm/system.h` `cust_gpio_usage.h` `cust_eint.h` `mach/{mt_gpio,eint,mtk_rtc}.h` (GPIO/EINT/RTC no-op inline, Z1 无需真上电序列)
+- **wmt_tm 整个 thermal 段 `#if 0` 关闭** (mainline thermal_zone_device_ops 重写, Z1 无需 thermal)
+
+modpost 的 "undefined symbol" warnings 是外编没喂 vmlinux/Module.symvers 所致 (cfg80211_*/rtnl_*/filp_open/kmalloc 等), insmod 时由内核符号表解析, 非 .ko 生成障碍。
+
+**旁路 (暂低优先):**
+- 音频: MT6323 PMIC 内建 codec, MTK 专有 AFE+`/dev/eac` ioctl, mainline 无 ASoC support, 适配极难 (见 AUDIO_ADAPTATION_PLAN.md)。**评估结论(2026-07-12): MT6323 registers.h 只有地址偏移无 bit 定义, MT6572 AFE 寄存器完全缺失, audio clock 标 DEAD。本轮跳过走"路C放弃", 单独立项, 先搞 MT6323 datasheet (渠道: GitHub 逆向 mt6323 audio codec / mt6397.c 寄存器模式参考 / fork repo maintainer Max Shevchenko)。**
+- 路 B (3.4.67 厂商源树): drsami 是 3.4.5 不对齐, 真源树难找, 后置。
+- **本批 .ko 是"能编出"级**: 平台层 (wmt_plat_alps) GPIO/EINT/RTC 全是 no-op 桩, 真要上板跑 WiFi/BT 还需把上电序列重写成 mainline dt + gpio_desc。
+
+**路C — 按键 + Goodix触摸键 + USB ACM gadget — 已编通 ✅ (2026-07-12)**
+
+13 键全编进 zImage (含 keypad/goodix/musb-peripheral)。
+
+**!!! 真根因 (2026-07-12 17:22 上板实测确认): appended dtb 没拼到 zImage 末尾 → kernel 在 _edata 找不到 dtb magic → 无 machine_desc → early panic → WDT 咬死 bootloop !!!**
+- 上板实测: slimv3+xz img + WDT-fix img 刷进去都 0 输出 8s 循环(`booting linux @ 0x80108000` 重复, `Uncompressing Linux`/`Linux version`/`earlycon` 全 0 命中)。WDT 修了(开 MEDIATEK_WATCHDOG + machine_init 早停狗兜底)无效 → **WDT 不是根因, 是症状**。
+- **真正死法**: `.config` 开了 `CONFIG_ARM_APPENDED_DTB=y` + `CONFIG_ARM_ATAG_DTB_COMPAT=y` → mainline arm head.S(`arch/arm/boot/compressed/head.S:283-410`)在 zImage 解压完去 **`_edata`(zImage 文件末尾)找 dtb magic `0xd00dfeed`**, 找到则把老 LK 传的 ATAG fuse 进 dtb 当作 DTB 启动。但**我们用 mkbootimg `--dt` 把 dtb 放了独立 dt 区**, LK 把它加载到独立地址, **`_edata` 处没 dtb** → kernel 找不到 machine → early panic 死在 start.S 开 MMU 前, 连 earlycon 都没机会起。
+- **解法(已编通 2026-07-12 17:22)**: `cat zImage mt6572-z1.dtb > zImage_appended` 把 dtb **拼到 zImage 末尾**, mkbootimg **不带 `--dt`** 用 `zImage_appended` 当 kernel。head.S 在 _edata 找到 `d00dfeed` magic ✅, ATAG_COMPAT fuse LK ATAG ✅, start_kernel 有 machine ✅。
+- 产物: `out/boot_mainline_appdtb.img` (5.16MB ≤ 6MB ✅, ksz=0x422776 含 dtb 的 zImage 4.33MB + MTK ROOTFS ramdisk 1.07MB, NO separate --dt 区)。归档 `bridge_backups/products/products_appdtb_20260712_*/`。
+- **打包命令(必用此版, 别再用 --dt)**:
+  ```
+  cd /home/lxj/claude/6572
+  cat fork_linux/arch/arm/boot/zImage fork_linux/arch/arm/boot/dts/mediatek/mt6572-z1.dtb > /tmp/zImage_appended
+  ./build/mtkbootimg/mkbootimg --kernel /tmp/zImage_appended \
+    --ramdisk out/forensic/linux/ramdisk.gz \
+    --base 0x10000000 --kernel_offset 0x8000 --pagesize 2048 --mtk 1 \
+    --cmdline "console=tty0 console=ttyMT0,921600n8 earlycon=mtk8250,0x11005000 root=/dev/ram panic=0" \
+    -o out/boot_mainline_appdtb.img
+  ```
+- **ramdisk 必须 `out/forensic/linux/ramdisk.gz` (MTK ROOTFS blob 1.07MB 头`8816 8858 ...ROOTFS`)**, 不是 `out/boot_extracted/ramdisk.gz` 2.95MB 标准gzip-cpio(用错 → img 6.95MB 超 6MB 进不去)。
+- **回滚**: 刷失败兜底 `~/claude/6572/1/boot.img` (原厂零修改 6MB)。
+- **WDT 回归 bug 顺手修了** (虽非主根因但留着防狗咬 mtk_wdt probe 晚): 开 `CONFIG_WATCHDOG`+`CONFIG_MEDIATEK_WATCHDOG` (之前 slimv3 误关, mtk_wdt.o 没编进内核); `arch/arm/mach-mediatek/mediatek.c` 的 `mediatek_timer_init` 头部加 `mediatek_disable_wdt_early()` 早停狗(of_clk_init 前 ioremap 0x10007000 写 `(mode & ~EN)|WDT_MODE_KEY=0x22000000`)。WDT fix img 也已归档但单独刷无效(没拼 dtb)。
+- **earlycon 配置全对** (zó - 之前以为缺, 实测全齐): `.config` `CONFIG_SERIAL_EARLYCON=y`+`CONFIG_SERIAL_8250_MT6577=y`; `8250_mtk.c:676  OF_EARLYCON_DECLARE(mtk8250, "mediatek,mt6577-uart", ...)`; dts `uart0@11005000 compatible="mediatek,mt6572-uart","mediatek,mt6577-uart"` + `chosen.stdout-path="serial0:921600n8"` + cmdline `earlycon=mtk8250,0x11005000`. earlycon 没出不是配置坏, 是 kernel 死太早(在 console_init 前已被无 dtb 决策死)。appdtb 修好后 earlycon 应该能出。
+- **WDT 误判教训**: 上板 0 输出 bootloop 不要先怀疑 earlycon 配置 / 不要看到 `Watchdog` 字样就以为是 WDT 咬死。先核:**mainline arm APPENDED_DTB=y 时 dtb 真的 append 到 zImage 末尾了吗?** mkbootimg `--dt` 是独立 dt 区, 不 append, ATAG-only 老 LK(本 Z1 LK 是 2022 年 3.4.67 时代, strings 无 device tree 处理)跳 mainline kernel 必死。这条是 Z1 mainline 移植最大坑。
+- **下一步(待上板)**: 刷 `out/boot_mainline_appdtb.img` → 抓 log → 期待 `earlycon` + `Linux version` + 4 驱动 probe(keypad/pmic-keys/goodix/musb) → evtest 13 键 → USB ACM → 音频。
+
+**!!! 老 zImage 超分区卡点(slved, 留参考): slimv3+xz 把 zImage 压到 4.11MB 进 6MB 分区 ✅ (2026-07-12 03:45) !!!**
+- 原始本轮 zImage 8.46MB(gzip), bootimg 分区只 6MB, 配 1.07MB ramdisk 后超 1.3MB 进不去。新手 Claude 易先在这卡: 别急着塞 recovery 分区(recovery 也只 6MB 同样进不去)。
+- **解法已跑通**: 关非 Z1 上板第一阶段不跑的代码(DRM/USB-host/EHCI-OHCI-xHCI/USB_STORAGE/USBNET/CHIPIDEA/NFS/UBIFS/SQUASHFS/NTFS3/TRACING/PERF_EVENTS/SECURITYFS/其他 SoC clk-mt2701/6795/7622/7629/7981/7986/7988/8135/8516/非Z1 regulator/mfd/TI_CPSW/SMSC911X/IPV6/XFRM/等)+ **zImage 压缩由 GZIP 换 XZ**(`CONFIG_KERNEL_XZ=y`, 不改代码只更狠压,开机自解压正常)。
+- **THERMAL/SCSI/CRYPTO_* 等被 select 链拉住强关不掉**: 接受留着(几 KB), 不追 select 链(易破依赖)。
+- 关 DEBUG_INFO 无效(debug 不进 zImage 压缩流, 只让 vmlinux 瘦)。`scripts/config --disable` 对被 select 的项无效, 要用 `--set-val CONFIG_X n` 强制写 `=n`(`<string> 须大小写严格 CONFIG 前缀`)。
+- 关 config 后**必须 `make clean` 再重编**, 增量编不触发已关 .o 重生成。
+- zImage 实测: 8.46MB→5.97MB(slimv2关大头)→**4.11MB(slimv3+xz)** 进 4.96MB 预算, 富余 0.85MB。
+
+**明天产物理刷 (产物全备好, 0 编译 0 板子操作, 就等用户起 mtkclient + 插 download 线):**
+- **待刷**: `out/boot_mainline_keysusb_slim_earlycon.img` (5.16MB ≤ 6MB ✅, ANDROID! magic, cmdline=`console=tty0 console=ttyMT0,921600n8 earlycon=mtk8250,0x11005000 root=/dev/ram panic=0`, 含 keypad/goodix/musb-peripheral)。
+- **ramdisk**: 历史成功版 MTK `ROOTFS` blob 1.07MB(从 `out/boot_mainline_z1tymt0.img` 提取, 头 `8816 8858 ... ROOTFS`, 配 `root=/dev/ram`, 不是标准 gzip-cpio 的 `boot_extracted/ramdisk.gz` 2.95MB 别用错)。
+- **回滚**: 刷失败兜底 `~/claude/6572/1/boot.img` (原厂零修改 6MB)。
+- **归档**: `bridge_backups/products/products_slimv3xz_20260712_034748/` (zImage 4.11MB + dtb + .config + ramdisk + boot.img 全存)。
+- **配置备份**: `bridge_backups/dot.config_slimv2_real_*.bak`(关过大头生效版) / `dot.config_slimv3xz_*.bak`(加 XZ 终版, 明天刷前恢复用)。
+- **明天刷写命令** (用户插 download 线+按开机键进 preloader/BROM 后执行):
+  ```
+  cd /home/lxj/claude/6572
+  tools/flash_with_retry.sh bootimg out/boot_mainline_keysusb_slim_earlycon.img /home/lxj/claude/6572/1/boot.img 8
+  ```
+- **明天抓 log** (用户拔 download 线+电池开机, C3 桥连 USB-CDC 一直在线):
+  ```
+  cd /home/lxj/claude/6572
+  ./z1_capture_mainline.sh 180   # 先切桥921600再后台cat到 mainline_recon/z1_boot_mainline_*.log
+  ```
+  关键: preloader 阶段~LineState 坑只影响内核启动前的 download 模式判别, 不影响抓 console; 内核起来后再操作。
+- **earlycon 关键**: 历史上 mainline Z1 boot 0 输出 8s 重启循环(earlycon 没开)。本 img cmdline 已加 `earlycon=mtk8250,0x11005000`(8250_mtk 的 OF_EARLYCON, 靠 dts `uart0` 的 `mediatek,mt6577-uart` compatible 匹配, `<0x11005000>` 是 uart0 寄存器基址)。明天抓 log 第一行应见 `earlycon` 字样后再正常 dmesg。
+- **实测目标 3 件** (上板后):
+  1. dmesg 期待含: `mt6779-keypad probe` / `mtk-pmic-keys probe` / `goodix probe`(GT911 I2C 能不能通+EINT/RST GPIO 对不对) / `musb-hdrc / musb mediatek probe`。earlycon 输出应能定位卡点(若还循环)。
+  2. evtest 实测 13 键(8 矩阵+电源+3 触摸:返回158/主页172/多任务159)。KPAD 风险: `calc_row_col` 驱动硬编码 /9 %9 假设 9 列, Z1 是 3 列, 错位需调 dts `MATRIX_KEY(row,col,code)`。
+  3. USB ACM: 内核 ready 后插 USB 线(避免 preloader LineState 触发 download), 看 `/dev/ttyGS0` + `cat` 收发。
+- 音频用户决定先不管(本轮已弃, 未来单独立项, 见上)。
+- **KPAD 矩阵 8 键** (mt6779-keypad.c fallback `mediatek,mt6572-keypad`): VolUp/VolDown/PlayPause/Prev/Next/Media/Send/End。dts 修 3 bug: `MTK_KPD_MAP`→`MATRIX_KEY`、`keypad,keymap`→`linux,keymap`、补 `num-rows=5`+`num-columns=3`+`debounce-delay-ms=32`。
+- **PMIC mt6323 电源键** (mtk-pmic-keys.c `mediatek,mt6323-keys`): mt6323.dtsi `power` 子节点 keycodes=116(KEY_POWER) 默认 enable, `home`(KEY_VOLUMEDOWN) 在 z1.dts 被 disable(矩阵键盘接管音量下), z1.dts 只设 power-off-time-sec=5。配置充分, 无需改。
+- **Goodix GT911 触摸 + 3 安卓电容键** (`drivers/input/touchscreen/goodix.c` patch + dts `&i2c1` 节点):
+  - 硬件: GT911 @ I2C1 addr 0x5D, IRQ=GPIO129(EINT1,上升沿), RST=GPIO128, AVDD28=&mt6323_vgp1, VDDIO=&mt6323_vio18。
+  - **patch goodix.c 加 18 行**(1172-1189): 从 DT `goodix,keymap` u32[7] 数组覆盖默认硬编码 keymap(默认是 KEY_LEFTMETA/F1/F2 没用)。向后兼容(无属性保持默认)。原版备份 `bridge_backups/goodix.c_mainline_orig_20260712_010336.bak`。
+  - dts: `goodix,keymap = <KEY_BACK KEY_HOME KEY_APPSELECT 0 0 0 0>` → 返回(158)/主页(172)/多任务(159) 3 键。屏坐标 240x320 TBC 上板实测。
+- **USB CDC-ACM 模拟串口 gadget** (musb mediatek + f_acm):
+  - .config 开: `CONFIG_USB_MUSB_MEDIATEK=y` + `CONFIG_USB_INVENTRA_DMA=y` (原缺), goodix `CONFIG_TOUCHSCREEN_GOODIX=y`。`MUSB_HDRC=y`、`CONFIGFS_ACM=y`、`GENERIC_PHY=y` 已有。
+  - dts `&usb` 加 `dr_mode="peripheral"`(Z1 只做 USB device, 避开 OTG HNP/SRP)。
+  - **关键: preloader LineState 坑只影响内核启动前**, 内核接管 USB 后插线安全 → ACM 可用(/dev/ttyGS0)。dwc2=y 无 dts 节点不 probe, 不冲突。
+
+打包命令 (复用 `out/boot_extracted/ramdisk.gz` 厂商字节原样, 不自重压):
+```
+cd /home/lxj/claude/6572
+./build/mtkbootimg/mkbootimg --kernel fork_linux/arch/arm/boot/zImage \
+  --ramdisk out/boot_extracted/ramdisk.gz \
+  --dt fork_linux/arch/arm/boot/dts/mediatek/mt6572-z1.dtb \
+  --base 0x10000000 --kernel_offset 0x8000 --pagesize 2048 --mtk 1 \
+  --cmdline "console=tty0 console=ttyMT0,921600n8 root=/dev/ram panic=0" \
+  -o out/boot_mainline_keysusb.img
+```
+
+## 4a. 最新卡点 — kernel early reset 根因分析中 (2026-07-13)
+
+### 现状一句话
+`appdtbdual` boot.img 已成功刷入 Z1, LK 能跑到 `booting linux @ 0x80108000` + `lk finished --> jump to linux kernel`, 但 kernel **跳进去瞬间就 reset**, 0 输出, 回 preloader 第二轮 → bootloop。**path C (键/USB/触摸) 阻塞在 kernel 起不来, 上板验证全未完成。**
+
+### 已锁定的事实 (2026-07-13 凌晨本地分析)
+1. **jump-to-kernel 后那 36KB 乱码不是 kernel panic, 是 preloader 第二轮 banner**: 数据铁证 (log `mainline_recon/z1_boot_mainline_20260712_214311.log`) — jump 后前 36205 字节纯二进制 (0d0d0a = LK 行尾 + ff f7 a9 00 噪声), 第 36205 字节才出 `## BR switched to 921600` + `[PWRAP]_pwrap_init_sistrobe` + `[pmic6323_init]` — 全是 preloader 复位重跑标志串。`Uncompressing Linux`/`Linux version`/`earlycon` 全 0 命中。
+2. **!!! key 修正: "Uncompressing Linux" 0 输出是正常的, 不是卡点证据 !!!** agent 确认: `.config` 没开 `CONFIG_DEBUG_UNCOMPRESS` (它 `depends on !ARCH_MULTIPLATFORM` 我们 MULTIPLATFORM=y 开不了), 所以 compressed/head.S 的 `putc/flush` 是空函数 no-op, `putstr("Uncompressing Linux...")` 走的全是空调用。**解压器静默 ≠ 解压失败**。下一步要看的是 `earlycon` + `Linux version` (这俩是 start_kernel 才打的, 不依赖 DEBUG_UNCOMPRESS) — 它们仍 0 命中 = 解压后到 start_kernel 间某步 reset。
+3. **已排除的根因**:
+   - 不是 dtb magic 拼接位置错 (`_edata == zImage 文件大小 == 0x41e200`, dtb magic `d0 0d fe ed` 在 zImage 末尾 4317696 处, LE 读出 `0xedfe0dd0` = head.S OF_DT_MAGIC ✅)
+   - 不是 `CONFIG_ARM_APPENDED_DTB/ATAG_DTB_COMPAT` 没编进 (atags_to_fdt.o 已进 compressed vmlinux, nm 有符号)
+   - 不是 zImage 入口首字节非法 (`4d5a25e2` 是 a.out MZ 假象 = `eor r5,r5,#0x4d000`, 合法 ARM 指令, __initial_nops 跳过这段)
+   - **不是 cortex-a7 proc_info 不存在** (proc-v7.S:688 `0x410fc090` = A7 r0p9 在表里, `.config` CPU_V7=y, `__lookup_processor_type` 能匹配, 不会走 `__error_p`)
+4. **仍可疑的 reset 点** (待 DEBUG_LL 上板实测定位):
+   - 解压后 `cache_on` 建临时页表 (`__setup_mmu` head.S:793, `__armv7_mmu_cache_on:867`) — r4=0x80008000 (AUTO_ZRELADDR 算的), 页表建在 r4-16K=0x80004000, 若该区被 LK BSS 占用 → MMU enable 后跑飞
+   - 解压完跳 zreladdr 0x80008000 的真 vmlinux `stext`, 它再建正式页表 (`__create_page_tables`) + `__mmap_switched` 然后 `start_kernel`
+   - 旧 ATAG-only LK 跳进 mainline kernel 时若没关 cache/MMU/cpsr 模式不对, head.S 第一条就挂
+
+### DEBUG_LL 版 boot.img 已编通打包 ✅ (2026-07-13 04:02, 等明天刷)
+为让解压段 + stext 早期错误能打到 UART 直接看卡点, 开 DEBUG_LL:
+- **产物**: `out/boot_mainline_debugll.img` (5.17MB ≤ 6MB ✅). 归档 `bridge_backups/products/products_debugll_20260713_040218/` (含 boot.img + zImage + dtb + zImage_appended + ramdisk + .config + compressed/Makefile + README_DEBUGLL.md)
+- **改前备份**: `bridge_backups/dot.config_pre_debugll_20260713_032740.bak` / `compressed_Makefile_pre_debugll_20260713_033330.bak`
+- **改动**:
+  - `.config`: `DEBUG_KERNEL=y DEBUG_LL=y DEBUG_LL_INCLUDE=debug/8250.S DEBUG_UART_PHYS=0x11005000 DEBUG_UART_VIRT=0xf1005000 DEBUG_UART_8250_SHIFT=2 DEBUG_UART_8250_WORD=y` (MTK 8250 是 UPIO_MEM32+regshift=2, 必须 WORD 否则 store 用 strb 错)。**坑: DEBUG_LL `depends on DEBUG_KERNEL`, 不开 DEBUG_KERNEL olddefconfig 会把 DEBUG_LL 退成 n; 配完要 syncconfig 确认 `include/config/auto.conf` 有 DEBUG_LL 再删 compressed/*.o 强制重链**
+  - `fork_linux/arch/arm/boot/compressed/Makefile`: `ifeq ($(CONFIG_DEBUG_LL),y)` 时 `OBJS+=debug.o` + `AFLAGS_head.o += -DDEBUG` + `KBUILD_CFLAGS_misc.o += -DDEBUG` (绕过 `DEBUG_UNCOMPRESS depends on !ARCH_MULTIPLATFORM` 锁定, 让 head.S very-early kputc + hex 输出打到 DEBUG_LL UART)
+  - 验证: `nm compressed/vmlinux | grep putc` 有 2 个 (debug.S 的), `head.o` 0xb38/0xb3c 有 `0x11005000`+`0xf1005000` 字面量 ✅. zImage 已用新 head.S 重编 (03:59)
+- **打包命令** (appdtbdual 同思路: cat 拼 dtb 给 mainline + mkbootimg 带 --dt 给 LK dt_size!=0):
+  ```
+  cd /home/lxj/claude/6572
+  cat fork_linux/arch/arm/boot/zImage fork_linux/arch/arm/boot/dts/mediatek/mt6572-z1.dtb > /tmp/zImage_appdtb_debugll
+  ./build/mtkbootimg/mkbootimg --kernel /tmp/zImage_appdtb_debugll \
+    --ramdisk out/forensic/linux/ramdisk.gz \
+    --dt fork_linux/arch/arm/boot/dts/mediatek/mt6572-z1.dtb \
+    --base 0x10000000 --kernel_offset 0x8000 --pagesize 2048 --mtk 1 \
+    --cmdline "console=tty0 console=ttyMT0,921600n8 earlycon=mtk8250,0x11005000 root=/dev/ram panic=0" \
+    -o out/boot_mainline_debugll.img
+  ```
+- **明天刷** (用户起 mtkclient + 插 download 线后): `tools/flash_with_retry.sh bootimg out/boot_mainline_debugll.img /home/lxj/claude/6572/1/boot.img 8`
+- **明天抓** (用户拔 download 线 + 电池开机, **C3 桥 USB-CDC 全程在 — 注意下半夜 ESP 端口是掌机不是 C3, 别往 303a:1001 发数据**): `./z1_capture_mainline.sh 600`
+- **期待**: head.S 早期 DEBUG kputc hex 串 / `__error_p(a)` printascii 错误码 / 最理想 earlycon+Linux version。**若仍 0 输出 = 问题在 zImage 入口前 (LK 跳进来 cache/MMU/cpsr 状态不对, head.S 第一条就 reset) → 下一步 patch lk.bin 或换跳转策略**
+
+### appdtbdual 历史 (上一轮, 仍可回滚用)
+- `out/boot_mainline_appdtbdual.img` (5.42MB, dt_size=0x4376) — 解决了旧 `appdtb` (只 cat 不带 --dt → dt_size=0 导致 LK 卡 SSSS/DFO/DISP 不稳定) 的问题: **kernel 段 cat 拼 dtb 给 mainline APPENDED_DTB 用 + mkbootimg 仍带 --dt 给 LK 一个非 0 dt_size**
+- 同 img 三次开机三卡法 (非确定性 bootloop): 200250(dt_size=0 只 1 个 SSSS) / 214311(走完 SSSS+booting linux+jump 后乱码 reset, 最远) / 022635(卡 mt_disp_adjusting 没出 SSSS)。**这是 eMMC 时序导致 LK 抓不全 log, 不是根因; 即使偶尔走到 jump, kernel 跳进去也 reset**
+
+## 5. 关键教训 (别重蹈)
+
+1. **printk.disable_uart=1 来自 LK 硬编码**, 改 boot.img cmdline 没用, 要 patch lk.bin 两字节 (offset 211725+213760 `0x31→0x30`)。
+2. **Z1 拔 USB 才能正常 boot** (preloader 看 LineState 判模式); 刷写才插 download 线。两态分开。注意 C3 桥 UART 线全程不动。
+3. **别自己 gzip 重压 cpio ramdisk** (kernel 解不开), 用原厂字节原样。ramdisk 坏导致 initramfs unpacking failed → VFS panic (v6 版崩因)。
+4. **MTK 端口开机窗口时序**: 先起 mtkclient 等待, 再按开机键; 顺序反了连不上。
+5. **外编 M= 不读 autoconf.h**: 所有 `#if CONFIG_*` / `#ifdef CONFIG_*` 都要手动在子树 Makefile `ccflags-y += -DCONFIG_*=1`, 否则报 undeclared/#error。
+6. **digest verify / 0xC0 brick 不可信**: XMC flash 锁 0xC0, verify 误报; C3 桥 BUFSZ 要小 (64K malloc fail → 1K)。
+7. **vermagic 已固定为 `7.0.0-rc7-z1+` (2026-08-14 定案)**: `.config` 设 `CONFIG_LOCALVERSION="-z1"` + `CONFIG_LOCALVERSION_AUTO=n` (commit a00567cbe)。fork_linux 无 annotated tag → setlocalversion 恒定追加 `+`, **vermagic 不再随 git commit 漂移**。内核重编(改 CONFIG/dts 等)不连带失效 .ko。⚠️ 纪律: ① **绝不在 make 命令行设 `LOCALVERSION=` 环境变量** (会消掉 `+`, 使 .ko 失配) — 所有内核/模块编译用默认 make; ② 若改了某 .ko 依赖的内核 ABI (函数签名/结构体/导出符号), 必须主动重编对应 .ko (没有 hash 兜底了); ③ 当前 5 个 CONNSYS .ko vermagic = `7.0.0-rc7-z1+` (归档 `bridge_backups/products/products_connsys_modules_z1vermagic_20260814_015009/`)。
