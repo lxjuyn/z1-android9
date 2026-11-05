@@ -119,6 +119,18 @@ make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- M=drivers/misc/mediatek/connect
   用 `z1a9_gpt/scripts/z1_ramdisk_edit.py`(已修)。
 - `ro.hardware.egl` **唯一生效来源是 ramdisk 的 `/default.prop`**;
   改 `/system/build.prop` 或 `/etc/prop.default` 都无效。
+  **但 2026-11-05 已证明这个值本身在本机毫无作用**(见下条), 别再把 GPU 开关挂在它上面。
+- **GPU 开关的真身 = `/vendor/lib/egl/` 里有没有 `libGLES_mesa.so` 这个文件**(2026-11-05 逐行核实):
+  A9 `Loader.cpp:483-497` 只有 `android_getDriverNamespace()` 非 NULL 才走
+  `load_updated_driver()`(那条路才读 `ro.hardware.egl`); 而 `GraphicsEnv.cpp:85-102`
+  第一句 `android_get_exported_namespace("sphal")` 在本镜像恒为 NULL
+  (`/etc/ld.config.txt` 与 AOSP r61 `ld.config.legacy.txt` 逐字节相同, 无 `sphal`、无 `visible`)。
+  ⇒ 实际永远走 `load_system_driver()`, 按前缀 **glob** `/vendor/lib/egl/libGLES_*`:
+  有 `libGLES_mesa.so` 就用 mesa, 没有才回退 `libEGL_swiftshader.so` 三件套。
+  因此 `out/z1_fix3j_boot` 与 `out/z1_fix3k_boot` **功能完全等价**(ramdisk 只差这一行),
+  切 GPU 只需刷 system 分区。**mesa 失败没有 SwiftShader 回退**(`egl.cpp` 只缓存一次 dso),
+  排障看 logcat 的 `eglInitialize(...) failed` (只是 ALOGW, 真 fatal 在 eglChooseConfig)。
+  详见 `out/GPU_PATH_VERIFIED_20261105.md` §5。
 
 **2026-11-05 又修掉四个(都已打进 out/z1_v5_system/system_v5.img + out/z1_fix3g_boot/boot.img)**
 - **内置 app 闪退根治**: 根因是 `com.android.phone` 无限重启(34 次/76.6 秒, 34 个不同 PID),

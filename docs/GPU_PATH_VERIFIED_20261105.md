@@ -72,3 +72,117 @@ Android 9 的**动态链接器 namespace 规则**（`ld.config.txt`）是否会�
 3. `SurfaceFlinger: vendor=lima / renderer=Mali400`
 4. 无 `failed to create DRI image from FD`
 5. 稳定不崩（历史教训：换 gralloc 曾导致 SF 每帧 SIGSEGV）
+
+---
+
+# 5. 动态链接器审计结论（2026-11-05 晚，独立复核后定稿）
+
+> 审计 + 独立反驳各跑一轮。反驳方自己去 android.googlesource.com 拉了 r61 源码、
+> 自己用 debugfs 从镜像里 dump 了库、自己写了符号解析器。结论：
+
+## 5.1 结论：**不挡**，但机制和原先以为的不一样
+
+镜像 `/etc/ld.config.txt` 与 AOSP r61
+`rootdir/etc/ld.config.legacy.txt` **逐字节相同**
+（sha256 `f26fd0c967ecc7036a6732059f832ab3e56628c4ef9d831934de4b66fe302ec9`，1588 B）。
+`namespace.default.isolated = false`（第 17 行），`is_accessible()` 在非隔离命名空间下
+直接返回 true（A9 `linker_namespaces.cpp:36-39`）。镜像里 `/etc` **只有**这一个
+ld.config，没有 `.arm.` / `.28.` / `.vndk_lite.` 变体。
+
+`libGLES_mesa.so` 82 个 UND、`gallium_dri.so` 267 个 UND，在镜像自带库的闭包里
+**0 个未解析符号**；`e_flags 0x5000200` EABI5 与 ROM 的 `libEGL.so` 一致；无 `DT_TEXTREL`。
+
+## 5.2 **重要纠正：`ro.hardware.egl` 在这台机器上根本不起作用**
+
+A9 `frameworks/native/opengl/libs/EGL/Loader.cpp:483-497`：
+
+```cpp
+android_namespace_t* ns = android_getDriverNamespace();
+if (ns) dso = load_updated_driver(kind, ns);   // 这条路才读 ro.hardware.egl
+if (!dso) dso = load_system_driver(kind);      // 实际走的是这条
+```
+
+`android_getDriverNamespace()`（`GraphicsEnv.cpp:85-102`）第一步就是：
+
+```cpp
+auto sphalNamespace = android_get_exported_namespace("sphal");
+if (!sphalNamespace) return;      // mDriverNamespace 保持 null
+```
+
+而 `ld.config.txt` 里**既没有 `namespace.sphal`，也没有任何 `visible` 行**
+（命名空间只有 `.visible = true` 才导出，`linker.cpp:3808-3835`）。
+⇒ `android_getDriverNamespace()` 恒返回 NULL ⇒ `load_updated_driver()` **永远不会执行**
+⇒ **`ro.hardware.egl` 写 mesa 还是 swiftshader 完全不影响选谁。**
+
+真正的选择机制在 `load_system_driver()`（`Loader.cpp:320-461`）：
+
+1. `checkGlesEmulationStatus()` 返回 2（模拟器）才用 `lib<kind>_swiftshader.so`——真机不是。
+2. 先找精确名 `/vendor/lib/egl/libGLES.so` —— **不存在**。
+3. 再按前缀 **glob** `/vendor/lib/egl`（然后 `/system/lib/egl`），pattern = `libGLES_`：
+   - `libGLES_mesa.so` ✅ 命中（`libGLESv1_CM_*` / `libEGL_*` 不匹配该前缀）
+4. `load_driver("GLES")` 拿到 dso 后就不再试别的，**只有一条路**。
+
+**实测镜像内容（v14）**：`/vendor/lib/egl/` = `libGLES_mesa.so`(94,488 B) +
+`libGLESv1_CM_swiftshader.so` + `libGLESv2_swiftshader.so` + `libEGL_swiftshader.so`。
+v16（非 GPU 版）：**没有** `libGLES_mesa.so` → 步骤 3 落空 → 回退到
+`load_driver("EGL")` glob `libEGL_` 命中 `libEGL_swiftshader.so`，再用
+`libGLESv1_CM_swiftshader.so` / `libGLESv2_swiftshader.so`。这就是它一直能跑的原因。
+
+**推论（可省一次刷写）**：`out/z1_fix3j_boot/boot.img` 与 `out/z1_fix3k_boot/boot.img`
+解包后 ramdisk 里**只有 `default.prop` 一行不同**（`ro.hardware.egl=swiftshader` vs `mesa`），
+kernel 段逐字节相同。而这一行已被证明无作用 ⇒ **两个 boot.img 功能完全等价**，
+GPU 开关 100% 在 system 镜像（有没有 `/vendor/lib/egl/libGLES_mesa.so`）。
+以后切 GPU 只需要刷一个分区。
+
+## 5.3 Mesa 侧下一跳也已核实
+
+`libGLES_mesa.so` 里写死 `DRI_DRIVER_DIR = "/vendor/lib/dri"`
+（文件偏移 0x11D5C，与 `%.*s/%s_dri.so` 同段），另有 `LIBGL_DRIVERS_PATH` 可覆盖。
+镜像里 `/vendor/lib/dri/lima_dri.so` 是指向 `gallium_dri.so`(4,662,060 B) 的符号链接
+（fast symlink，dest 长度 14，已 `debugfs stat` 确认）。
+驱动名由 `drmGetVersion()` 反查，内核 `lima_drv.c` `.name = DRIVER_NAME = "lima"`
+⇒ `loader_get_driver_for_fd()` 得 `"lima"` ⇒ `dlopen("/vendor/lib/dri/lima_dri.so")`。
+（`MESA_LOADER_DRIVER_OVERRIDE` 的变量名字符串在库里，但 `lima` 这个值**不在**——
+驱动名是运行时查出来的，不是编进去的。）
+
+## 5.4 gralloc 选谁也已核实（原先是个硬币）
+
+镜像里有两个 gralloc：
+
+| 路径 | inode | 大小 | 实现 |
+|---|---|---|---|
+| `/system/lib/hw/gralloc.z1.so` | 468 | 25,116 | **dma-buf**（有 `z1_lima_alloc_dmabuf`） |
+| `/vendor/lib/hw/gralloc.default.so` | 1011 | 25,024 | 旧 ashmem（无 z1_lima_* 符号） |
+
+A9 `hardware.c:171-226` 顺序：`ro.hardware.gralloc` → 变体 `ro.hardware`,`ro.product.board`,
+`ro.board.platform`,`ro.arch` → 最后才 `default`；每个变体按 `/odm/lib/hw`→`/vendor/lib/hw`→
+`/system/lib/hw` 找。
+板上 `ro.product.board=z1`（`/vendor/build.prop` 实测）、`ro.hardware=z1`
+（`androidboot.hardware=z1`）⇒ 命中 `gralloc.z1.so`（dma-buf 那版）✅，
+`gralloc.default.so` 只有在这些 prop 全失效时才会被选中——它是个隐患，不是当前路径。
+
+## 5.5 剩下的风险点（都在"能不能真的初始化成功"，不在加载）
+
+1. `/dev/dri/renderD128` 必须存在且 `0666 root graphics`
+   —— `ueventd.rc:68` `/dev/dri/* 0666 root graphics` ✅，内核 `CONFIG_DRM=y DRM_LIMA=y`
+   且 `System.map` 有 169 个 lima 符号、历史日志有 `[drm] Initialized lima 1.1.0 for 13010000.gpu`。
+2. `eglInitialize()` 是否成功。**注意**：A9 `egl_display.cpp:145-283` 里 `eglInitialize` 失败
+   只打 `ALOGW`，然后照样 `return EGL_TRUE`；真正 fatal 在后面
+   `eglChooseConfig`/`eglCreateContext` 返回 0 → `RenderEngine::create()` 得 null →
+   SF `LOG_ALWAYS_FATAL`。所以**排障看 `eglInitialize(...) failed` 这行 W**。
+3. **没有 SwiftShader 回退**：`egl.cpp` 只缓存一次 `cnx->dso`，任何地方都不重试。
+   mesa 挂了就是 SF 死循环，只能重刷 system。这是已知且已接受的代价。
+4. `gl_unimplemented` 缺失入口**会**打 `ALOGE "called unimplemented OpenGL ES API"`（限流 1/s），
+   不是静默——日志能看出来。
+
+## 5.6 顺带纠正的两条旧认识
+
+- `/system/etc/prop.default`（inode 2691，181 B）里写的是 `ro.hardware.egl=swiftshader`，
+  `/vendor/build.prop`、`/build.prop` 也是。它们**全都不生效**：init 的
+  `property_service.cpp:681-686` 是 `if/else` 链，先读 `/system/etc/prop.default`——
+  但那时 `/system` 还没挂（`property_load_boot_defaults()` 早于所有 trigger），
+  所以读到的是 ramdisk 的 `/default.prop`。旁证：`ro.zygote` 只存在于 ramdisk
+  `default.prop:34`，而 zygote 确实起来了。
+  ⇒ 结论仍然成立（ramdisk 的 default.prop 赢），但**赢的那一行的内容无所谓**。
+- 我之前把 `ro.hardware.egl` 当成"GPU 开关的关键"，这是错的。真正的开关是
+  **`/vendor/lib/egl/` 里有没有 `libGLES_mesa.so` 这个文件**。

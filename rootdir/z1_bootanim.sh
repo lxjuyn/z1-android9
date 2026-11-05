@@ -1,30 +1,33 @@
 #!/system/bin/sh
 # Pick which boot animation to show.
 #
-# 2026-11-05: libbootanimation.so only searches /product/media, /oem/media and
-# /system/media (strings-verified) -- there is no /data override, and /system is
-# read-only, so the animation cannot be swapped by replacing a file.  Instead we
-# bind-mount a different zip over /system/media/bootanimation.zip before exec'ing
-# the real bootanimation.  mount(2) does not modify the read-only filesystem, so
-# this works on the shipping image.
-#
-# When to show "正在优化系统": whenever the system image changed, because that is
-# exactly what makes zygote prune the dalvik cache and recompile every system app
-# (the 8-15 minute window).  The tag file records the build.prop checksum of the
-# system we last fully booted; a flash changes it.
+# 2026-11-05 (v2).  Two bugs in v1, both confirmed on the built images:
+#   1. /media/bootanimation.zip and /media/bootanimation-optimizing.zip were
+#      byte-identical (md5 4c9d2271...), i.e. the real LineageOS animation was
+#      gone and the bind mount was a semantic no-op.
+#   2. the switch used md5(/system/build.prop), which is IDENTICAL across
+#      v13/v14/v15 (bc86c2f4...), so the "first boot after a flash" condition
+#      never fired -- the tag never changed.
+# v2 uses /system/etc/z1_system_id, a string stamped into each image at build
+# time, so it really does change whenever the system changes.
 TAG=/data/misc/z1_anim_tag
-PROP=/system/build.prop
+ID=/system/etc/z1_system_id
 OPT=/system/media/bootanimation-optimizing.zip
 LOS=/system/media/bootanimation.zip
 
 cur=""
-[ -f "$PROP" ] && cur=$(md5sum "$PROP" 2>/dev/null | cut -d' ' -f1)
+[ -f "$ID" ] && cur=$(cat "$ID" 2>/dev/null | tr -d ' \r\n')
 old=""
-[ -f "$TAG" ] && old=$(cat "$TAG" 2>/dev/null)
+[ -f "$TAG" ] && old=$(cat "$TAG" 2>/dev/null | tr -d ' \r\n')
 
-if [ -f "$OPT" ] && [ "$cur" != "$old" ]; then
-    mount --bind "$OPT" "$LOS" 2>/dev/null \
-        && printf '<6>[z1anim] showing optimizing animation (build %s -> %s)\n' "$old" "$cur" > /dev/kmsg 2>/dev/null
+if [ -n "$cur" ] && [ "$cur" != "$old" ] && [ -f "$OPT" ] && [ -f "$LOS" ]; then
+    if mount --bind "$OPT" "$LOS"; then
+        printf '<6>[z1anim] optimizing animation (id %s -> %s)\n' "${old:-none}" "$cur" > /dev/kmsg 2>/dev/null
+    else
+        printf '<6>[z1anim] bind mount FAILED, falling back to the shipped animation\n' > /dev/kmsg 2>/dev/null
+    fi
+else
+    printf '<6>[z1anim] normal animation (id %s, tag %s)\n' "${cur:-none}" "${old:-none}" > /dev/kmsg 2>/dev/null
 fi
 
 exec /system/bin/bootanimation "$@"
