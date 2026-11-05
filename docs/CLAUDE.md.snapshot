@@ -117,6 +117,11 @@ make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- M=drivers/misc/mediatek/connect
   用 `tools/z1_pack_mtk_bootimg.py`(已内置该校验)。
 - ramdisk 记录 mode 必须带类型位(S_IFREG), 否则内核 `do_name()` 静默丢弃;
   用 `z1a9_gpt/scripts/z1_ramdisk_edit.py`(已修)。
+- **改了会进 ramdisk 的东西(`.ko`/rc/脚本/prop)必须重打 ramdisk, 不能沿用旧 rootfs**(2026-11-05 踩到):
+  `fix3j`/`fix3k` 用 `--rootfs` 沿用上一版整块 ramdisk, 而 `z1_cst836u.ko` 源码 11-04 已加
+  `INPUT_PROP_DIRECT`、ramdisk 里那个却是旧构建(反汇编: 缺 `orr r3,r3,#2 / str [r3,#20]`
+  写 `input_dev.propbit` 那三条), 导致触摸在 Android 侧不被当直接触摸屏。
+  打完包**必须从 boot.img 反解 rootfs 再 dump 关键文件 md5 比对**, 不能只看"打包成功"。
 - `ro.hardware.egl` **唯一生效来源是 ramdisk 的 `/default.prop`**;
   改 `/system/build.prop` 或 `/etc/prop.default` 都无效。
   **但 2026-11-05 已证明这个值本身在本机毫无作用**(见下条), 别再把 GPU 开关挂在它上面。
