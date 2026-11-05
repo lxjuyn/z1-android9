@@ -17,7 +17,11 @@ while :; do
             MemFree:) free=$val ;;
         esac
     done < /proc/meminfo
-    voltage=$(cat /sys/class/power_supply/adc-battery/voltage_now 2>/dev/null)
+    # 2026-11-05 (v17): the battery psy is named "battery" on this image
+    # (z1_charger + generic-adc-battery); adc-battery never existed, so every
+    # beat logged voltage= (empty).  Keep a fallback in case it is renamed.
+    voltage=$(cat /sys/class/power_supply/battery/voltage_now 2>/dev/null)
+    [ -n "$voltage" ] || voltage=$(cat /sys/class/power_supply/adc-battery/voltage_now 2>/dev/null)
     printf '<6>[z1hb] beat=%s uptime=%ss free=%skB tasks=%s voltage=%s\n' \
         "$i" "$up" "$free" "$tasks" "$voltage" \
         > /dev/kmsg 2>/dev/null || true
