@@ -1,0 +1,10 @@
+# 2026-11-05: run the wrapper instead of bootanimation directly so the first
+# boot after a system flash can show "正在优化系统" and later boots the normal
+# LineageOS animation.  The wrapper needs root for mount --bind.
+service bootanim /system/bin/sh /system/bin/z1_bootanim.sh
+    class core animation
+    user root
+    group graphics audio
+    disabled
+    oneshot
+    writepid /dev/stune/top-app/tasks
