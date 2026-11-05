@@ -266,6 +266,12 @@ u8 HMI[512] __attribute__((aligned(8), visibility("default")));
 
 #define HMI_AS_MODULE ((struct hw_module_t *)HMI)
 
+/* From hardware/libhardware/include/hardware/gralloc.h (the module is built
+ * freestanding, so the header itself is not available here). */
+#ifndef GRALLOC_USAGE_HW_FB
+#define GRALLOC_USAGE_HW_FB 0x00001000U
+#endif
+
 static struct hw_module_t *real_mod;
 static struct alloc_device_t *real_alloc_dev;
 static struct alloc_device_t our_alloc_dev;
@@ -277,6 +283,28 @@ static int our_alloc(struct alloc_device_t *dev, int w, int h, int format,
 	int *nh, oldfd, newfd, size, err;
 
 	(void)dev;
+
+	/*
+	 * 2026-11-05: NEVER convert framebuffer-usage buffers.
+	 *
+	 * Board evidence: with every ashmem buffer replaced by a dma_heap fd,
+	 * SurfaceFlinger died on every present with
+	 *   signal 11 (SIGSEGV), code 2 (SEGV_ACCERR)
+	 *   #01 sw::FrameBuffer::copy(sw::Surface*)
+	 *   #03 sw::FrameBufferAndroid::blit(...)
+	 *   #08 DisplayDevice::swapBuffers(android::HWComposer&)
+	 * SwiftShader maps the HW_FB buffer and writes it directly; a dma_heap
+	 * fd has different mapping permissions/layout, hence SEGV_ACCERR, and
+	 * the panel never got a frame.
+	 *
+	 * HW_FB buffers must stay as the stock gralloc produced them.  Only the
+	 * render/compose buffers (the ones lima needs to import via
+	 * drmPrimeFDToHandle) are worth converting.
+	 */
+	if (usage & GRALLOC_USAGE_HW_FB)
+		return real_alloc_dev->alloc(real_alloc_dev, w, h, format, usage,
+					     handle, stride);
+
 	err = real_alloc_dev->alloc(real_alloc_dev, w, h, format, usage,
 				    handle, stride);
 	if (err != 0 || handle == 0 || *handle == 0)
