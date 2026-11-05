@@ -39,6 +39,15 @@ v14 有 `libGLES_mesa.so` 就用 mesa，v16 没有就回退 `libEGL_swiftshader.
 | 回滚 system | `out/z1_v16_system/system_v16.img` | — |
 | 兜底 | `1/boot.img`（原厂） | — |
 
+整幅镜像的 sha256 只标识"这个文件"，不是可复现的构建指纹（debugfs 每次都会更新 ext4
+超级块的写时间）。**判定内容是否正确请用这三个 content hash**（v17 实测就是这个值）：
+```
+/lib/modules/z1_charger.ko  8967b0ba5cb3ac592dcd047a96b8fb48e4ae19ddc8d75a4f7fe852d0aa6cf2fe
+/etc/init/z1_fm.rc          e0be383b927811bb6f3e47a1426d422927266048625cba7f12b900b85178aacd
+/lib/modules/load_fm.sh     fad51b3789fbbc77a7a177d1fcab28e4249c16e4ed5506b8baaf63a247ca8ada
+```
+用 `tools/z1_build_v17_system.sh` 可以从 v16 完整重放 v17（已实测三个 hash 与 xattr 一致）。
+
 fix3p 相比 fix3n：修回被我一度覆盖成旧版的 `z1_cst836u.ko`（md5 必须 = `3aa31907d7eb7b31b5b7cfa63d742db0`），
 加 `z1_heartbeat.sh` 电池路径修复。**打包后从 boot.img 反解校验过**：kernel_size=4236583=payload+512、
 ramdisk_size=1982044=gz+512、dtb `initrd-end=0x842e3c5c`、cpio 里 .ko md5 正确。
