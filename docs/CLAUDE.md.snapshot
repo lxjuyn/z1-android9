@@ -171,14 +171,18 @@ make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- M=drivers/misc/mediatek/connect
   符号链接不起来, `exec` 失败后 mksh 错误清理路径双重释放(fault addr 恒定 0xe3b43b94)。
   修法: `z1_wpa_start.sh` exec 前先探 `wpa_supplicant -v`; service 加 oneshot。
 
-**当前未解决**
-- 整机仍卡: SwiftShader 软渲染(主线程曾出现 164 秒 `Slow delivery`)。GPU 需走
-  dma-buf gralloc 路线; 包装库已重链 libdl(`out/gralloc.z1.dl.so` 10,044 B, DT_NEEDED
-  有 libdl/liblog/libc), 但**上次直接换是崩在 `failed to open gralloc0 device: EINVAL`**,
-  本版已一并打入待验证。
-- `wpa_supplicant` 每 4 秒 exit 1(stderr 没抓, 下次把 stderr 转 kmsg)。
+**当前未解决 (2026-11-05 晚更新)**
+- **真 GPU 加速**仍待验证: `out/z1_gpu9_boot/boot.img` (350f7266…) +
+  `out/z1_gpu9_system/system_gpu9.img` (494d2845…) 已备好 —— boot 侧 egl=mesa +
+  ueventd dma_heap/renderD128, system 侧新 gralloc(只转 render buffer) + Mesa 19.1.8。
+  **boot 与 system 必须一起刷**(之前那次失败就是 boot 还是 swiftshader 配 dma-buf gralloc)。
+- `wpa_supplicant` 缺 `SSL_set_session_ticket_ext`(libssl 版本不匹配), 现在只探针跳过 +
+  oneshot 止血, 真要 WiFi 上网得换一个能链接的 supplicant 或补 libssl。
 - `z1_mnld` 已 oneshot 止血; 真因(疑 `/data/misc/GPS_CHIP.cfg` 或 `/dev/stpgps` ioctl)未查。
 - Watchdog 内核卡死(`Binder` 线程卡在 `sock_def_readable`/`unix_dgram_sendmsg` 自旋锁)。
+- Trebuchet 的 APK/dir 还是 `unlabeled` SELinux 标签, permissive 下能跑, 转 enforcing 前要补。
+- `pm.dexopt.first-boot` 在 build.prop 和 prop.default 里都**没有**, 但 PMS 要求非空 ——
+  应放在 boot ramdisk 的 default.prop, 上板 `getprop pm.dexopt.first-boot` 可确认。
 
 **回滚链**
 `out/z1_fix3_boot/boot.img` + `out/z1_fix3_system/system_fix3.img`(能进系统那版)
