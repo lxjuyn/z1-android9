@@ -1,0 +1,4 @@
+# 2026-11-05: load the FM driver. It has shipped since 2026-11-02 but nothing
+# ever insmod'ed it, so FM was dead on every build.
+on post-fs-data
+    exec_background u:r:init:s0 root root -- /system/bin/sh /lib/modules/load_fm.sh
