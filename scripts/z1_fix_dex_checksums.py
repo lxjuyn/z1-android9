@@ -36,14 +36,27 @@ import zlib
 
 
 def fix_dex(data):
-    """Return (new_bytes, changed, stored, actual)."""
+    """Return (new_bytes, changed, stored, actual).
+
+    Only the checksum is meaningful to ART (DexFileVerifier::CheckHeader
+    verifies adler32 and never the SHA-1), but both are kept consistent.
+    """
     if data[:4] != b'dex\n':
         return data, False, None, None
     stored_sum, = struct.unpack('<I', data[8:12])
     stored_sig = data[12:32]
-    calc_sum = zlib.adler32(data[32:]) & 0xffffffff
+    # DEX spec: checksum (u4 @8) is adler32 over everything AFTER the
+    # checksum field, i.e. bytes[12:].  signature (20B @12) is SHA-1 over
+    # everything AFTER the signature, i.e. bytes[32:].  Using [32:] for the
+    # adler32 -- as an earlier revision of this tool did -- produces a
+    # mismatching value and would CORRUPT an otherwise valid file.
+    calc_sum = zlib.adler32(data[12:]) & 0xffffffff
     calc_sig = hashlib.sha1(data[32:]).digest()
-    if stored_sum == calc_sum and stored_sig == calc_sig:
+    # The SHA-1 is NOT verified by ART (DexFileVerifier::CheckHeader only
+    # compares the adler32), so a differing signature alone is not a defect
+    # and rewriting it would change bytes for no benefit.  Only the checksum
+    # decides whether this file needs repair.
+    if stored_sum == calc_sum:
         return data, False, stored_sum, calc_sum
     out = bytearray(data)
     out[8:12] = struct.pack('<I', calc_sum)
