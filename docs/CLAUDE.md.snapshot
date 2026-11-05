@@ -140,6 +140,37 @@ make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- M=drivers/misc/mediatek/connect
   **已知遗留**: Trebuchet 的 APK/dir 还是 `unlabeled` SELinux 标签, permissive 下能跑,
   转 enforcing 前必须补 `system_file`。
 
+**2026-11-05 晚 (v7/v8/v9, 上板逐项验证)**
+- **开机慢的真凶 = 没有 boot image**: `/system/framework/arm.noimage/` 其实是**完整一套**
+  (60 文件 36.45MB, 含 boot.art 2,351,104 / boot.oat 4,004,452 / boot.art.rel 220,304 /
+  boot-framework.oat 13,064,512, mtime 与 framework.jar 同批), 只是目录被改名禁用。
+  没有它时 zygote 每次开机用 dex2oat 现编一个, 110s 起、**605s 堆损坏 SIGABRT**,
+  白烧约 8 分钟, 然后 `Preemptively pruning the dalvik cache`, PMS 再把 150+ 包全量重编。
+  v7 起改名回 `arm`, `patchoat` 正常工作, 不再 prune。
+- **gralloc 与 SwiftShader 的冲突**: 把所有 ashmem buffer 都换成 dma_heap fd 会让
+  SurfaceFlinger 每次 present 都 `SIGSEGV code 2 SEGV_ACCERR`
+  (`sw::FrameBuffer::copy` → `FrameBufferAndroid::blit`) —— SwiftShader 直接 map
+  HW_FB buffer 往里写, dma_heap fd 的映射权限对不上。**修法**: `our_alloc` 里
+  `if (usage & GRALLOC_USAGE_HW_FB) return real_alloc_dev->alloc(...)` 原样放过,
+  只转 render/compose buffer。
+- **开机动画(二屏)**: `/build.prop` 的 `debug.sf.nobootanimation=1`(10-30 r5h 性能优化加的)
+  是 bootanimation 自己读的(`BootAnimationUtil.cpp:30` → `bootanimation_main.cpp:150-151`
+  直接 return 0), 就是"看不到二屏"的原因。去掉后 bootanim 从 1.7 秒退出变成一直播到
+  `boot_completed` —— **这正是 A9 覆盖 dexopt 期的原生行为**(WMS 只在 AMS finishBooting
+  后才置 exit=1)。A9 的 "Optimizing app N of M" 我们永远看不到(`showDialog=mIsPreNUpgrade`
+  PMS:2616, 且 WMS 要求 !mFirstBoot; SF 从 4.1 起没有 showBootMessage)。
+- **v9 双动画**: `/bin/z1_bootanim.sh` 比对 `/system/build.prop` 的 md5 与
+  `/data/misc/z1_anim_tag`, 不一致就 `mount --bind` 自制"正在优化系统" zip 盖住
+  `/media/bootanimation.zip`; boot_completed 时 `z1_anim_marker.sh` 写标记。
+  刷了新 system -> 首启显示优化页, 之后恢复正常 LOS 动画。
+  (bootanimation 的搜索路径写死 /product/media → /oem/media → /system/media, 无 /data 档)
+- **netd HIDL 崩溃**: 本项目补丁把 `NetdHwService mHwSvc;` 从 main() 挪进 if 块, 注册后
+  4 条指令就析构 -> 下次 `_hidl_interfaceChain` 里 `RefBase::incStrong` 读 mRefs=0 ->
+  SIGSEGV fault addr 0x4。二进制补丁: 偏移 0x4727a `c9f764e9` -> `00bf00bf`。
+- **sh SIGSEGV 风暴**: `/system/bin/wpa_supplicant` 缺 `SSL_set_session_ticket_ext`
+  符号链接不起来, `exec` 失败后 mksh 错误清理路径双重释放(fault addr 恒定 0xe3b43b94)。
+  修法: `z1_wpa_start.sh` exec 前先探 `wpa_supplicant -v`; service 加 oneshot。
+
 **当前未解决**
 - 整机仍卡: SwiftShader 软渲染(主线程曾出现 164 秒 `Slow delivery`)。GPU 需走
   dma-buf gralloc 路线; 包装库已重链 libdl(`out/gralloc.z1.dl.so` 10,044 B, DT_NEEDED
