@@ -11,9 +11,13 @@
 #   leaves the chip digitally as FM-I2S into the AFE (ASRC -> DL1).
 #   So the prerequisites are: the WMT stack up (mtk_stp_wmt_soc, already
 #   loaded by the radio chain) and nothing else.
+#
+# 2026-11-05 (v17): KO used to be /lib/modules/... -- there is no /lib at
+#   runtime (init.rc only symlinks /bin, /etc, /d, /vendor), so the module was
+#   never found and FM stayed dead.  Same fix as load_audio.sh.
 log() { printf '<6>[z1fm] %s\n' "$*" > /dev/kmsg 2>/dev/null || true; }
 
-KO=/lib/modules/mtk_fm_drv.ko
+KO=/system/lib/modules/mtk_fm_drv.ko
 [ -f "$KO" ] || { log "no $KO; FM unavailable"; exit 0; }
 
 if [ -d /sys/module/mtk_fm_drv ]; then

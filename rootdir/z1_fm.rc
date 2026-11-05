@@ -1,0 +1,10 @@
+# 2026-11-05: load the FM driver. It has shipped since 2026-11-02 but nothing
+# ever insmod'ed it, so FM was dead on every build.
+#
+# 2026-11-05 (v17): the script path was /lib/modules/load_fm.sh, which does
+# not exist at runtime -- init.rc symlinks only /bin, /etc, /d and /vendor;
+# there is no /lib symlink and the ramdisk has no /lib, so sh could not open
+# the script and the loader silently did nothing.  load_audio.sh already
+# uses /system/lib/modules for the same reason.
+on post-fs-data
+    exec_background u:r:init:s0 root root -- /system/bin/sh /system/lib/modules/load_fm.sh
