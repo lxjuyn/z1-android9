@@ -74,3 +74,19 @@ bit 14 = `LIMA_GP_IRQ_PLB_INVALID_CMD` —— **GP 执行到一条非法命令�
   推出的机制，不是实测。验证方法：写一个最小程序，GPU 渲染已知图案到 dma-buf，CPU 立刻读回比对；
   在**不**调用 DMA_BUF_IOCTL_SYNC 与调用后各测一次，差异即证据。
 - `PLB_INVALID_CMD` 与彩虹是不是同一件事，未确认。
+
+## 6. 上板 A/B 实证（2026-11-05 23:2x，同一套 boot.img = fix3p）
+
+| system 镜像 | 里面有没有 `libGLES_mesa.so` | 屏幕 |
+|---|---|---|
+| `system_v18.img` | 有（Mesa 19.1.8） | **彩虹条**（bootanim 阶段就出现） |
+| `system_v17.img` | 没有 → 回退 swiftshader 三件套 | **正常的 LineageOS 二屏**（用户肉眼确认） |
+
+boot 分区是同一个 `fix3p`，只换 system 分区，所以变量只有一个：**mesa 这个文件在不在**。
+这坐实了 §5 的判断：问题出在 Mesa/lima 输出这一侧，不是显示链路、不是 LK、不是面板。
+
+同时这一轮还验证了另外两条修复：
+- `[z1hb] ... voltage=3880000` —— heartbeat 的电池 psy 名修复生效（以前是空的）。
+- `mt6572-pinctrl: Can not find pin` + `request_irq(37) -EINVAL` —— **PMIC 中断那条还没修好**，
+  把 dts 的 `<150>` 改成 `<16>` 之后行为完全没变，说明 hwirq 到 pin 的换算不是这条路径，
+  需要再挖一层（或改用轮询兜底）。
