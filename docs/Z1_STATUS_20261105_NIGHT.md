@@ -34,7 +34,7 @@ v14 有 `libGLES_mesa.so` 就用 mesa，v16 没有就回退 `libEGL_swiftshader.
 | 角色 | 文件 | sha256 |
 |---|---|---|
 | **boot（推荐）** | `out/z1_fix3p_boot/boot.img` | `db98a5e5fd7cf1efed09067c91d3d81d9207b199ffc01731aee7544d85444983` |
-| **system（推荐）** | `out/z1_v17_system/system_v17.img` | `b19fcc608ecc7f72d4d03bb1b54283f3d2a1c33bb0f0a98925aa49c00a0b62dd` |
+| **system（推荐）** | `out/z1_v17_system/system_v17.img` | `560727cbc8b77ee45ae01b0339e97f600aad70e99804f00bf88188eb5cd29d44` |
 | 回滚 boot | `out/z1_fix3k_boot/boot.img`（= fix3j，可启动） | — |
 | 回滚 system | `out/z1_v16_system/system_v16.img` | — |
 | 兜底 | `1/boot.img`（原厂） | — |
@@ -67,7 +67,12 @@ tools/flash_with_retry.sh android  out/z1_v17_system/system_v17.img out/z1_v16_s
 3. **FM**：`dmesg | grep z1fm` 应出现 `insmod OK` → `/dev/fm ready`；绝不能是 `no /lib/modules/...`。
 4. **触摸**：`dumpsys input` 里该设备应是 `Sources: TOUCHSCREEN`，不应出现鼠标指针。
 5. **电池**：`[z1hb]` 心跳里 `voltage=` 不再是空。
-6. **标签**：`dmesg | grep "invalid context"` 应为 0 条（原来 4 个 rc 每次开机刷）。
+6. **标签**：只能在刷写前后用 `debugfs -R "ea_list <path>"` 核对（本轮已核对通过）。
+   **不要**用 `dmesg | grep "invalid context"` 去验 —— 复核证明这条路根本不会打印：
+   `security_context_to_sid_default()` 带 force=1，遇到未定义类型时把原始串存成
+   uninterpreted context 并返回 0，既不回退 `def_sid` 也不打日志
+   (`security/selinux/ss/services.c:1601-1606`、`:1671-1675`)。原来 4 个 rc 的
+   `vendor_init_rc` 在 enforcing 下照样会全部被拒，只是**没有任何日志证据**。
 
 ---
 

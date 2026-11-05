@@ -101,7 +101,7 @@ make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- M=drivers/misc/mediatek/connect
 ### 4.00 2026-11-05 夜 — 离线修掉 6 个硬 bug, 产物待刷(设备离线/电池 3034 mV)
 
 **推荐刷写组合**: boot=`out/z1_fix3p_boot/boot.img` (sha `db98a5e5…`) +
-system=`out/z1_v17_system/system_v17.img` (sha `b19fcc60…`)。回滚 = fix3k boot + v16 system。
+system=`out/z1_v17_system/system_v17.img` (sha `560727cb…`)。回滚 = fix3k boot + v16 system。
 详见 `out/Z1_STATUS_20261105_NIGHT.md`。
 
 1. **触摸**: fix3j/fix3k 的 ramdisk 里 `z1_cst836u.ko` 是旧构建(反汇编缺写
