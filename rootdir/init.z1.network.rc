@@ -68,6 +68,12 @@ service z1_wpa_supplicant /system/bin/sh /z1_wpa_start.sh
     class main
     socket wpa_wlan0 dgram 660 wifi wifi
     disabled
+    # 2026-11-05: oneshot.  The supplicant binary in this image cannot link
+    # (missing libssl symbol), so this service exited 1 and init respawned it
+    # every 4 s -- 77 restarts in one boot, each one burning CPU and, before
+    # the exec guard above, dropping a tombstone.  One attempt per boot is
+    # enough until the supplicant/libssl mismatch is fixed.
+    oneshot
     seclabel u:r:init:s0
 
 on property:init.svc.z1_wpa_supplicant=running
