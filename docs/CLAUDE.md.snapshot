@@ -120,15 +120,34 @@ make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- M=drivers/misc/mediatek/connect
 - `ro.hardware.egl` **唯一生效来源是 ramdisk 的 `/default.prop`**;
   改 `/system/build.prop` 或 `/etc/prop.default` 都无效。
 
+**2026-11-05 又修掉四个(都已打进 out/z1_v5_system/system_v5.img + out/z1_fix3g_boot/boot.img)**
+- **内置 app 闪退根治**: 根因是 `com.android.phone` 无限重启(34 次/76.6 秒, 34 个不同 PID),
+  镜像无 radio HAL 无 rild, `IRadio/slot1` 缺失日志 238 条。`ro.radio.noril=yes` 之后
+  板上实测 FATAL 34->0、IRadio 238->0、zygote 重启 4->1。
+- **netd HIDL 崩溃**: 本项目自己的补丁把 `NetdHwService mHwSvc;` 从 `main()` 作用域挪进了
+  `if` 块, 注册后 4 条指令就析构, 注册出去的 BnHwNetd 的 `mImpl` 指向已析构对象 ->
+  `_hidl_interfaceChain` 里 `RefBase::incStrong` 读 mRefs=0 -> SIGSEGV fault addr 0x4。
+  netd 无构建树, 直接二进制打补丁: 偏移 0x4727a `c9f764e9`(blx ~RefBase) -> `00bf00bf`。
+- **电池 0%**: DT 的 `power-supplies = <&z1_charger>` 导致电池永远 `-EPROBE_DEFER`
+  (充电器 cell 由 MFD 建, 有 of_node 但没 fwnode, fwnode 比较永不命中)。已去掉该行。
+- **音频路由**: `tinymix set`/`tinymix controls` 都是不存在的子命令, 五条路由从未生效。
+  改成 `tinymix [控件] [值]` 后板上实测 5 条全部 rc=0、回读 On、`mixer now lists 15 controls`。
+- **WiFi 首次跑通固件下载**: `6620_launcher*` 前缀匹配全路径 cmdline 永不命中 ->
+  改成 `*6620_launcher*` 后板上 `kalFirmwareOpen: Open FW image done, 160464 bytes`、
+  `wlan0 present`、`wlan0 scan OK` —— 项目历史上第一次。
+- **桌面/壁纸**: 旧 `com.example.android.home` 的 Theme 把壁纸盖死, 已换 Trebuchet
+  (装 `/priv-app/`, 权限白名单不用改) + 240x320 渐变壁纸, 删掉旧 Home.apk。
+  **已知遗留**: Trebuchet 的 APK/dir 还是 `unlabeled` SELinux 标签, permissive 下能跑,
+  转 enforcing 前必须补 `system_file`。
+
 **当前未解决**
-- 内置 app(设置等)闪退: 已确认是 **native 崩溃**(`/data/tombstones/tombstone_41`, 41 个),
-  不是 Java 异常; 堆栈待挖。参见 `out/APP_CRASH_FIX_20261104.md`。
-- 壁纸不显示: 镜像里唯一的桌面是 `com.example.android.home`(AOSP 示例 launcher, 不支持壁纸)。
-- `z1_mnld` 每 5 秒崩一次(status 1); v5 boot 已加 `oneshot` 止血, 真因未查。
-- 音频路由: `z1_audio_route.sh` 原来用 `tinymix set`/`tinymix controls`(A9 的 tinymix 没这两个子命令),
-  五条路由从未生效; v2 system 已改, 未上板验证。
-- WiFi: `z1_wifi_probe.sh` 的 `6620_launcher*` 前缀匹配全路径 cmdline 永不命中,
-  function-on 从未执行; v5 boot 已改, 未上板验证。
+- 整机仍卡: SwiftShader 软渲染(主线程曾出现 164 秒 `Slow delivery`)。GPU 需走
+  dma-buf gralloc 路线; 包装库已重链 libdl(`out/gralloc.z1.dl.so` 10,044 B, DT_NEEDED
+  有 libdl/liblog/libc), 但**上次直接换是崩在 `failed to open gralloc0 device: EINVAL`**,
+  本版已一并打入待验证。
+- `wpa_supplicant` 每 4 秒 exit 1(stderr 没抓, 下次把 stderr 转 kmsg)。
+- `z1_mnld` 已 oneshot 止血; 真因(疑 `/data/misc/GPS_CHIP.cfg` 或 `/dev/stpgps` ioctl)未查。
+- Watchdog 内核卡死(`Binder` 线程卡在 `sock_def_readable`/`unix_dgram_sendmsg` 自旋锁)。
 
 **回滚链**
 `out/z1_fix3_boot/boot.img` + `out/z1_fix3_system/system_fix3.img`(能进系统那版)
