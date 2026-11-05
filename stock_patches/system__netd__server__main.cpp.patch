@@ -8,7 +8,7 @@
  #include "utils/RWLock.h"
  
  #include <binder/IPCThreadState.h>
-@@ -164,12 +165,16 @@
+@@ -164,12 +165,20 @@
  
      // Now that netd is ready to process commands, advertise service
      // availability for HAL clients.
@@ -18,8 +18,19 @@
 -        exit(1);
 -    }
 -    ALOGI("Registering NetdHwService: %.1fms", subTime.getTimeAndReset());
++    //
++    // Z1: mHwSvc MUST stay in main()'s scope.  A previous version of this
++    // patch declared it inside the if-block below, so the object was
++    // destroyed at the closing brace -- only four instructions after
++    // NetdHwService::start() registered it.  The binder object registered by
++    // wrapPassthrough() (BnHwNetd) keeps a pointer to that dead implementation,
++    // so the next _hidl_interfaceChain() call does sp<IBase> tmp(mImpl) and
++    // RefBase::incStrong() dereferences a zeroed mRefs -> SIGSEGV at fault
++    // address 0x4 (tombstone: pc = incStrong+4, BnHwBase::_hidl_interfaceChain).
++    // main() blocks in joinThreadPool() forever, so a function-scope object
++    // lives for the whole process, which is exactly what we want.
++    NetdHwService mHwSvc;
 +    if (!android::base::GetBoolProperty("ro.z1.stock_kernel", false)) {
-+        NetdHwService mHwSvc;
 +        if ((ret = mHwSvc.start()) != android::OK) {
 +            ALOGE("Unable to start NetdHwService: %d", ret);
 +            exit(1);
@@ -30,4 +41,3 @@
 +    }
  
      ALOGI("Netd started in %dms", static_cast<int>(s.timeTaken()));
- 
