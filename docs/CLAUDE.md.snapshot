@@ -98,6 +98,34 @@ make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- M=drivers/misc/mediatek/connect
 
 ## 4. 当前卡点 (会随进展更新)
 
+### 4.00 2026-11-05 夜 — 离线修掉 6 个硬 bug, 产物待刷(设备离线/电池 3034 mV)
+
+**推荐刷写组合**: boot=`out/z1_fix3p_boot/boot.img` (sha `db98a5e5…`) +
+system=`out/z1_v17_system/system_v17.img` (sha `b19fcc60…`)。回滚 = fix3k boot + v16 system。
+详见 `out/Z1_STATUS_20261105_NIGHT.md`。
+
+1. **触摸**: fix3j/fix3k 的 ramdisk 里 `z1_cst836u.ko` 是旧构建(反汇编缺写
+   `input_dev.propbit` 的三条指令), 源码 11-04 修了但没重打 ramdisk。
+2. **充电**: 板上 10 条 `charging ENABLED` 的 `CHR_CON0` 全是 0x006b(bit4 CHR_EN=0),
+   驱动只打印不校验。补 `CHR_CON15.FLAG_WR`/`CON23.VCDT_MODE`/`CON7.BATON_HT_EN`,
+   并使能后**校验 bit4**, 不置位返回 -EIO 每 2 s 重试 + dump CON0..CON29。
+3. **PMIC 中断号**: `mt6323.dtsi` 的 `<150>` 是从 MT6397/MT8173 继承的 GPIO 号,
+   MT6572 上 pin150 是 `NO_EINT_SUPPORT` → `-EINVAL`。真实是 GPIO7→`PMIC_EINT`, EINT **16**。
+   `&pmic { interrupts = <16 IRQ_TYPE_LEVEL_LOW>; }`。电源键/耳机/充电中断/RTC 闹钟都挂在这上面。
+   加了风暴保护: 连续 64 次空中断就 disable 父 IRQ(极性猜错只退化, 不挂死)。
+4. **FM**: `z1_fm.rc` 和 `load_fm.sh` 都用了 `/lib/modules/...`, 而运行时没有 `/lib`
+   (`init.rc` 只 symlink `/bin /etc /d /vendor`)。改成 `/system/lib/modules/...`。
+5. **电池遥测**: `z1_heartbeat.sh` 读 `adc-battery`, 实际 psy 名是 `battery`。
+6. **SELinux 标签**: `light@2.0-service` 应为 `hal_light_default_exec`; 4 个 rc 用了策略里
+   不存在的 `vendor_init_rc`(应为 `vendor_configs_file`); 15 个文件无 xattr(已补 `system_file`)。
+
+**同时纠正的认知**: `ro.hardware.egl` 在本机**无效**(无 sphal 命名空间 → `load_updated_driver`
+永不执行), 真正决定 EGL 驱动的是 `/vendor/lib/egl/libGLES_*.so` 通配匹配; 因此 fix3j 与 fix3k
+boot.img 功能完全等价。见 `out/GPU_PATH_VERIFIED_20261105.md` §5。
+
+**方法论新增**: ① 改了会进 ramdisk 的东西必须重打 ramdisk, 打完从 boot.img 反解核对 md5;
+② `mainline_recon/z1_boot_mainline_*.log` 是 data 文件, `grep` 必须带 `-a`。
+
 ### 4.0 最新状态 (2026-11-04 上板实测)
 
 **已验证通过(硬证据在 `mainline_recon/z1_boot_mainline_20261104_221018.log`)**
