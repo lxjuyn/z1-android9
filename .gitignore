@@ -19,3 +19,16 @@ __pycache__/
 *.key
 credentials
 /proprietary/
+
+# Large local extraction trees (338 MB compressed raw image, never commit)
+r9_extract/
+
+# In-tree module build outputs
+drivers/z1_cst836u/*.o
+drivers/z1_cst836u/*.ko
+drivers/z1_cst836u/*.mod
+drivers/z1_cst836u/*.mod.c
+drivers/z1_cst836u/.*.cmd
+drivers/z1_cst836u/Module.symvers
+drivers/z1_cst836u/modules.order
+drivers/z1_cst836u/z1_cst836u.c.backup_*
