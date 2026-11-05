@@ -114,8 +114,10 @@ if [ "$ready" != 1 ]; then
 fi
 log "wlan0 scan OK after $((tries*2))s"
 
-log "wlan0 is up and scanning; starting the supplicant and publishing sys.wlan0.up=1"
-/system/bin/setprop sys.wlan0.up 1
+# 2026-11-05: sys.wlan0.up is no longer published.  Its only consumer was the
+# manual supplicant service, which has been retired (that binary cannot link,
+# see init.z1.network.rc).  Keep the diagnostic line, drop the trigger.
+log "wlan0 is up and scanning (framework HIDL wifi stack owns the supplicant now)"
 
 # Report what a scan sees, purely diagnostic - the framework owns real scans.
 j=0
