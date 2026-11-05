@@ -34,10 +34,17 @@ v14 有 `libGLES_mesa.so` 就用 mesa，v16 没有就回退 `libEGL_swiftshader.
 | 角色 | 文件 | sha256 |
 |---|---|---|
 | **boot（推荐）** | `out/z1_fix3p_boot/boot.img` | `db98a5e5fd7cf1efed09067c91d3d81d9207b199ffc01731aee7544d85444983` |
-| **system（推荐）** | `out/z1_v17_system/system_v17.img` | `560727cbc8b77ee45ae01b0339e97f600aad70e99804f00bf88188eb5cd29d44` |
+| **system（推荐）** | `out/z1_v17_system/system_v17.img` | `8e43fcdf75d8bf4947dcec77708ebb7de17e25c8d17c5c472c3e17099924860c` |
 | 回滚 boot | `out/z1_fix3k_boot/boot.img`（= fix3j，可启动） | — |
 | 回滚 system | `out/z1_v16_system/system_v16.img` | — |
 | 兜底 | `1/boot.img`（原厂） | — |
+
+**v17 追加一项（22:18）**：`/vendor/etc/vintf/manifest.xml` 里原本**没有 `android.hardware.light`**，
+而 light HAL 二进制和 rc 从 11-04 就在镜像里。VINTF 里没声明的接口，hwservicemanager 可以拒绝注册，
+表现就是 `LightsService: Unable to get ILight interface`（背光调不了、也关不掉）。
+已补上 `@2.0::ILight/default`（源文件 `z1a9_gpt/rootdir/manifest_v17.xml`），标签
+`vendor_configs_file`（plat_file_contexts:20）。上板后用
+`logcat -d | grep -i "Light HAL service is Ready"` / `service list | grep -i light` 验证。
 
 整幅镜像的 sha256 只标识"这个文件"，不是可复现的构建指纹（debugfs 每次都会更新 ext4
 超级块的写时间）。**判定内容是否正确请用这三个 content hash**（v17 实测就是这个值）：
