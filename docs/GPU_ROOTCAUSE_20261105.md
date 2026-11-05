@@ -75,6 +75,24 @@ bit 14 = `LIMA_GP_IRQ_PLB_INVALID_CMD` —— **GP 执行到一条非法命令�
   在**不**调用 DMA_BUF_IOCTL_SYNC 与调用后各测一次，差异即证据。
 - `PLB_INVALID_CMD` 与彩虹是不是同一件事，未确认。
 
+## 5b. 自我更正（2026-11-05 23:4x）：cache 一致性那条**站不住**
+
+我先前把"CPU 读到 GPU 写入前的旧缓存"列为第一嫌疑，核完代码后否掉了：
+`drivers/gpu/drm/lima/lima_gem.c:235` 是 **`bo->base.map_wc = true`**，而
+`drm_gem_shmem_helper.c:702` 在 `map_wc` 时把 CPU 映射设成 **writecombine（不经过缓存）**。
+所以 CPU 读是直达 DRAM 的，不会读到过期缓存行。
+
+那么"彩虹"更可能就是**GPU 根本没画成功**：板上 20 条
+`gp error irq state=4000 status=3` = `LIMA_GP_IRQ_PLB_INVALID_CMD`，
+GP 拿到非法命令流直接中止，渲染目标保持原样（未初始化内容）→ SF 把这片内存贴上去 → 彩色噪声条。
+
+**于是嫌疑集中到 Mesa 19.1.8 这份用户态本身**，而不是内核：
+- 同一条内核路径在 2026-07-17 的离屏测试里画出过正确三角形；
+- 19.1.8 的 `lima_drm.h` 副本与内核 UAPI **不一致**（缺 `LIMA_BO_FLAG_HEAP`），
+  而仓库里的 **Mesa 24.0.9** 的副本与内核逐字节相同。
+
+所以下一步走"换 24.0.9"这条，而不是改内核。
+
 ## 6. 上板 A/B 实证（2026-11-05 23:2x，同一套 boot.img = fix3p）
 
 | system 镜像 | 里面有没有 `libGLES_mesa.so` | 屏幕 |
