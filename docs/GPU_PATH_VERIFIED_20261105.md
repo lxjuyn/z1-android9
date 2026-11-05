@@ -186,3 +186,51 @@ A9 `hardware.c:171-226` 顺序：`ro.hardware.gralloc` → 变体 `ro.hardware`,
   ⇒ 结论仍然成立（ramdisk 的 default.prop 赢），但**赢的那一行的内容无所谓**。
 - 我之前把 `ro.hardware.egl` 当成"GPU 开关的关键"，这是错的。真正的开关是
   **`/vendor/lib/egl/` 里有没有 `libGLES_mesa.so` 这个文件**。
+
+---
+
+# 6. "现在这个版本 GPU 加速能用了吗" — 2026-11-05 22:30 结论
+
+## 6.1 直接回答：**还不能说能用。到现在为止一次都没在板上跑过。**
+
+- 唯一含 Mesa 的镜像是 `out/z1_v14_gpu_system/system_v14.img`（11-05 20:49 打包），
+  打完设备就没电了，**从未刷入**。
+- **推荐的 v17 里根本没有 `libGLES_mesa.so`**，所以按"当前版本"跑，EGL 会通配到
+  `libEGL_swiftshader.so` 三件套 —— **GPU 加速是关闭状态，用的是 SwiftShader 纯软渲染**。
+
+## 6.2 已经用硬证据钉死的部分（这些不会再出问题）
+
+| 环节 | 证据 |
+|---|---|
+| 内核 lima 真的起来了 | 板上 #114 日志：`lima 13010000.gpu: gp - mali400 version major 1 minor 1` → `[drm] Initialized lima 1.1.0 for 13010000.gpu on minor 0` |
+| renderD128 节点与权限 | `ueventd.rc:68 /dev/dri/* 0666 root graphics` + `ueventd.z1.rc:4 /dev/dri/renderD128 0666 root graphics`（特定规则优先） |
+| 用谁由谁决定 | `Loader.cpp:320-461` 的 `load_system_driver()` 按 `libGLES_` 前缀 glob；`ro.hardware.egl` 无效（无 sphal 命名空间） |
+| Mesa 里真有 lima 驱动 | `gallium_dri.so` 导出 `__driDriverGetExtensions_lima`（`nm -D`，同时有 `kms_swrast`/`swrast`） |
+| Mesa 要的 libdrm API 齐 | 镜像 `libdrm.so` 导出 `drmGetDevices2`/`drmGetDevice2`/`drmGetDeviceNameFromFd2`/`drmGetVersion` |
+| 下一跳库里找得到 | `/vendor/lib/dri/lima_dri.so` → fast symlink → `gallium_dri.so`；`DRI_DRIVER_DIR="/vendor/lib/dri"` |
+| ELF 依赖零缺失 | `libGLES_mesa.so` 的 11 个 NEEDED 在 v18 里全部能解析（libglapi/libhardware/liblog/libcutils/libsync/libnativewindow/libdrm/libc++/libc/libm/libdl） |
+| 用的是 dma-buf gralloc | `ro.product.board=z1` → `/system/lib/hw/gralloc.z1.so`（25,116 B，带 z1_lima_alloc_dmabuf）胜过 `/vendor/lib/hw/gralloc.default.so`（ashmem） |
+| SELinux | `libGLES_mesa.so` = `same_process_hal_file`，`gallium_dri.so`/`lima_dri.so` = `vendor_file`，且当前 permissive |
+
+## 6.3 真正的风险只有一个：**没有回退**
+
+A9 的 `egl.cpp` 只缓存一次 `cnx->dso`，任何地方都不会重试 SwiftShader。
+`eglInitialize()` 失败只打 ALOGW 然后照样返回 true，真正致命的是后面
+`eglChooseConfig`/`eglCreateContext` 返回 0 → `RenderEngine::create()` 为 null →
+SurfaceFlinger `LOG_ALWAYS_FATAL` → 重启循环，**只能刷回**。
+
+所以验证方式就是"刷一次、看 logcat"：
+- 成功：`logcat | grep -iE "EGL|GLES|lima"` 里能看到 Mesa 自己的日志，
+  `dumpsys SurfaceFlinger` 的 GLES vendor/renderer 变成 `Mali400`/`lima` 而不是 `Google SwiftShader`；
+  开机时间应从 ~548 s 明显下降。
+- 失败：出现 `eglInitialize(...) failed` 后紧接 SF FATAL → 直接刷回 v17。
+
+## 6.4 所以我把"当前版本"补齐了：v18 = v17 + Mesa
+
+`out/z1_v18_gpu_system/system_v18.img`（sha256 `7f83217f…`，e2fsck 干净），
+由 `tools/z1_build_v18_gpu_system.sh` 生成。它等于把 v17 的全部修复
+（触摸 INPUT_PROP_DIRECT、CHR_EN 校验、PMIC EINT16、FM 路径、20 处标签、light HAL manifest）
+和 GPU 栈放在一个包里 —— 不用再去刷那个落后三版、且从未验证过的 v14。
+
+**建议的验证顺序**：先刷 fix3p + v17 拿到确定能启动的基线，确认 `sys.boot_completed=1`；
+再一次只换 system 分区刷 v18，成败只归因于 Mesa 这一个变量。
