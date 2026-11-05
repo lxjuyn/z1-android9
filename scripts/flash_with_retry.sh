@@ -84,8 +84,12 @@ verify_partition_prefix() {
   local verify_out verify_rc verify_size expected_size
 
   : > "$VERIFY_FILE"
-  # timeout 60: 防止 mtk.py r 在设备退出 preloader(内核常驻)后永久轮询挂死
-  verify_out=$(timeout 60 "$PY" mtk.py r "$PART" "$VERIFY_FILE" 2>&1)
+  # timeout: 防止 mtk.py r 在设备退出 preloader(内核常驻)后永久轮询挂死。
+  # 2026-11-05 修正: 原来是死数 60s, 但 mtk.py r 实测只有 ~2.4 MB/s,
+  # 943MB 的 android 分区要 ~400s —— 60s 必被杀, 于是"写成功"也会被判成
+  # 校验失败并触发回滚。改成按镜像大小算: 60s + 每 MB 1s。
+  local to=$(( 60 + $(stat -c%s "$expected" 2>/dev/null || echo 0) / 1048576 ))
+  verify_out=$(timeout "$to" "$PY" mtk.py r "$PART" "$VERIFY_FILE" 2>&1)
   verify_rc=$?
   echo "$verify_out" | tail -8
 
