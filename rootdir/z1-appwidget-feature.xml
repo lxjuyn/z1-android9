@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Z1: declare android.software.app_widgets.
+
+     Board evidence (2026-11-05):
+       * this image ships no feature declaration for android.software.app_widgets
+         in any of the 33 XMLs under /etc/permissions, /vendor/etc/permissions,
+         /etc/sysconfig and /vendor/etc/sysconfig
+       * framework-res.apk has android:bool/config_enableAppWidgetService = false
+         (aapt dump values output: resource 0x01120059 gives (boolean) false)
+     SystemServer starts AppWidgetService only when
+       hasSystemFeature(FEATURE_APP_WIDGETS) OR config_enableAppWidgetService
+     so neither arm fired, the service never ran, and Context.getSystemService
+     APPWIDGET_SERVICE returned null.  com.android.launcher3 then died with
+       NullPointerException: Attempt to invoke virtual method
+       java.util.List android.appwidget.AppWidgetManager.getInstalledProvidersForProfile
+       on a null object reference
+     Declaring the feature turns the first arm on without touching framework-res.
+-->
+<permissions>
+    <feature name="android.software.app_widgets" />
+</permissions>
