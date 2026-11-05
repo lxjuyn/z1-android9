@@ -34,8 +34,8 @@ v14 有 `libGLES_mesa.so` 就用 mesa，v16 没有就回退 `libEGL_swiftshader.
 | 角色 | 文件 | sha256 |
 |---|---|---|
 | **boot（推荐）** | `out/z1_fix3p_boot/boot.img` | `db98a5e5fd7cf1efed09067c91d3d81d9207b199ffc01731aee7544d85444983` |
-| **system（推荐）** | `out/z1_v17_system/system_v17.img` | `8e43fcdf75d8bf4947dcec77708ebb7de17e25c8d17c5c472c3e17099924860c` |
-| **GPU 验证用 system** | `out/z1_v18_gpu_system/system_v18.img`（= v17 + Mesa；`7f83217f…`） | 见 `out/GPU_PATH_VERIFIED_20261105.md` §6 |
+| **system（推荐）** | `out/z1_v17_system/system_v17.img` | `cfb415d4956efc43ca6c408c222859e3345ebef31bc6d621fba388a69118dbbd` |
+| **GPU 验证用 system** | `out/z1_v18_gpu_system/system_v18.img`（= v17 + Mesa；`6be0c5d5…`） | 见 `out/GPU_PATH_VERIFIED_20261105.md` §6 |
 | 回滚 boot | `out/z1_fix3k_boot/boot.img`（= fix3j，可启动） | — |
 | 回滚 system | `out/z1_v16_system/system_v16.img` | — |
 | 兜底 | `1/boot.img`（原厂） | — |
