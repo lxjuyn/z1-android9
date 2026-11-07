@@ -1,0 +1,18 @@
+FALLBACK ONLY -- do not apply unless the on-board DAC check fails.
+Evidence says it should not be needed: /init.rc "on boot" does
+  chown system system /sys/class/leds/lcd-backlight/brightness
+(fix3p ramdisk init.rc:651) and the light service runs as user system
+(android.hardware.light@2.0-service.rc:4).  LED class attributes are 0644,
+so owner system can write.
+
+If a board check shows "-rw-r--r-- root root" instead, either fix init.rc or
+make the service root.  Root variant of /vendor/etc/init/android.hardware.light@2.0-service.rc:
+
+ service vendor.light-hal-2-0 /vendor/bin/hw/android.hardware.light@2.0-service
+     interface android.hardware.light@2.0::ILight default
+     class hal
+-    user system
+-    group system
++    user root
++    group root
+     shutdown critical

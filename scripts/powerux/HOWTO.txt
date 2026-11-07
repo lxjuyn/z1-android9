@@ -1,0 +1,33 @@
+/tmp/powerux  —  Z1 screen-off / brightness / power UX deliverables (2026-11-08)
+
+patches/
+  0001-arm-dts-mt6572-z1-cpufreq.patch   apply in fork_linux (git apply)
+  0002-kernel-config-cpufreq.fragment   append to fork_linux/.config, olddefconfig
+  0003-hwcomposer-blank-backlight.patch apply to z1a9_gpt/graphics/hwcomposer/hwcomposer.cpp
+  0004-selinux-hal_light-sysfs.te       enforcing-only policy (not needed in permissive)
+  0005-light-hal-rc-run-as-root.patch   FALLBACK only, do not apply by default
+
+hwcomposer/
+  build.sh                 NDK r26d build, PROVEN to build stock + patched source
+  hwcomposer_patched.cpp   full patched file (same as 0003)
+  hwcomposer.z1.so         built artifact of the patched source (needs board test)
+  include/ libs/           AOSP r61 headers + device libs used only at link time
+
+light-hal/
+  powerux_check.sh         on-board read-only proof of every link in the chain
+  screen_off_test.sh       deterministic SLEEP/WAKEUP test via keyevents
+
+suspend/
+  screen_timeout_policy.sh recommended settings while wake source is unverified
+
+evidence (downloaded/r61 or extracted):
+  aosp/*.java|cpp|hal      exact AOSP r61 sources cited in the report
+  img/light-hal            light HAL binary dumped from system_v17.img
+  img/hwcomposer.z1.so     current HWC lib dumped from system_v17.img
+  fix3p/rd/                fix3p boot ramdisk (init.rc / z1_pm_guard.sh checked)
+
+Order of application:
+  1. screen_timeout_policy.sh (or edit z1_pm_guard.sh)  <- makes screen-off reachable
+  2. light-hal/powerux_check.sh                         <- proves HAL + DAC + sysfs
+  3. cpufreq patches (kernel rebuild + reflash)
+  4. HWC patch only if step 2 shows the light path cannot work

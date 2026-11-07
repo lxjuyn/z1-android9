@@ -1,0 +1,21 @@
+--- a/arch/arm/boot/dts/mediatek/mt6572-z1.dts
++++ b/arch/arm/boot/dts/mediatek/mt6572-z1.dts
+@@ -901,3 +901,18 @@
+ 		default-state = "on";
+ 	};
+ };
++
++/*
++ * CPU DVFS (mainline mediatek-cpufreq.c has an explicit mt6572 table,
++ * mediatek-cpufreq.c:740/804).  The driver obtains the regulator with
++ * regulator_get_optional(cpu_dev, "proc"); without this property it gets
++ * -ENODEV and refuses to probe, so proc-supply is mandatory in practice.
++ * Same wiring as the upstream reference board mt6572-jty-d101.dts:74,78.
++ */
++&cpu0 {
++	proc-supply = <&mt6323_vproc_reg>;
++};
++
++&cpu1 {
++	proc-supply = <&mt6323_vproc_reg>;
++};

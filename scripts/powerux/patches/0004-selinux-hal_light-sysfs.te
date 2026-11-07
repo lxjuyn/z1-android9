@@ -1,0 +1,20 @@
+# Minimal policy for turning the light HAL into an enforcing-mode citizen.
+# Today the image boots androidboot.selinux=permissive, so the AVC denials
+# seen on the board (2026-11-05 23:15:18 log line 3769/3771) are only noise.
+# Before switching to enforcing, these three pieces are required.
+
+# 1) Label only the two LED attributes, not all of sysfs.
+#    system/sepolicy/private/genfs_contexts (sysfs entries are path based):
+genfscon sysfs /devices/platform/soc/1000f000.pwrap/1000f000.pwrap:mt6323/mt6323-led/leds/lcd-backlight/brightness u:object_r:sysfs_z1_backlight:s0
+genfscon sysfs /devices/platform/soc/1000f000.pwrap/1000f000.pwrap:mt6323/mt6323-led/leds/lcd-backlight/max_brightness u:object_r:sysfs_z1_backlight:s0
+
+# 2) The type (vendor sepolicy, e.g. vendor/selinux/z1.te)
+type sysfs_z1_backlight, fs_type, sysfs_type;
+
+# 3) Allow the light HAL (and optionally the composer, if the hwc_blank patch
+#    is deployed) to touch it.
+allow hal_light_default sysfs_z1_backlight:file { getattr open read write };
+allow hal_light_default sysfs_z1_backlight:dir search;
+# only if 0003-hwcomposer-blank-backlight.patch is deployed:
+allow hal_graphics_composer_default sysfs_z1_backlight:file { getattr open read write };
+allow hal_graphics_composer_default sysfs_z1_backlight:dir search;

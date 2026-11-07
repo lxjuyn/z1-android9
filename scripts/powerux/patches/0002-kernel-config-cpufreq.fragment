@@ -1,0 +1,21 @@
+# Append to fork_linux/.config, then: make olddefconfig && make ARCH=arm ... zImage
+#
+# Already present in the current .config and needed by the driver:
+#   CONFIG_CPU_FREQ=y               (.config:551)
+#   CONFIG_CPU_FREQ_GOV_ONDEMAND=y  (.config:558/564)   default governor
+#   CONFIG_CPU_FREQ_GOV_SCHEDUTIL=y (.config:566)
+#   CONFIG_PM_OPP=y                 (.config:6447)
+#   CONFIG_COMMON_CLK_MEDIATEK=y    (.config:5401)
+#   CONFIG_REGULATOR* (mt6323 driver present)
+#
+# Missing today (drivers/cpufreq/Kconfig.arm:124):
+CONFIG_ARM_MEDIATEK_CPUFREQ=y
+#
+# Not needed / unrelated:
+#   CONFIG_CPUFREQ_DT            - mediatek-cpufreq builds its own freq table
+#   CONFIG_ARM_MEDIATEK_CPUFREQ_HW (=m) - matches "mediatek,cpufreq-hw" only,
+#                                        MT6572 has no such node
+#
+# Result after boot (expected): /sys/devices/system/cpu/cpu0/cpufreq/
+#   scaling_available_frequencies = 598000 806000 1001000 1209000 1300000 1404000
+#   (filtered by opp-supported-hw against the speedbin efuse, and by OPP max)
