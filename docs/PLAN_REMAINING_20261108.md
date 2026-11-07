@@ -115,3 +115,58 @@ watcher 在 SF 反复重启时自动置标记并重启）。已确认 `CONFIG_OV
 - v20 的触摸/录音、v22 的 GPU 与 gate，全部未上板。
 - `/data` 损坏的**根因**（存储层写坏 vs ext4 竞态）未定；`metadata_csum` 方案未验证。
 - 蓝牙/GPS/关屏/cpufreq 的任何"已修"结论都还不存在，只有分析。
+
+---
+
+# 5. 四个 agent 的结论并入（2026-11-08 凌晨）
+
+## 5.1 PMIC 中断（agent: pmic-irq）— 与我自己的结论一致，并补了两条
+
+- 修前/修后判读：`hwirq=7 / gpio_n=65535` → `hwirq=16 / gpio_n=7`，"Can not find pin" 消失。
+- 修复后 Linux irq 号**预计是 46**（域基址 30+16），不是 37。
+- **不能改 `mt6323.dtsi`**：`mt7623n-bananapi-bpi-r2.dts` 也 include 它，那边 `ap_num=169`，
+  `<150>` 是合法的。只能在板级 dts 覆盖 —— 我们就是这么做的。
+- **同类 bug 还在另一块板**：`mt6572-s6.dts:405`。
+- 留了一份调试补丁（两处 `dev_info`），修前/修后各打一行，上板时可用来确认。
+
+## 5.2 `/data` 健壮性（agent: boot-robust）
+
+- 确认 `check` 标志**不是**这次故障的解法（详见 §2.1）。
+- 交付 `scripts/bootrobust/z1_fsck_guard.sh`（12 KB，24 项主机测试通过）：
+  `--pre` 在 mount_all 前按超级块状态决定是否 `e2fsck -f -y`，`--post` 检测 /data 是否可写，
+  结论一行写 kmsg；支持 `--degrade-fstab` 摘掉 /data 让系统以易失模式起来。
+- **代价要说清楚**：跑 `--pre` 需要改 `on fs`（手工挂 /system → exec → umount → mount_all），
+  属于对启动最早期流程的改动，风险不低。**建议先只上 `--post`**（零风险、只加日志），
+  等确认 `/data` 真的会反复坏，再上全量自愈。
+
+## 5.3 GPU gate（agent: gpu-gate）— 机制确认
+
+- 三选一里只有 **tmpfs 覆盖目录**可靠；bind-mount 会被 init 的 shared propagation 自遮蔽（本机复现 ELOOP），
+  overlayfs 内核没编。
+- 关键前提：`init` 在 `mount_all` 阶段会**重新解析 `/system/etc/init`**，所以 gate 的 rc 放 system 侧
+  就能在 surfaceflinger（18.57 s）之前生效，**不用动 boot.img**。
+- fail-open：三件套预检不过就不动，宁可不隐藏也不能把目录弄空。
+
+## 5.4 关屏 / 亮度（agent: power-ux）— 有一个"原来如此"
+
+**关屏链路本来就通**：`DisplayPowerController` → `LightsService` → light HAL →
+`leds-mt6323.c` 的 `brightness==0 → mt6323_led_hw_off()`（真关 ISINK 时钟）。
+**不需要 HWC 参与。**
+
+那为什么用户从没见过关屏？因为 `z1_pm_guard.sh:23-24` 把
+`screen_off_timeout` 设成 **7200000（2 小时）**、`stay_on_while_plugged_in=7`（插 USB 常亮）。
+**这是策略问题，不是能力问题。**
+
+顺带发现一个真 bug（低亮度黑洞）：驱动 `mt6323_spec.max_brightness = 6`（`leds-mt6323.c:680`），
+而 light HAL 用整数缩放 `b*6/255`，于是**亮度 1–42 全部映射成 0** —— 滑到最低约 17% 时
+框架认为亮屏、实际背光全灭。修法二选一：把框架最小亮度抬到 43，或给 HAL 打向上取整补丁。
+**未修**，需先上板确认观感。
+
+HWC 的 `hwc_blank()` 补丁已用 NDK r26d 编出 `hwcomposer.z1.so`（原版与补丁版都能编过），
+但如果 light 链路可用，这个补丁不是必需的。
+
+cpufreq：`mediatek-cpufreq.c` 有 mt6572 表，但驱动用 `regulator_get_optional(cpu,'proc')`，
+缺 `proc-supply` 就 `-ENODEV` 不 probe —— 这是"没有 cpufreq"的真正原因。dts 补两行即可（补丁已入库）。
+
+## 5.5 仍未回来的
+- `boot-speed`（开机 10–30 分钟根因）、`bt-gps`（蓝牙/GPS）。
