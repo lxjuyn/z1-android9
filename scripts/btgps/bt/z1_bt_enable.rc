@@ -1,0 +1,31 @@
+# /vendor/etc/init/z1_bt_enable.rc   (or append to the ramdisk init.z1.rc)
+#
+# Headless Bluetooth enable.  The serial console is uid 2000 and lacks
+# BLUETOOTH_ADMIN, so the enable call has to come from a root process.
+#
+# The one-shot script itself waits for sys.boot_completed and for the
+# bluetooth_manager binder, so it can be started early.
+
+service z1_bt_enable /system/bin/sh /system/bin/z1_bt_enable.sh
+    class late_start
+    user root
+    group root system
+    oneshot
+    disabled
+    seclabel u:r:init:s0
+
+on property:sys.boot_completed=1
+    start z1_bt_enable
+
+# Optional: capture D-level Bluetooth logs on the serial console from early
+# boot.  Enable only while debugging; it is chatty.
+#service z1_bt_trace /system/bin/sh /system/bin/z1_bt_trace.sh
+#    class core
+#    user root
+#    group root system
+#    oneshot
+#    disabled
+#    seclabel u:r:init:s0
+#
+#on property:sys.boot_completed=1
+#    stop z1_bt_trace

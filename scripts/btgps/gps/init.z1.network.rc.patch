@@ -1,0 +1,10 @@
+--- a/init.z1.network.rc
++++ b/init.z1.network.rc
+@@ -95,7 +95,7 @@
+ # Started only after the radio transport is up, and it self-exits if the
+ # device node never appears.
+-service z1_mnld /vendor/bin/mnld
++service mnld /vendor/bin/mnld
+     class main
+     user system
+     group system inet media net_bt

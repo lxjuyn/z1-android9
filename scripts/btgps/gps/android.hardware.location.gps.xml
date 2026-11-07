@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Adds the feature indicating support for GPS location providers.
+     Deploy to /system/etc/permissions/ (SAR image path: /etc/permissions/).
+     Without it PackageManager.hasSystemFeature(FEATURE_LOCATION_GPS) is false
+     and LocationManagerService never creates the gps provider, even if the
+     gnss HIDL HAL is up. -->
+<permissions>
+    <feature name="android.hardware.location.gps" />
+</permissions>
