@@ -24,10 +24,10 @@
 ## 已做
 
 `out/z1_v20_audio_system/system_v20.img`
-= v17 + 这五个模块换成树内新构建（标签 `system_file`，mode 0664，e2fsck 干净）。
+= v17 + 这五个模块 + `z1_cst836u.ko` 换成树内新构建（标签 `system_file`，mode 0664，e2fsck 干净）。
 重放脚本 `tools/z1_build_v20_system.sh`。
 
-整镜像 sha256 = `cf2f941941dc97039c884bd6c91b378b39b4673b0179bd78a9f15422496aff0e`。
+整镜像 sha256 = `3e57dd0c352a7f85a168d71c5f88912405020aaffc481192e65dfa8a5e91ef7f`。
 
 ## NOT VERIFIED
 

@@ -106,7 +106,11 @@ make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- M=drivers/misc/mediatek/connect
 - **boot fix3p 刷入并严格读回校验一致**；v17 system 分块(48MB×19)写入成功。
 - **v17 能正常显示**：SurfaceFlinger 起来并 `start bootanim`，用户肉眼看到正常的 LineageOS 二屏
   （不是彩虹条）。⇒ 显示链路、LK、面板都没问题。
-- **触摸 .ko 修复生效**（fix3m/fix3p 的 ramdisk 里是带 `INPUT_PROP_DIRECT` 的构建）。
+- **触摸 .ko：11-05 那次其实没生效（11-08 更正）**。当时只修了 ramdisk 里那份，
+  而 `/bin/z1_touch_load.sh` 加载的是 `/system/lib/modules/z1_cst836u.ko` —— 镜像里仍是
+  旧构建（md5 `e9439f4e`，缺 `INPUT_PROP_DIRECT`）。已在 `out/z1_v20_audio_system/system_v20.img`
+  里换成树内构建（md5 `3aa31907`），**未上板验证**。
+  **规矩：说"模块修好了"之前，必须确认运行时实际加载的是哪个路径下的哪一份。**
 - **电池遥测修复生效**：`[z1hb] ... voltage=3880000`（以前是空）。
 - **A/B 单变量结论**：同一 boot.img 下，system 含 `libGLES_mesa.so`(19.1.8) → 彩虹条；
   不含 → 正常。**GPU 问题确定在 Mesa/lima 输出侧**。

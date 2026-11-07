@@ -83,3 +83,32 @@ ramdisk 是**从上一次镜像整块沿用**的，没有从 `rootdir/` 重新�
 刷 `out/z1_fix3m_boot/boot.img` 后，在 logcat/`getevent -lp` 里应看到该设备带
 `INPUT_PROP_DIRECT`（`dumpsys input` 里 `Classes: KEYBOARD|TOUCH` /
 `Sources: TOUCHSCREEN` 而不只是 `MOUSE`/`POINTER`），并且触摸不再出现指针。
+
+---
+
+# 重要更正（2026-11-08）：那次修复**没有真正生效**
+
+我在 11-05 只把修好的 `z1_cst836u.ko` 放进了 **ramdisk**（`/z1_cst836u.ko`），
+并据此宣称"触摸已修"。
+
+但镜像里的 `/bin/z1_touch_load.sh`（由 `z1_speedup.rc` 的 `z1_touch_load` service 执行）写的是：
+
+```sh
+err=$(insmod /system/lib/modules/z1_cst836u.ko 2>&1)
+```
+
+**它加载的是 system 镜像里那一份，不是 ramdisk 里那份。**
+而 `system_v17.img:/lib/modules/z1_cst836u.ko` 的 md5 仍是 `e9439f4e…`（旧构建，
+缺 `INPUT_PROP_DIRECT` 那三条指令）。
+
+⇒ 11-05 那次"触摸修复"实际上**完全没作用**；ramdisk 里那份只是被 `z1_gpio_hunt`
+那条链路间接用到（ramdisk 的 `/z1_touch_load.sh` 只 insmod `/z1_gpio_hunt.ko`）。
+
+## 更正后的修法
+`out/z1_v20_audio_system/system_v20.img` 已经把 `/lib/modules/z1_cst836u.ko` 换成
+树内构建（md5 `3aa31907…`，已从镜像反解核对），并且同时换掉了 5 个旧构建的音频模块。
+整镜像 sha256 `3e57dd0c352a7f85a168d71c5f88912405020aaffc481192e65dfa8a5e91ef7f`。
+
+## 教训（写进规矩）
+**"模块修好了"必须验证"运行时到底加载的是哪一份"** —— 同一模块可能在 ramdisk 和
+system 镜像里各有一份，加载脚本用的是哪条路径要以脚本内容为准，不能假设。
