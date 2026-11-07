@@ -1,0 +1,36 @@
+# z1_gpu_gate.rc — Mesa/lima is opt-in on this device; SwiftShader is the default.
+#
+# INSTALL
+#   runtime path : /system/etc/init/z1_gpu_gate.rc
+#   image path   : /etc/init/z1_gpu_gate.rc   (the system partition IS /system,
+#                  so files inside system_v19.img have no "/system" prefix)
+#   SELinux      : u:object_r:system_file:s0   (same label as /system/etc/init/
+#                  z1_fm.rc, verified with debugfs ea_list; plat_file_contexts:45
+#                  "/(system)(/.*)?  u:object_r:system_file:s0")
+#
+# WHY post-fs-data: init parses /system/etc/init during mount_all (~11.3s), so
+# actions defined here are already queued when the trigger fires; on the board
+# post-fs-data starts at 14.97s and 'surfaceflinger' only starts at 18.57s
+# (mainline_recon/z1_boot_mainline_20261104_221018.log:1396 and :1501), which
+# leaves ~3.5s for the gate.  `exec` is synchronous on purpose: the tmpfs must
+# be in place before anything dlopens libEGL.
+
+on post-fs-data
+    exec u:r:init:s0 root root -- /system/bin/sh /system/bin/z1_gpu_gate.sh
+
+service z1_gpu_watch /system/bin/sh /system/bin/z1_gpu_watch.sh
+    class core
+    user root
+    group root log
+    disabled
+    seclabel u:r:init:s0
+
+on post-fs-data
+    start z1_gpu_watch
+
+# init publishes init.svc.<service>.  "restarting" is one of the four state
+# strings this init knows (strings init -> stopped/starting/running/restarting),
+# but it is best-effort only: a rainbow screen restarts nothing, so the daemon
+# above also polls init.svc + pidof and reads the lima GP-error signature.
+on property:init.svc.surfaceflinger=*
+    exec_background u:r:init:s0 root root -- /system/bin/sh /system/bin/z1_gpu_watch.sh event ${init.svc.surfaceflinger}
