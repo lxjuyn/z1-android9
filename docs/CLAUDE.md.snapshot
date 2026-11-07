@@ -98,33 +98,56 @@ make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- M=drivers/misc/mediatek/connect
 
 ## 4. 当前卡点 (会随进展更新)
 
-### 4.00 2026-11-05 夜 — 离线修掉 6 个硬 bug, 产物待刷(设备离线/电池 3034 mV)
+### 4.00 最新状态 (2026-11-05 夜 ~ 11-08) — 已上板验证到哪一步
 
-**推荐刷写组合**: boot=`out/z1_fix3p_boot/boot.img` (sha `db98a5e5…`) +
-system=`out/z1_v17_system/system_v17.img` (sha `560727cb…`)。回滚 = fix3k boot + v16 system。
-详见 `out/Z1_STATUS_20261105_NIGHT.md`。
+**证据都在 `out/Z1_STATUS_20261105_NIGHT.md` / `out/GPU_ROOTCAUSE_20261105.md` / `out/GPU_MESA24_20261105.md`。**
 
-1. **触摸**: fix3j/fix3k 的 ramdisk 里 `z1_cst836u.ko` 是旧构建(反汇编缺写
-   `input_dev.propbit` 的三条指令), 源码 11-04 修了但没重打 ramdisk。
-2. **充电**: 板上 10 条 `charging ENABLED` 的 `CHR_CON0` 全是 0x006b(bit4 CHR_EN=0),
-   驱动只打印不校验。补 `CHR_CON15.FLAG_WR`/`CON23.VCDT_MODE`/`CON7.BATON_HT_EN`,
-   并使能后**校验 bit4**, 不置位返回 -EIO 每 2 s 重试 + dump CON0..CON29。
-3. **PMIC 中断号**: `mt6323.dtsi` 的 `<150>` 是从 MT6397/MT8173 继承的 GPIO 号,
-   MT6572 上 pin150 是 `NO_EINT_SUPPORT` → `-EINVAL`。真实是 GPIO7→`PMIC_EINT`, EINT **16**。
-   `&pmic { interrupts = <16 IRQ_TYPE_LEVEL_LOW>; }`。电源键/耳机/充电中断/RTC 闹钟都挂在这上面。
-   加了风暴保护: 连续 64 次空中断就 disable 父 IRQ(极性猜错只退化, 不挂死)。
-4. **FM**: `z1_fm.rc` 和 `load_fm.sh` 都用了 `/lib/modules/...`, 而运行时没有 `/lib`
-   (`init.rc` 只 symlink `/bin /etc /d /vendor`)。改成 `/system/lib/modules/...`。
-5. **电池遥测**: `z1_heartbeat.sh` 读 `adc-battery`, 实际 psy 名是 `battery`。
-6. **SELinux 标签**: `light@2.0-service` 应为 `hal_light_default_exec`; 4 个 rc 用了策略里
-   不存在的 `vendor_init_rc`(应为 `vendor_configs_file`); 15 个文件无 xattr(已补 `system_file`)。
+#### 已上板实测通过的
+- **boot fix3p 刷入并严格读回校验一致**；v17 system 分块(48MB×19)写入成功。
+- **v17 能正常显示**：SurfaceFlinger 起来并 `start bootanim`，用户肉眼看到正常的 LineageOS 二屏
+  （不是彩虹条）。⇒ 显示链路、LK、面板都没问题。
+- **触摸 .ko 修复生效**（fix3m/fix3p 的 ramdisk 里是带 `INPUT_PROP_DIRECT` 的构建）。
+- **电池遥测修复生效**：`[z1hb] ... voltage=3880000`（以前是空）。
+- **A/B 单变量结论**：同一 boot.img 下，system 含 `libGLES_mesa.so`(19.1.8) → 彩虹条；
+  不含 → 正常。**GPU 问题确定在 Mesa/lima 输出侧**。
 
-**同时纠正的认知**: `ro.hardware.egl` 在本机**无效**(无 sphal 命名空间 → `load_updated_driver`
-永不执行), 真正决定 EGL 驱动的是 `/vendor/lib/egl/libGLES_*.so` 通配匹配; 因此 fix3j 与 fix3k
-boot.img 功能完全等价。见 `out/GPU_PATH_VERIFIED_20261105.md` §5。
+#### 还没通过 / 新发现的
+1. **`/data` 被写坏 → 开不了机（当前最大阻塞）**：
+   `EXT4-fs error (mmcblk0p6): ext4_free_inode:354: bit already cleared for inode 7743`
+   → `Aborting journal` → `Remounting filesystem read-only` → `app_process` chown
+   `/data/dalvik-cache/<abi>` 得到 EROFS → `LOG_ALWAYS_FATAL` → zygote 每 ~5 秒 SIGABRT
+   （实测 258 次 zygote 启动 / 206 条 abort），屏幕永远停在二屏。
+   **已做未刷**：`out/z1_fix3q_boot/boot.img`（sha `9c198659…`）在 fstab 的 /data 行加了
+   fs_mgr 的 `check` 标志，开机前跑 e2fsck。
+2. **PMIC 父中断仍然起不来**：把 dts 的 `<150>` 改成 `<16>`(GPIO7→PMIC_EINT, 表里确证
+   `eint_m=1,eint_n=16`) 后，板上**行为完全没变** —— 还是 `Can not find pin` + `-EINVAL`，
+   而且 Linux irq 号仍是 37。说明 hwirq→pin 的换算不在我以为的那条路上，需在驱动里加打印定位。
+   影响：电源键是死键、耳机检测、充电中断、RTC 闹钟全无。
+3. **GPU 彩虹条**：板上 20 条 `gp error irq state=4000 status=3` = `LIMA_GP_IRQ_PLB_INVALID_CMD`
+   （GP 拿到非法命令流被中止）。我已推翻旧结论"416MHz 无 VGPU 电压"：
+   `lima_device.c:189` 用的是 optional regulator，MT6572 无独立 VGPU 轨（走 buck_vproc=1.15V），
+   且同一内核 7-17 离屏测试画出过正确三角形。
+   嫌疑集中到 **Mesa 19.1.8 用户态**（其 `lima_drm.h` 缺 `LIMA_BO_FLAG_HEAP`，而仓库 24.0.9 与内核 UAPI 逐字节一致）。
+   **已做未刷**：`out/z1_v19_gpu24_system/system_v19.img`（sha `5de0d4cb…`，Mesa 24.0.9 + libglapi 同换）。
+4. **开机极慢**：没有 boot image（`arm.noimage`），首启 68 次 dex2oat，实测 1044 s 仍未到
+   `boot_completed`；另一次 548 s 到过。改名成 `arm` 会 SIGILL（历史记录，待复核根因）。
 
-**方法论新增**: ① 改了会进 ramdisk 的东西必须重打 ramdisk, 打完从 boot.img 反解核对 md5;
-② `mainline_recon/z1_boot_mainline_*.log` 是 data 文件, `grep` 必须带 `-a`。
+#### 产物与刷写组合（下次上板用）
+| 角色 | 文件 | sha256 |
+|---|---|---|
+| boot（推荐） | `out/z1_fix3q_boot/boot.img` | `9c198659cb99904abd01be112709163cbf1104d912fd0a31cb47ad40cb95cba0` |
+| system（GPU 关） | `out/z1_v17_system/system_v17.img` | `cfb415d4956efc43ca6c408c222859e3345ebef31bc6d621fba388a69118dbbd` |
+| system（GPU 开） | `out/z1_v19_gpu24_system/system_v19.img` | `5de0d4cba83727a15cdb7df42a6ca46c3bb2c447a35e2ca1dc4f46e46e2cdb50` |
+| 回滚 boot | `out/z1_fix3p_boot/boot.img` | `db98a5e5fd7cf1efed09067c91d3d81d9207b199ffc01731aee7544d85444983` |
+
+**纪律**: 900MB 的 system 分区用 `tools/z1_flash_chunked.sh`（48MB 分块 + 断点续写）刷，
+不要用单次整块写——实测单次写在 30~87% 之间断流了三次；boot(6MB) 用 `tools/flash_with_retry.sh`。
+注意 `flash_with_retry.sh` 的校验超时已改为按镜像大小算（原来死数 60s，大分区必被判失败并回滚）。
+
+**方法论新增**:
+① 改了会进 ramdisk 的东西必须重打 ramdisk，打完从 boot.img 反解核对关键文件 md5；
+② `mainline_recon/z1_boot_mainline_*.log` 是 data 文件，`grep` 必须带 `-a`；
+③ `tools/` 目录**不在任何 git 仓库里**，新工具必须复制到 `z1a9_gpt/scripts/` 才算入库。
 
 ### 4.0 最新状态 (2026-11-04 上板实测)
 
