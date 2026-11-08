@@ -1,0 +1,6 @@
+# Z1 屏幕下方三个电容键（z1_cst836u 驱动固定上报 158/102/139，
+# 见 drivers/z1_cst836u/z1_cst836u.c:136-138）
+# 用户要求的语义：跟读=音量+，确定=确认，复读=音量-
+key 158   VOLUME_UP     WAKE      # 跟读（左，x<80）
+key 102   DPAD_CENTER   WAKE      # 确定（中，80<=x<160）
+key 139   VOLUME_DOWN   WAKE      # 复读（右，x>=160）
