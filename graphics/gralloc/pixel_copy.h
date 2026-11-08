@@ -19,7 +19,11 @@ static inline int z1_buffer_layout(int width, int height, unsigned bpp,
     // HWUI "Could not create EGL image, err = EGL_SUCCESS" + 位图 null + NPE）。
     // 原来只对齐到 2 像素，28px/14px 的图标因此被拒绝。这里改成 16 像素对齐。
     const uint64_t columns = (uint64_t(width) + 15) & ~uint64_t(15);
-    const uint64_t rows = (uint64_t(height) + 1) & ~uint64_t(1);
+    /* 行数按 16 行对齐：lima 的 PP 以 16x16 tile 为单位访问，Mesa 自己给
+     * tiled/shared buffer 分配时也是 align(h,16)（lima_resource.c:126-132/231-236）。
+     * 只对齐到 2 行时，高度不是 16 倍数的 buffer 底部会短 1~15 行，
+     * PP 的 tile 底部组或 sampler 双线性取数会读越界 -> ppmmu page fault。 */
+    const uint64_t rows = (uint64_t(height) + 15) & ~uint64_t(15);
     const uint64_t limit = uint64_t(INT_MAX) - 4096;
     if (columns > limit / bpp || rows > (limit - 4) / (columns * bpp))
         return -EINVAL;
