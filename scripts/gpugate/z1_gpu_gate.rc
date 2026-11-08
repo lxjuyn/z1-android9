@@ -20,6 +20,7 @@ on post-fs-data
 
 service z1_gpu_watch /system/bin/sh /system/bin/z1_gpu_watch.sh
     class core
+    oneshot
     user root
     group root log
     disabled

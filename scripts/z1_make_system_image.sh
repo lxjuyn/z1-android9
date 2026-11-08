@@ -42,6 +42,25 @@ for spec in "$@"; do
     debugfs -w -R "sif $inpath $t $STAMP" "$DST" >/dev/null
   done
 
+  # SELinux 标签: debugfs 的 write 只会带过来文件内容, **不会带 security.selinux**,
+  # 换过的文件会变成 unlabeled —— 上板实测 apps 加载 /system/lib/hw/gralloc.z1.so 时
+  # 报 tcontext=u:object_r:unlabeled:s0 的 read/open/getattr denial。
+  # 规则: /lib/hw/*.so 与 /vendor/lib/hw/*.so -> same_process_hal_file
+  #       /vendor/** -> vendor_file, 其余 -> system_file
+  case "$inpath" in
+    /lib/hw/*.so|/vendor/lib/hw/*.so|/vendor/lib64/hw/*.so) selabel=u:object_r:same_process_hal_file:s0 ;;
+    /vendor/*)                                             selabel=u:object_r:vendor_file:s0 ;;
+    *)                                                     selabel=u:object_r:system_file:s0 ;;
+  esac
+  debugfs -w -R "ea_rm $inpath security.selinux" "$DST" >/dev/null 2>&1 || true
+  debugfs -w -R "ea_set $inpath security.selinux $selabel" "$DST" >/dev/null 2>&1 || true
+  gotlabel=$(debugfs -R "ea_list $inpath" "$DST" 2>/dev/null | grep -o 'u:object_r:[^"\]*' | head -1)
+  if [ "$gotlabel" = "$selabel" ]; then
+    echo "  SELinux 标签 OK: $selabel"
+  else
+    echo "  WARN: SELinux 标签设置失败 (got='${gotlabel:-none}' want=$selabel)"; FAIL=1
+  fi
+
   # 读回校验: 唯一可靠的方式是 dump 出来比 hash。
   tmp=$(mktemp /tmp/z1sysimg.XXXXXX)
   rm -f "$tmp"

@@ -63,7 +63,9 @@ set_restarts() {
     printf '%s %s\n' "$BOOTID" "$1" > "$STATE" 2>/dev/null
 }
 
-tripped() { [ -e "$MARK_DIR/z1_gpu_disable" ] || [ -e "$CACHE_DIR/z1_gpu_disable" ]; }
+# v33: 标记只作为取证信息，不再让 daemon 提前退出（否则 init 会每 5 秒把它重启一次）。
+tripped() { return 1; }
+marker_state() { [ -e "$MARK_DIR/z1_gpu_disable" ] && echo "data-marker" ; return 0; }
 
 # NOTE: `: > file` on a missing/read-only path is FATAL in a POSIX shell (":"
 # is a special builtin), so every marker write goes through a subshell. This is
@@ -75,6 +77,13 @@ trip() {
     why="$1"
     tripped && { klog "already tripped ($why)"; return 0; }
     kwarn "TRIP: $why"
+    # 2026-11-08 (v33): 只记录，不再写 disable 标记、不再 autoreboot。
+    # 原因：disable 标记会让 z1_gpu_gate.sh 藏掉 mesa，而 SwiftShader 回退在本镜像里
+    # dlopen 不进去 -> SurfaceFlinger 崩 -> 无限重启（实测已复现）。GPU 出问题时我们
+    # 宁可在屏幕上看到坏画面，也不要让设备进不了系统。
+    kwarn "v33: trip is LOG-ONLY (no markers, no reboot); gate keeps mesa enabled"
+    sync 2>/dev/null
+    exit 0
     mkdir -p "$MARK_DIR" 2>/dev/null
     write_marker "$MARK_DIR/z1_gpu_disable"
     write_marker "/data/z1_gpu_disable"

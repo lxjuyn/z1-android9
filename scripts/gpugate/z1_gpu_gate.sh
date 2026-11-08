@@ -76,6 +76,23 @@ disabled=0
 [ -e "/data/z1_gpu_disable" ]        && disabled=1
 [ "$(prop persist.sys.z1.gpu.disabled)" = "1" ] && disabled=1
 
+# 2026-11-08 (v33): 这个"安全网"本身是坏的 —— 它藏掉 mesa 后把 SwiftShader 三件套装进
+# tmpfs，但那些库在那份镜像里 dlopen 不进去：
+#   E libEGL: load_driver(/vendor/lib/egl/libEGL_swiftshader.so): dlopen failed
+#   F libEGL: couldn't find an OpenGL ES implementation
+# 结果 SurfaceFlinger 直接崩，系统进"无限重启"。实测（mainline_recon/z1_boot_mainline_
+# 20261108_135205.log）：它只在 md5 层面比对文件，从不验证能不能加载，所以"失败关闭"
+# 的设计在这里变成了必崩。为了不再把整机拖进启动循环，这条路径改成**永不隐藏 mesa**：
+# 只在权限允许时把状态写进 /cache 供取证，然后原样退出。
+#
+# 要恢复"藏 mesa 换 SwiftShader"，必须先证明 SwiftShader 三件套在本镜像里能 dlopen
+# （例如先在板上跑 eglChooseConfig 冒烟测试），再删掉下面这个 exit 0。
+klog "v33: gate disabled -- mesa is never hidden (SwiftShader fallback broken in this image); forced=$forced disabled=$disabled"
+mkdir -p "$CACHE_DIR" 2>/dev/null
+( printf 'gate=disabled mesa=kept forced=%s disabled=%s\n' "$forced" "$disabled" \
+    > "$CACHE_DIR/z1_gpu_gate.status" ) 2>/dev/null
+exit 0
+
 if [ "$forced" = "1" ]; then
     # A deliberate re-enable also rearms the watcher's reboot guard.
     rm -f "$MARK_DIR/.z1_gpu_autorebooted" "$CACHE_DIR/z1_gpu_autorebooted" 2>/dev/null
