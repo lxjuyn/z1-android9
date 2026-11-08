@@ -47,7 +47,7 @@
 
 - 主机回归测试同步更新并通过：**5,121,415 个检查全过**
   （新增一条"任意宽度 1..300 都必须满足 lima 下限"的回归断言）。
-- 重编 `gralloc.z1.so`（NDK r26d，18,432 B，SONAME 正确，NEEDED 与原版一致）。
+- 重编 `gralloc.z1.so`（NDK r26d，18,456 B，SONAME 正确，NEEDED 与原版一致）。
   构建所需的最小 AOSP 头在 `/tmp/gpsstub/`（hardware/gralloc.h、fb.h、cutils/*、log/log.h shim、system/graphics*）。
 
 ## 产物
