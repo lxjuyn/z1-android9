@@ -1,0 +1,65 @@
+# GPU 版开机的两个阻塞点（2026-11-08 上板实测）
+
+## 一、好消息：GPU 真的生效了
+
+板上用串口 console shell 执行 `dumpsys SurfaceFlinger`：
+
+```
+GLES: Mesa, Mali400, OpenGL ES 2.0 Mesa 26.1.1
+EGL implementation : 1.4
+Sync configuration: [using: EGL_ANDROID_native_fence_sync EGL_KHR_wait_sync]
+```
+
+并且 **`gp error irq` 从 19.1.8 的 20 次降到 0**。这与"19.1.8 的 PLBU scissor 下溢被
+Mesa 26 的上游修复（ab49a0e7 删掉那条 clear 路径）消掉"完全一致。
+
+## 二、阻塞点 1：GPS HAL 在 system_server 主线程里阻塞 → Watchdog 反复杀系统
+
+```
+Watchdog: *** WATCHDOG KILLING SYSTEM PROCESS: Blocked in handler on main thread (main)
+  at com.android.server.location.GnssLocationProvider.class_init_native(Native Method)
+  at com.android.server.location.GnssLocationProvider.<clinit>(GnssLocationProvider.java:2716)
+  at com.android.server.location.LocationManagerService.loadProvidersLocked
+  at com.android.server.location.LocationManagerService.systemRunning
+  at com.android.server.SystemServer.lambda$startOtherServices$4(SystemServer.java:1917)
+```
+
+- 这一次开机里 **6 次** Watchdog 杀进程，其中 **5 次**是这条栈。
+- 机制：`gps.default.so` 打开时要连 mnld 的 socket；mnld 早已因为
+  `/sys/class/gpsdrv/gps/status` 不存在而退出，于是这个 native 初始化**阻塞**，
+  30 秒后 Watchdog 把 system_server 整个杀掉，框架重启，再阻塞……
+- **这解释了历史上"开机 1172 秒"的怪现象**：不是单纯没有 boot image，是 system_server 被反复杀。
+- 修法（已做，未上板）：`out/z1_v26_nognss/system_v26.img`（sha256 `0b734967…`）删掉了
+  `gps.default.so`、`gnss@1.0-service`、`gnss@1.0-impl.so`、gnss service rc。
+  没有 HAL 时 `hw_get_module("gps")` 立即失败，provider 直接禁用，不再阻塞。
+  代价：GPS 不可用（本来也不可用）。
+
+## 三、阻塞点 2（新发现）：SystemUI 在 `ShadowKeyDrawable.draw()` NPE 崩溃
+
+```
+java.lang.NullPointerException: Attempt to invoke virtual method
+  'boolean android.graphics.Bitmap.isRecycled()' on a null object reference
+    at android.graphics.BaseCanvas.throwIfCannotDraw(BaseCanvas.java:61)
+    at android.view.DisplayListCanvas.throwIfCannotDraw(DisplayListCanvas.java:226)
+    at android.view.RecordingCanvas.drawBitmap(RecordingCanvas.java:98)
+    at com.android.systemui.statusbar.phone.ShadowKeyDrawable.draw(ShadowKeyDrawable.java:88)
+```
+
+- 出现 17 次，全部是 `com.android.systemui`，从 221 s 开始（**早于**第一次 Watchdog 杀）。
+- **只在 GPU 真正生效的这次开机出现**：之前的三个镜像里 `ShadowKeyDrawable` 命中 0 次。
+- 现有数据：内存不是瓶颈（GPU 那次 free 358 MB，比无 GPU 时的 260 MB 还多，因为不再跑 dex2oat）。
+
+## 四、其它已知的 EGL 异常（待判）
+
+- `EGL-MAIN: failed to get driver name for fd -1` 出现 18 次，涉及 pid 475(SurfaceFlinger)、
+  850(bootanimation)、3497(launcher)、5598(systemui) 等。**SurfaceFlinger 后来还是拿到了 lima**
+  （dumpsys 为证），说明这个失败是启动早期的某次尝试，不是终态。
+- `bootanimation` 最终没起来（用户没看到二屏），`eglMakeCurrent ... EGL_BAD_MATCH`。
+- `Typeface: Unable to load Family: null` 20 次（字体加载失败，待判是否影响）。
+- `hwservicemanager: Cannot find entry android.hardware.vibrator@1.0` /
+  `audio.effect@4.0` / `vendor.lineage.trust@1.0` —— 镜像里没有这些 HAL，属预期噪音。
+
+## NOT VERIFIED
+- v26 是否真的消除了 Watchdog 杀（未上板）。
+- SystemUI 崩溃是否只是 GPU 打开的次生现象（两个 agent 在查）。
+- GPU 生效后"是不是明显更流畅"只有用户主观判断。
