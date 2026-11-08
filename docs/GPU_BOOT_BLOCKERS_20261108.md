@@ -85,3 +85,19 @@ pid 475(SurfaceFlinger)、850(bootanimation)、3497(launcher)、5598(systemui) �
 
 ⇒ 真正的待解问题变成了一个：**为什么 SurfaceFlinger 能拿到 DRM 设备，普通应用进程拿不到。**
 这是当前 GPU 版"能用"与"不能用"的分水岭。
+
+## 六、应用侧失败的技术线索（Mesa 26 的 gralloc 抽象层）
+
+- Mesa 26 把 Android 的 gralloc 访问重构到了 `src/util/u_gralloc/`，后端依次尝试
+  imapper5 → imapper4 → cros → libdrm → **fallback**。
+- 板上日志里的 `MESA: Gralloc doesn't support lock_ycbcr` 来自
+  `u_gralloc_fallback.c:60` ⇒ **实际用的是最后的 fallback 后端**（前面的都没成功）。
+- fallback 是通用实现：`data[0]` 当 fd、`pixel_stride`/`hal_format` 由调用方给，
+  所以**不依赖我们 private_handle_t 的具体布局**；`lock_ycbcr` 缺失只是警告。
+- 之后 `eglCreateImageKHR` 仍然失败（`OpenGLRenderer: Could not create EGL image, err = EGL_SUCCESS`），
+  说明问题在**下一跳**：lima 的 DRI 前端对 dma-buf 导入的支持（format/modifier）。
+- 另注：Mesa 24.0.9 同样有 u_gralloc，且 `lima_pack_clear_plbu_cmd` 那条 bug 在 24 里也已删除，
+  所以"退回 24"不会改变应用侧这个失败，只会换来更老的驱动。
+
+待验证：lima 是否支持 `EGL_EXT_image_dma_buf_import`（`eglQueryString` 里有没有这个扩展），
+以及 `dri2_create_image_khr` 在 lima 上返回什么错误。
