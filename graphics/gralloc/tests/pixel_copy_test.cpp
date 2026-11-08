@@ -93,7 +93,15 @@ int main() {
     check(stride==240 && size==307204); // Regression: never 512*320.
     check(((size+4095)&~size_t(4095))==311296);
     check(z1_buffer_layout(241,319,2,&stride,&size)==0);
-    check(stride==242 && size==154884);
+    // 2026-11-08: 列数改为 16 像素对齐（Mesa/lima 导入 render-target 时要求
+    // stride >= align(width,16)*bpp）。align(241,16)=256，align(319,2)=320。
+    check(stride==256 && size==163844);
+    // 回归：任何宽度下都必须满足 lima 的下限
+    for (int w = 1; w <= 300; ++w) {
+        size_t st2, sz2;
+        check(z1_buffer_layout(w, 1, 4, &st2, &sz2) == 0);
+        check(st2 * 4 >= size_t(((w + 15) & ~15) * 4));
+    }
     check(z1_buffer_layout(-1,320,4,&stride,&size)==-EINVAL);
     check(z1_buffer_layout(INT_MAX,INT_MAX,8,&stride,&size)==-EINVAL);
     check(z1_buffer_layout(1,1,0,&stride,&size)==-EINVAL);

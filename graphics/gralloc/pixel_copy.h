@@ -13,7 +13,12 @@ static inline int z1_buffer_layout(int width, int height, unsigned bpp,
 {
     if (!stride || !size || width <= 0 || height <= 0 || !bpp)
         return -EINVAL;
-    const uint64_t columns = (uint64_t(width) + 1) & ~uint64_t(1);
+    // 2026-11-08: Mesa/lima 在导入线性 buffer 当 render target 时要求
+    // stride >= align(width, 16) * bpp（lima_resource.c:378-396，不满足就
+    // fprintf(stderr)+返回 NULL，而 Android 进程没人读 stderr，于是表现为
+    // HWUI "Could not create EGL image, err = EGL_SUCCESS" + 位图 null + NPE）。
+    // 原来只对齐到 2 像素，28px/14px 的图标因此被拒绝。这里改成 16 像素对齐。
+    const uint64_t columns = (uint64_t(width) + 15) & ~uint64_t(15);
     const uint64_t rows = (uint64_t(height) + 1) & ~uint64_t(1);
     const uint64_t limit = uint64_t(INT_MAX) - 4096;
     if (columns > limit / bpp || rows > (limit - 4) / (columns * bpp))
