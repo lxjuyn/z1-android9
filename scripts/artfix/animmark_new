@@ -1,0 +1,16 @@
+#!/system/bin/sh
+# Record that this system build has been fully booted, so the next boot shows
+# the normal LineageOS animation instead of "正在优化系统".
+TAG=/data/misc/z1_anim_tag
+mkdir -p /data/misc 2>/dev/null
+# v38: 必须写"系统 ID"，不能写 build.prop 的 md5 —— z1_bootanim.sh 比对的
+# 是 /system/etc/z1_system_id，以前写 md5 导致 tag 永远不等于 id，
+# 一旦 id 真的变了，"正在优化系统"会变成每boot都出现。
+ID=/system/etc/z1_system_id
+cur=""
+[ -f "$ID" ] && cur=$(cat "$ID" 2>/dev/null | tr -d ' \r\n')
+[ -n "$cur" ] || cur=$(md5sum /system/build.prop 2>/dev/null | cut -d' ' -f1)
+[ -n "$cur" ] && printf '%s\n' "$cur" > "$TAG" 2>/dev/null
+printf '<6>[z1anim] marker written: %s\n' "$cur" > /dev/kmsg 2>/dev/null
+# 自愈标记也在这里清掉：能到 boot_completed 说明这次启动是好的。
+rm -f /data/misc/z1_heal_done 2>/dev/null
