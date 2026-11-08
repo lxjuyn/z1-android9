@@ -63,3 +63,25 @@ java.lang.NullPointerException: Attempt to invoke virtual method
 - v26 是否真的消除了 Watchdog 杀（未上板）。
 - SystemUI 崩溃是否只是 GPU 打开的次生现象（两个 agent 在查）。
 - GPU 生效后"是不是明显更流畅"只有用户主观判断。
+
+## 五、为什么"Phone is starting…"退不掉（补充）
+
+`mFocusedApp` 一直是 `com.android.settings/.FallbackHome`，而 FallbackHome 只在真正的
+launcher 可用后才退出。launcher3 自己崩在 workspace 加载：
+
+```
+OpenGLRenderer: Device claims wide gamut support, cannot find matching config, error = EGL_SUCCESS
+OpenGLRenderer: Could not create EGL image, err = EGL_SUCCESS
+LoaderCursor: Failed to load icon for info ShortcutInfo(...)
+LoaderCursor: java.lang.NullPointerException: Attempt to get length of null array
+```
+
+串起来就是：**应用进程拿不到 GPU → `eglCreateImageKHR` 失败 → 图标/阴影位图为 null →
+launcher 与 SystemUI 双双 NPE**。
+
+而 `failed to get driver name for fd -1` 在这一次开机里出现 **18 次**，牵涉
+pid 475(SurfaceFlinger)、850(bootanimation)、3497(launcher)、5598(systemui) 等；
+但 SF 最终仍在 `dumpsys SurfaceFlinger` 里报 `GLES: Mesa, Mali400`。
+
+⇒ 真正的待解问题变成了一个：**为什么 SurfaceFlinger 能拿到 DRM 设备，普通应用进程拿不到。**
+这是当前 GPU 版"能用"与"不能用"的分水岭。
