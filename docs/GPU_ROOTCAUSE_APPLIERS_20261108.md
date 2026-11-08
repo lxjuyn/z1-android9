@@ -68,3 +68,36 @@ sha256 `b06f85a5c0046b78a165a725c6ba067a7f78cc3c444fc6fc9f4d49ddb771437a`，e2fs
 - 不再有 `WATCHDOG KILLING ... GnssLocationProvider` → GPS stub 生效
 - launcher/SystemUI 不再 NPE、能进桌面 → gralloc 对齐生效
 - `dumpsys SurfaceFlinger` 仍是 Mesa/Mali400，且 `gp error irq` 保持 0
+
+## 交叉验证（两个独立 agent）
+
+- `bootanim-egl`：全日志 0 条 `Failed to open ... DRM device`，且 app 进程的 RenderThread 有
+  `open /dev/dri` + `read /sys/devices/platform/soc/13010000.gpu/uevent` 的审计记录
+  ⇒ **应用进程确实拿到了 render node**，"拿不到 GPU"这条不成立。
+- `systemui-crash`：独立复核后同样指向 lima 的 stride 检查，并给出板上决定性验法：
+  ```
+  setprop wrap.com.android.systemui logwrapper
+  killall com.android.systemui
+  logcat -d | grep -iE "stride|import|dma.?buf|lima"
+  ```
+  预期读到 `linear imported buffer stride is smaller than minimal: 112 (BO) < 128 (min)`。
+  验证完 `setprop wrap.com.android.systemui ""`。
+
+## 另一个独立问题：launcher 的图标 NPE 不完全是 GPU
+
+`LoaderCursor.java:189` 崩的是
+`BitmapFactory.decodeByteArray(data, 0, data.length)`，其中 `data = getBlob(iconIndex)`
+是 **launcher 数据库里的 byte[] blob 为 null**，不是 Bitmap。
+最可能是"硬件位图创建失败 → 图标加载返回 null → 被写进 DB"的后续效应；
+所以刷完 v29 后，**如果桌面还崩，需要在串口 shell 里清一次 launcher 数据**：
+```
+pm clear com.android.launcher3
+```
+（这条也解释了为什么 `mFocusedApp` 一直是 FallbackHome。）
+
+## 留待转 enforcing 前修的两处 SELinux（现在是 permissive，只是隐患）
+
+- `platform_app → gpu_device:dir { read }` 41 条 —— enforcing 下 Mesa 的 `drmGetDevices2`
+  会拿不到设备，那时"应用没有 GPU"才真的成立。
+- `hal_graphics_allocator_default → gpu_device` 46 条 —— enforcing 下 gralloc 的
+  `z1_lima_alloc_dmabuf()` 打开 `/dev/dri/renderD128` 会失败。
