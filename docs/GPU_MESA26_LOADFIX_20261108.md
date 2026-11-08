@@ -63,3 +63,29 @@ eglGetProcAddress=0x41eb3cd0
 ## NOT VERIFIED
 - 还没上板。预期判据：`libEGL : loaded /vendor/lib/egl/libGLES_mesa.so`（而不是 dlopen failed），
   以及 `gp error irq` 是否消失。
+
+## 补充：修好的库在"设备自己的 linker"下跑通了完整的 EGL+GLES 初始化
+
+用 NDK 编了两个小程序，在 qemu-arm + 设备 `/system/bin/linker`（unshare --pid 绕过 pid 限制）下执行：
+
+```
+$ egltest final.so
+syms: gd=0x423f9558 init=0x423f96a8 qs=0x423fac4c gpa=0x42400cd0
+eglGetDisplay=0x40ab9000
+eglInitialize=1 version=1.4
+EGL_VENDOR=Mesa Project
+
+$ egl2 final.so
+eglChooseConfig=1 n=1 cfg=0x40af83c0
+eglCreateContext=0x40aad0f0
+eglMakeCurrent=1
+GL_RENDERER=softpipe
+```
+
+- `eglInitialize=1`、`EGL_VENDOR=Mesa Project` —— EGL 层完全可用
+- `eglChooseConfig=1`（拿到 1 个 ES2 配置）、`eglCreateContext` 成功、`eglMakeCurrent=1`
+- `GL_RENDERER=softpipe` —— harness 里没有 `/dev/dri`，所以 Mesa 选了我们同时编进去的 softpipe；
+  上板有 `renderD128` 时应该选 lima。**这同时成了一个判据**：如果板上 logcat/EGL 报的是 softpipe，
+  说明 DRM 设备发现失败（不是库的问题）。
+
+（`radeonsi: driver missing` 是 Mesa 枚举 DRM 驱动时的正常噪音，和本板无关。）
