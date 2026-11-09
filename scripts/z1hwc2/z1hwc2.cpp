@@ -108,7 +108,7 @@ extern "C" int __android_log_write(int prio, const char *tag, const char *text);
 #define LOG_TAG "z1hwc2"
 #include <log/log.h>
 
-#define Z1_HWC_VERSION "2026-11-10-r8"
+#define Z1_HWC_VERSION "2026-11-10-r9"
 
 /* ------------------------------------------------------------ constants --- */
 
@@ -399,6 +399,8 @@ struct z1_layer {
 	int visible_rects;
 	bool have_crop;
 	int release_fence;	/* sw_sync fence, ownership transfers to SF */
+	int import_failed_fd;	/* fd whose import already failed (-1 = none) */
+	bool lost_fb;		/* present had to skip it: force CLIENT next */
 	z1_fb fb;
 };
 
@@ -1374,6 +1376,7 @@ static int32_t z1_create_layer(hwc2_device_t *d, hwc2_display_t display,
 	memset(&l, 0, sizeof(l));
 	l.id = id;
 	l.acquire_fence = -1;
+	l.import_failed_fd = -1;
 	l.composition = HWC2_COMPOSITION_INVALID;
 	l.blend = HWC2_BLEND_MODE_INVALID;
 	l.alpha = 1.0f;
@@ -1694,6 +1697,7 @@ static int32_t z1_set_layer_buffer(hwc2_device_t *d, hwc2_display_t display,
 	if (l->fb.handle != buffer && l->fb.fb_id)
 		fb_forget(h, &l->fb);
 	l->handle = buffer;
+	l->import_failed_fd = -1;
 	if (l->acquire_fence >= 0)
 		close(l->acquire_fence);
 	/* Ownership transfers to us on HWC2_ERROR_NONE (see set_client_target). */
@@ -2093,13 +2097,31 @@ static int32_t z1_validate_display(hwc2_device_t *d, hwc2_display_t display,
 
 			probe.importable = 1;
 			if (z1_policy_device_block_reason(&probe) == 0) {
-				if (!l->fb.fb_id || l->fb.handle != l->handle ||
-				    l->fb.src_fd != gh->fd) {
-					if (l->fb.fb_id)
-						fb_forget(h, &l->fb);
-					(void)fb_import(h, l->handle, &l->fb);
+				if (l->import_failed_fd == gh->fd) {
+					/* Already known bad for this exact
+					 * buffer: do not hammer the kernel with
+					 * a failing PRIME import every frame. */
+					p->importable = 0;
+				} else {
+					if (!l->fb.fb_id ||
+					    l->fb.handle != l->handle ||
+					    l->fb.src_fd != gh->fd) {
+						if (l->fb.fb_id)
+							fb_forget(h, &l->fb);
+						(void)fb_import(h, l->handle,
+								&l->fb);
+					}
+					p->importable = l->fb.fb_id ? 1 : 0;
+					if (!p->importable)
+						l->import_failed_fd = gh->fd;
 				}
-				p->importable = l->fb.fb_id ? 1 : 0;
+			}
+			/* A layer whose framebuffer disappeared during present must
+			 * be reported back as CLIENT, otherwise it silently stays
+			 * missing from the screen. */
+			if (l->lost_fb) {
+				p->importable = 0;
+				l->lost_fb = false;
 			}
 		}
 	}
@@ -2336,8 +2358,10 @@ static int32_t z1_present_display(hwc2_device_t *d, hwc2_display_t display,
 			if (l->fb.fb_id)
 				fb_forget(h, &l->fb);
 			if (!l->handle || fb_import(h, l->handle, &l->fb) != 0) {
-				klogf(0, "z1hwc2: layer %" PRIu64
-				      " lost its framebuffer, skipping\n",
+				l->lost_fb = true;
+				klogf(0, "z1hwc2: layer %" PRIu64 " lost its "
+				     "framebuffer at present; it will be "
+				     "reported as CLIENT next frame\n",
 				      (uint64_t)l->id);
 				continue;
 			}

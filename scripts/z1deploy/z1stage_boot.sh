@@ -54,6 +54,7 @@ RM=/system/bin/rm
 SETPROP=/system/bin/setprop
 RESTORECON=/system/bin/restorecon
 SHA256SUM=/system/bin/sha256sum
+GETPROP=/system/bin/getprop
 WC=/system/bin/wc
 
 log() { printf 'z1stage: %s\n' "$*" >> /dev/kmsg 2>/dev/null; }
@@ -304,6 +305,20 @@ if [ "${AUTO_ONCE_GRALLOC:-0}" = 1 ]; then
     $RM -f "$STAGE/active/gralloc.z1.so" 2>/dev/null
     log "auto-install: removed the one-shot gralloc copy -> next boot falls back to the stock gralloc unless an operator installs one"
 fi
+
+# --- 3b. identity properties ------------------------------------------------
+# Which binary is actually in effect must be visible on the board, because there
+# are three installation paths (legacy rc line 42, the one-shot above, an
+# operator's active/ set) and /vendor survives a boot.img rollback.
+for _m in hwcomposer gralloc; do
+    _p="$VENDOR_HW/$_m.z1.so"
+    if [ -f "$_p" ]; then
+        set_prop "z1stage.${_m}.sha" "$(sha_of "$_p")"
+    else
+        set_prop "z1stage.${_m}.sha" "system:$(sha_of "/system/lib/hw/$_m.z1.so")"
+    fi
+done
+log "identity: hwcomposer=$($GETPROP z1stage.hwcomposer.sha 2>/dev/null) gralloc=$($GETPROP z1stage.gralloc.sha 2>/dev/null)"
 
 T1=$(uptime_s)
 log "done @${T1}s: seeded=${SEEDED} working_copies=${COPIED} applied=${APPLIED} removed=${REMOVED} errors=${ERRORS}"

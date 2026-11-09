@@ -12,7 +12,7 @@
 ```
 out/z1_v83/boot.img
   size      5,898,240 B          （boot 分区 6,291,456 B，余 393,216 B）
-  sha256    f0239f42729155eb2b9acbd83f8cd8ff44e99ac06b507da11487d04c726ada99
+  sha256    0f6695f040ce05d8d3e22f8a7258b9a1bda4b910e5a4f8d4e3545dcda096c64f
   kernel    4,331,019 B = MTK KERNEL 4,330,507 + 512   (新内核)
   ramdisk   1,563,914 B = MTK ROOTFS 1,563,402 + 512   (85 条记录)
   cmdline   316 B，原 302 B + " iomem=relaxed"
@@ -22,7 +22,7 @@ out/z1_v83/boot.img
 
 | 记录 | 大小 | sha256（前 12） | 作用 |
 |---|---|---|---|
-| `hwcomposer.z1.so` | 144,904 | `e5ed5983c56e` | HWC2 HAL r8：DEVICE 决策 + OVL 平面编程 |
+| `hwcomposer.z1.so` | 145,160 | `d452495ad362` | HWC2 HAL r9：DEVICE 决策 + OVL 平面编程 |
 | `gralloc.z1.so` | 28,548 | `0ed9fb2b573b` | CMA/dumb 连续内存分配器（OVL 能扫描的前提） |
 | `z1kmstest` | 122,976 | `1954132627e1` | 独立 DRM/OVL 测试工具（probe/run/regs） |
 | `z1stage_boot.sh` | ~12.6 K | `…` | post-fs-data：节点/一次性安装/权限 |
@@ -48,6 +48,7 @@ out/z1_v83/boot.img
 | 10 | **内核：IOMMU defer 修复** | ovl/rdma0 的 `iommus` 指向没编驱动的 m4u ⇒ probe 被 defer 到超时（10 s 基准 + 每 driver_register 顺延 10 s）= 35 s。给 iommu 节点加 `status="disabled"` ⇒ `-ENODEV` 立即放行 |
 | 11 | **内核：vblank 回调注册顺序** | 注册早于 `mtk_crtc_init()`/`mutex_init()`，OVL 中断在 probe 时已活 ⇒ 1/11 概率 NULL panic。挪到初始化之后 |
 | 12 | **fb 销毁时机**：`RmFB` 挪到提交成功之后 | 内核 `drm_framebuffer_remove()` 会强制停用仍在引用该 fb 的平面（drm_framebuffer.c:1157），原来在 present 开头 drain 会让被替换的层闪一帧 |
+| 15 | **红队/审查第二轮吸收**：present 跳层要回报、import 失败负缓存、HAL 身份属性 | 层在 present 被跳过时置 `lost_fb`，下一帧 validate 报成 CLIENT（否则该层永久缺一块）；import 失败按 `(handle,fd)` 负缓存，避免原厂 lima gralloc 下每帧每层一次失败 PRIME（内核会打 `sg_table is not contiguous`，把 dmesg 和我们的日志预算一起冲掉）；`z1stage.{hwcomposer,gralloc}.sha` 属性让"板上到底跑的是哪份二进制"可读 |
 | 14 | **对抗式代码审查修复**（1 P0 + 4 P1 + 10 P2） | 最重的一条：`setLayerBuffer`/`setClientTarget` 里 `dup()` 后不 close 传入 fd —— HIDL 引擎在返回 NONE 时把 fd 所有权交给 HAL（`ComposerCommandEngine.h` 里 `closeFence=false`），60 fps 下几秒就 EMFILE、composer 必死。其余见 `docs/ovl/Z1_HWC2_CODE_REVIEW_20261110.md` |
 | 13 | **cmdline `iomem=relaxed`** | 否则 OVL/RDMA/DSI/MUTEX/MMSYS 全被 `iomem_is_exclusive()` 拒掉，`/dev/mem` 读寄存器 -EPERM |
 
