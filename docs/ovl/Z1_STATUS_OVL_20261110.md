@@ -22,7 +22,7 @@ out/z1_v83/boot.img
 
 | 记录 | 大小 | sha256（前 12） | 作用 |
 |---|---|---|---|
-| `hwcomposer.z1.so` | 145,160 | `d452495ad362` | HWC2 HAL r9：DEVICE 决策 + OVL 平面编程 |
+| `hwcomposer.z1.so` | 144,920 | `d452495ad362` | HWC2 HAL r9：DEVICE 决策 + OVL 平面编程 |
 | `gralloc.z1.so` | 28,548 | `0ed9fb2b573b` | CMA/dumb 连续内存分配器（OVL 能扫描的前提） |
 | `z1kmstest` | 122,976 | `1954132627e1` | 独立 DRM/OVL 测试工具（probe/run/regs） |
 | `z1stage_boot.sh` | ~12.6 K | `…` | post-fs-data：节点/一次性安装/权限 |
