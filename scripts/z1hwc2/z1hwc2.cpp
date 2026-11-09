@@ -57,6 +57,8 @@
 #include <fcntl.h>
 #include <inttypes.h>
 #include <poll.h>
+#include <pthread.h>
+#include <time.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -287,6 +289,7 @@ struct z1_layer {
 	uint32_t transform;
 	int visible_rects;
 	bool have_crop;
+	int release_fence;	/* sw_sync fence, ownership transfers to SF */
 	z1_fb fb;
 };
 
@@ -335,6 +338,17 @@ struct z1_hwc2 : public hwc2_device_t {
 	std::vector<std::pair<uint32_t, uint32_t> > pending_release; /* fb, gem */
 	int pending_frame;
 
+	/* software sync fences (optional) */
+	bool fences_on;
+	int timeline_fd;
+	uint32_t timeline_val;	/* last signalled timeline value */
+	bool fences_pending;	/* fences at timeline_val+1 are outstanding */
+	uint64_t last_present_ms;
+	pthread_mutex_t fence_lock;
+	volatile int wd_stop;
+	pthread_t wd_thread;
+	bool wd_started;
+
 	/* stats */
 	uint64_t frames;
 	uint64_t commit_fail;
@@ -343,6 +357,104 @@ struct z1_hwc2 : public hwc2_device_t {
 	bool first_commit_logged;
 	int mode_force_client;		/* debug.z1.hwc.mode == 0 */
 };
+
+/* ------------------------------------------------ software sync fences --- */
+
+/*
+ * Release/present fences need a fence object that we can signal later, which
+ * is exactly what the kernel's sw_sync driver provides (CONFIG_SW_SYNC,
+ * exposed as <debugfs>/sync/sw_sync).  Everything here is optional: when the
+ * property debug.z1.hwc.fences is 0 (default) or the node is missing, the HAL
+ * keeps returning -1 like the goldfish HWC1 does.
+ */
+struct z1_sw_sync_data {
+	uint32_t value;
+	char name[32];
+	int32_t fence;
+};
+#define Z1_SW_SYNC_IOC_MAGIC 'W'
+#define Z1_SW_SYNC_IOC_CREATE_FENCE \
+	_IOWR(Z1_SW_SYNC_IOC_MAGIC, 0, struct z1_sw_sync_data)
+#define Z1_SW_SYNC_IOC_INC _IOW(Z1_SW_SYNC_IOC_MAGIC, 1, uint32_t)
+
+static uint64_t now_ms(void)
+{
+	struct timespec ts;
+
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u;
+}
+
+static int sw_fence_create(int tl, const char *name, uint32_t value)
+{
+	struct z1_sw_sync_data d;
+
+	memset(&d, 0, sizeof(d));
+	d.value = value;
+	strncpy(d.name, name, sizeof(d.name) - 1);
+	d.fence = -1;
+	if (ioctl(tl, Z1_SW_SYNC_IOC_CREATE_FENCE, &d) < 0)
+		return -1;
+	return d.fence;
+}
+
+static int sw_timeline_inc(int tl, uint32_t by)
+{
+	return ioctl(tl, Z1_SW_SYNC_IOC_INC, &by) < 0 ? -errno : 0;
+}
+
+/*
+ * If the display goes idle right after a frame, that frame's release fences
+ * would never be signalled and a producer could block forever waiting for its
+ * buffer.  This watchdog signs the timeline off after 250 ms of silence.
+ */
+static void *fence_watchdog(void *arg)
+{
+	z1_hwc2 *h = static_cast<z1_hwc2 *>(arg);
+
+	while (!h->wd_stop) {
+		usleep(100 * 1000);
+		if (!h->fences_pending)
+			continue;
+		if (now_ms() - h->last_present_ms < 250)
+			continue;
+		pthread_mutex_lock(&h->fence_lock);
+		if (h->fences_pending) {
+			if (sw_timeline_inc(h->timeline_fd, 1) == 0)
+				h->timeline_val++;
+			h->fences_pending = false;
+			klogf(1, "z1hwc2: fence watchdog: released idle frame "
+			     "(timeline=%u)\n", h->timeline_val);
+		}
+		pthread_mutex_unlock(&h->fence_lock);
+	}
+	return nullptr;
+}
+
+static void fences_init(z1_hwc2 *h)
+{
+	pthread_mutex_init(&h->fence_lock, nullptr);
+	h->timeline_fd = -1;
+	h->last_present_ms = now_ms();
+	if (prop_int("debug.z1.hwc.fences", 0) == 0) {
+		klogf(1, "z1hwc2: fences disabled (debug.z1.hwc.fences=0)\n");
+		return;
+	}
+	h->timeline_fd = open("/sys/kernel/debug/sync/sw_sync",
+			      O_RDWR | O_CLOEXEC);
+	if (h->timeline_fd < 0) {
+		klogf(0, "z1hwc2: fences requested but "
+		     "/sys/kernel/debug/sync/sw_sync is unavailable (%s); "
+		     "is debugfs mounted and CONFIG_SW_SYNC enabled?\n",
+		      strerror(errno));
+		return;
+	}
+	h->fences_on = true;
+	if (pthread_create(&h->wd_thread, nullptr, fence_watchdog, h) == 0)
+		h->wd_started = true;
+	klogf(1, "z1hwc2: sw_sync fences enabled (timeline fd=%d)\n",
+	      h->timeline_fd);
+}
 
 /* ---------------------------------------------------------------- helpers --- */
 
@@ -1124,6 +1236,8 @@ static int32_t z1_destroy_layer(hwc2_device_t *d, hwc2_display_t display,
 		fb_forget(h, &l->fb);
 	if (l->acquire_fence >= 0)
 		close(l->acquire_fence);
+	if (l->release_fence >= 0)
+		close(l->release_fence);
 	h->layers.erase(layer);
 	klogf(2, "z1hwc2: destroyLayer %" PRIu64 "\n", (uint64_t)layer);
 	return HWC2_ERROR_NONE;
@@ -1643,13 +1757,16 @@ static int32_t z1_get_release_fences(hwc2_device_t *d, hwc2_display_t display,
 	}
 	for (std::map<hwc2_layer_t, z1_layer>::iterator it = h->layers.begin();
 	     it != h->layers.end(); ++it) {
+		z1_layer *l = &it->second;
+
 		if (n >= *out_num_elements)
 			break;
+		/* Only device layers that were scanned out this frame carry a
+		 * fence; the rest are "ready immediately" (-1) as the spec
+		 * allows.  Ownership of the fd transfers to SurfaceFlinger. */
 		out_layers[n] = it->first;
-		/* -1: "ready immediately".  Zero-copy device layers are still
-		 * being scanned out at this point; real sw_sync fences are the
-		 * next milestone (see the file header). */
-		out_fences[n] = -1;
+		out_fences[n] = l->release_fence;
+		l->release_fence = -1;
 		n++;
 	}
 	*out_num_elements = n;
@@ -1839,6 +1956,7 @@ static int32_t z1_present_display(hwc2_device_t *d, hwc2_display_t display,
 	z1_hwc2 *h = H(d);
 	drmModeAtomicReq *req;
 	std::vector<z1_layer *> device_layers;
+	std::vector<z1_layer *> scanned;
 	uint32_t client_fb = 0;
 	uint32_t client_w = 0, client_h = 0;
 	const char *client_how = "none";
@@ -1967,6 +2085,7 @@ static int32_t z1_present_display(hwc2_device_t *d, hwc2_display_t display,
 			      l->blend,
 			      l->fb.fourcc == DRM_FORMAT_ABGR8888 ||
 				      l->fb.fourcc == DRM_FORMAT_ARGB8888);
+		scanned.push_back(l);
 		slot++;
 	}
 	for (int p = slot; p < h->plane_count; p++)
@@ -2037,6 +2156,42 @@ static int32_t z1_present_display(hwc2_device_t *d, hwc2_display_t display,
 		}
 	}
 	drmModeAtomicFree(req);
+
+	/*
+	 * Release fences.  A device layer's buffer may only be written again
+	 * once the display has stopped scanning it, which is when the *next*
+	 * frame is committed.  sw_sync gives us a fence we can signal later:
+	 * one frame per timeline point, signalled right after the following
+	 * commit.  Property gated because it needs CONFIG_SW_SYNC plus a
+	 * mounted debugfs.
+	 *
+	 * The present/retire fence is still -1: sf's DispSync treats -1 as
+	 * "unreliable" and falls back to its software model, which is the state
+	 * this panel has always run in.  (It also keeps the HAL from feeding
+	 * zero timestamps from sw_sync fences, which would poison the model.)
+	 */
+	if (h->fences_on) {
+		uint32_t next;
+
+		pthread_mutex_lock(&h->fence_lock);
+		if (h->fences_pending) {
+			if (sw_timeline_inc(h->timeline_fd, 1) == 0)
+				h->timeline_val++;
+			h->fences_pending = false;
+		}
+		next = h->timeline_val + 1;
+		for (size_t i = 0; i < scanned.size(); i++) {
+			z1_layer *l = scanned[i];
+
+			if (l->release_fence >= 0)
+				close(l->release_fence);
+			l->release_fence =
+				sw_fence_create(h->timeline_fd, "z1rel", next);
+		}
+		h->fences_pending = true;
+		pthread_mutex_unlock(&h->fence_lock);
+	}
+	h->last_present_ms = now_ms();
 
 	if (!h->modeset_done) {
 		h->modeset_done = true;
@@ -2202,6 +2357,19 @@ static int z1_close(hw_device_t *dev)
 
 	klogf(1, "z1hwc2: close (frames=%" PRIu64 " commit_fail=%" PRIu64 ")\n",
 	      h->frames, h->commit_fail);
+	h->wd_stop = 1;
+	if (h->wd_started) {
+		pthread_join(h->wd_thread, nullptr);
+		h->wd_started = false;
+	}
+	if (h->fences_on) {
+		pthread_mutex_lock(&h->fence_lock);
+		if (h->fences_pending) {
+			(void)sw_timeline_inc(h->timeline_fd, 1);
+			h->fences_pending = false;
+		}
+		pthread_mutex_unlock(&h->fence_lock);
+	}
 	for (std::map<hwc2_layer_t, z1_layer>::iterator it = h->layers.begin();
 	     it != h->layers.end(); ++it) {
 		if (it->second.fb.fb_id)
@@ -2233,6 +2401,12 @@ static int z1_close(hw_device_t *dev)
 			ioctl(h->drm_fd, DRM_IOCTL_MODE_DESTROY_DUMB, &destroy);
 		}
 	}
+	for (std::map<hwc2_layer_t, z1_layer>::iterator it = h->layers.begin();
+	     it != h->layers.end(); ++it)
+		if (it->second.release_fence >= 0)
+			close(it->second.release_fence);
+	if (h->timeline_fd >= 0)
+		close(h->timeline_fd);
 	if (h->mode_blob)
 		drmModeDestroyPropertyBlob(h->drm_fd, h->mode_blob);
 	if (h->drm_fd >= 0)
@@ -2259,6 +2433,7 @@ static int z1_open(const hw_module_t *module, const char *name,
 	if (!h)
 		return -ENOMEM;
 	h->drm_fd = -1;
+	h->timeline_fd = -1;
 	h->client_acquire_fence = -1;
 	h->client_copy_slot = 0;
 	h->next_layer_id = 1;
@@ -2280,6 +2455,8 @@ static int z1_open(const hw_module_t *module, const char *name,
 		delete h;
 		return -ENODEV;
 	}
+
+	fences_init(h);
 
 	*device = &h->common;
 	return 0;
