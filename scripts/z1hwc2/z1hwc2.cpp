@@ -108,7 +108,7 @@ extern "C" int __android_log_write(int prio, const char *tag, const char *text);
 #define LOG_TAG "z1hwc2"
 #include <log/log.h>
 
-#define Z1_HWC_VERSION "2026-11-10-r4"
+#define Z1_HWC_VERSION "2026-11-10-r5"
 
 /* ------------------------------------------------------------ constants --- */
 
@@ -2277,6 +2277,16 @@ static int32_t z1_present_display(hwc2_device_t *d, hwc2_display_t display,
 			      l->blend,
 			      l->fb.fourcc == DRM_FORMAT_ABGR8888 ||
 				      l->fb.fourcc == DRM_FORMAT_ARGB8888);
+		if (g_verbose >= 3)
+			klogf(3, "z1hwc2: plane[%d] layer=%" PRIu64 " fb=%u "
+			     "dst=%d,%d %dx%d src=%dx%d alpha=%.3f blend=%d\n",
+			      slot, (uint64_t)l->id, l->fb.fb_id,
+			      l->frame.left, l->frame.top,
+			      l->frame.right - l->frame.left,
+			      l->frame.bottom - l->frame.top,
+			      (int)(l->crop.right - l->crop.left),
+			      (int)(l->crop.bottom - l->crop.top),
+			      l->alpha, l->blend);
 		scanned.push_back(l);
 		slot++;
 	}

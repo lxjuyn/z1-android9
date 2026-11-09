@@ -446,7 +446,7 @@ int driver_deferred_probe_check_state(struct device *dev)
 
 - **内容**：E3 的 `status = "disabled"`（1 行）+ E6 ② 把 vblank 回调注册挪到 `mtk_crtc_init()` 之后（移动 2 行）+ E6 ① 可选只清 `INTSTA`（1 行）。
 - **风险：低**。当前内核 `CONFIG_MTK_IOMMU=n`，IOMMU 路径本来就是"没有"，改前改后 DMA 行为完全一致 —— 唯一变化是**从 35 s 后生效变成 0.3 s 生效**。
-- **收益**：bind ~0.3 s；`deferred probe timeout` 消失；消掉 1/11 的启动 panic 诱因；把"boot 时间依赖 insmod 时序"变成确定值。
+- **收益**：bind ~0.3 s；`deferred probe timeout` 消失；把"boot 时间依赖 insmod 时序"变成确定值；**（因为打包了 E6 ②）顺带消掉 1/11 的启动 panic**。
 - **验证**：§5。
 - **依赖**：E1 先证明方向。
 
@@ -491,7 +491,7 @@ int driver_deferred_probe_check_state(struct device *dev)
 | composer（HWC2） | card1 在 35.77 才在 → **24–35.8 s 这 11.8 s 窗口内不可能成功** | 窗口消失 | **仍然不生效**：日志显示 card1 出现后 composer 依旧每 5 s `exited with status 1`（一直到 1671 s）。**早 bind 不是 composer 的解药。** |
 | SurfaceFlinger | 用 client 合成，不依赖 card1 | 同 | **无** |
 | 确定性 | boot 结果依赖 insmod 时序（29.28–35.68 s 抖动 6.4 s） | 固定 ~0.3 s | 间接（可复现性） |
-| 启动 panic | 1/11（`mtk_crtc_ddp_irq` NULL，与 bind 时刻无关） | F1+F2 一起做 → 0 | **有**（但这是 E6 的功劳，不是"早 bind"的功劳） |
+| 启动 panic | 1/11（`mtk_crtc_ddp_irq` NULL，**与 bind 时刻无关**） | F1（含 E6 ②）→ 0 | **有**，但这是 E6 ② 的功劳，**不是"早 bind"的功劳** |
 
 **结论（明确回答"值得吗"）**：
 - **值得做，但定位要摆正**：它是**启动卫生/可复现性**的修复（+ 顺手消掉一个 16 s 的诊断等待），不是黑屏/composer 的修复。成本是 1 行 DTS + 6 行 IRQ 加固，风险极低，收益是"把 6.4 s 的不确定抖动 + 一个 11.8 s 的不可用窗口"变成常量。
@@ -573,5 +573,5 @@ int driver_deferred_probe_check_state(struct device *dev)
 1. `[未证实]` 每次启动里"最后一个把 deferred-probe 定时器续期的 `driver_register()`"具体是谁 —— 需要 E2 的打印。
 2. `[未证实]` 去掉 iommus 后 OVL/RDMA 的 probe **函数体**能不能在 0.29 s 一次成功（C4）—— 逻辑上时钟 provider 那时已就绪（`[源码]` `mtk-mmsys.c:436` 早于 `:445`），但**没有任何一次日志见过它们的 probe 体在早期跑过**（`dd.c:703` 把它挡在 `call_driver_probe()` 之前）。
 3. `[未证实]` `ranchu_hw_composer` 那行由哪个进程打印、我们的 `hwcomposer.z1.so` 为何没被选中；`klog()` 因 `/dev/kmsg` 权限静默失败只是 `[推导]`（`[源码]` `z1hwc2.cpp:41-56` 的 `open()` 失败即 return）。
-4. `[未证实]` boot#1 panic 的 1/11 概率是否是稳态 —— 样本只有 11 次；F2 加固后需要 ≥20 次启动才能说"修好了"。
+4. `[未证实]` boot#1 panic 的 1/11 概率是否是稳态 —— 样本只有 11 次；E6 ② 加固后需要 ≥20 次启动才能说"修好了"。
 5. `[未证实]` 日志内核 #155 的 boot.img 是否是 `out/z1_v79/boot.img`。**日志时间 18:38 早于 v79 的 mtime 20:25**，两者不可能是同一份产物；本文所有日志引用只对 #155 成立。
