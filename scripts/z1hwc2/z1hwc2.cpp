@@ -86,6 +86,8 @@
 
 #include <linux/dma-buf.h>
 
+#include "z1_policy.h"
+
 #define LOG_TAG "z1hwc2"
 #include <log/log.h>
 
@@ -843,73 +845,6 @@ static const char *comp_name(hwc2_composition_t c)
 	case HWC2_COMPOSITION_SIDEBAND: return "SIDEBAND";
 	default: return "?";
 	}
-}
-
-/*
- * Can this layer be handed to an OVL plane?
- * Returns true and leaves *why untouched on success, false with a reason.
- */
-static bool layer_deviceable(z1_hwc2 *h, z1_layer *l, const char **why)
-{
-	struct z1_handle *gh = (struct z1_handle *)l->handle;
-	int cw, chh, fw, fh;
-
-	if (!l->handle) {
-		*why = "no buffer";
-		return false;
-	}
-	gh = (struct z1_handle *)l->handle;
-	if (gh->magic != Z1_HANDLE_MAGIC) {
-		*why = "foreign handle";
-		return false;
-	}
-	if (gh->width <= 0 || gh->height <= 0 || gh->stride <= 0 ||
-	    gh->fd < 0) {
-		*why = "bad handle geometry";
-		return false;
-	}
-	if (!hal_bpp(gh->format) || !hal_to_drm(gh->format)) {
-		*why = "unsupported format";
-		return false;
-	}
-	if (l->transform != 0) {
-		*why = "transform";
-		return false;
-	}
-
-	fw = l->frame.right - l->frame.left;
-	fh = l->frame.bottom - l->frame.top;
-	if (fw <= 0 || fh <= 0) {
-		*why = "empty frame";
-		return false;
-	}
-	if (l->frame.left < 0 || l->frame.top < 0 ||
-	    l->frame.right > (int)h->width || l->frame.bottom > (int)h->height) {
-		*why = "partially offscreen";
-		return false;
-	}
-
-	cw = (int)(l->crop.right - l->crop.left);
-	chh = (int)(l->crop.bottom - l->crop.top);
-	if (cw <= 0 || chh <= 0) {
-		/* No crop set (or empty): use the whole buffer. */
-		cw = gh->width;
-		chh = gh->height;
-	}
-	if (cw != fw || chh != fh) {
-		*why = "scaling";
-		return false;
-	}
-	if (cw > gh->width || chh > gh->height) {
-		*why = "crop outside buffer";
-		return false;
-	}
-	if (fw > (int)h->width || fh > (int)h->height) {
-		*why = "larger than display";
-		return false;
-	}
-	*why = nullptr;
-	return true;
 }
 
 /* ---------------------------------------------------------------- present --- */
@@ -1749,9 +1684,10 @@ static int32_t z1_validate_display(hwc2_device_t *d, hwc2_display_t display,
 {
 	z1_hwc2 *h = H(d);
 	std::vector<z1_layer *> order;
+	std::vector<z1_policy_layer> pl;
+	std::vector<z1_policy_result> pr;
 	int device_slots;
-	int used = 0;
-	bool client_above = false;
+	int used;
 
 	*out_num_types = 0;
 	*out_num_requests = 0;
@@ -1773,97 +1709,115 @@ static int32_t z1_validate_display(hwc2_device_t *d, hwc2_display_t display,
 			  return a->id < b->id;
 		  });
 
-	/* Always reserve the bottom plane: SurfaceFlinger calls
-	 * setClientTarget() *after* validateDisplay(), so the current
-	 * h->client_target is still the previous frame's buffer (or NULL on the
-	 * very first frame).  Reserving unconditionally can never exceed the
-	 * hardware plane budget. */
+	pl.resize(order.size());
+	pr.resize(order.size());
+
+	for (size_t i = 0; i < order.size(); i++) {
+		z1_layer *l = order[i];
+		struct z1_handle *gh = (struct z1_handle *)l->handle;
+		z1_policy_layer *p = &pl[i];
+
+		memset(p, 0, sizeof(*p));
+		p->id = l->id;
+		p->z = l->z;
+		p->requested_type = (int)l->composition;
+		p->transform = (int)l->transform;
+		p->frame_l = l->frame.left;
+		p->frame_t = l->frame.top;
+		p->frame_r = l->frame.right;
+		p->frame_b = l->frame.bottom;
+		p->have_crop = l->have_crop;
+		p->crop_l = (int)l->crop.left;
+		p->crop_t = (int)l->crop.top;
+		p->crop_r = (int)l->crop.right;
+		p->crop_b = (int)l->crop.bottom;
+		p->display_w = (int)h->width;
+		p->display_h = (int)h->height;
+
+		if (l->handle && gh->magic == Z1_HANDLE_MAGIC && gh->fd >= 0 &&
+		    gh->width > 0 && gh->height > 0 && gh->stride > 0) {
+			p->handle_ok = 1;
+			p->buf_w = gh->width;
+			p->buf_h = gh->height;
+		}
+		p->format_ok = hal_bpp(gh ? gh->format : -1) &&
+			       hal_to_drm(gh ? gh->format : -1);
+
+		/*
+		 * Only attempt the (expensive) dma-buf import when every other
+		 * hardware constraint is already satisfied; the policy header
+		 * owns those checks.
+		 */
+		if (p->handle_ok && p->format_ok) {
+			z1_policy_layer probe = *p;
+
+			probe.importable = 1;
+			if (z1_policy_device_block_reason(&probe) == 0) {
+				if (!l->fb.fb_id || l->fb.handle != l->handle ||
+				    l->fb.src_fd != gh->fd) {
+					if (l->fb.fb_id)
+						fb_forget(h, &l->fb);
+					(void)fb_import(h, l->handle, &l->fb);
+				}
+				p->importable = l->fb.fb_id ? 1 : 0;
+			}
+		}
+	}
+
+	/*
+	 * Always reserve the bottom plane: SurfaceFlinger calls
+	 * setClientTarget() *after* validateDisplay(), so h->client_target is
+	 * still the previous frame's buffer (NULL on the very first frame).
+	 */
 	device_slots = h->plane_count - 1;
 	if (device_slots < 0)
 		device_slots = 0;
 
-	/*
-	 * Walk top-down.  DEVICE layers must form a contiguous top suffix:
-	 * the client target is composited on the bottom plane, and everything
-	 * below the lowest device layer ends up inside it.
-	 */
-	for (int i = (int)order.size() - 1; i >= 0; i--) {
+	used = z1_policy_decide(pl.data(), (int)pl.size(), device_slots,
+				h->mode_force_client, pr.data());
+
+	for (size_t i = 0; i < order.size(); i++) {
 		z1_layer *l = order[i];
-		const char *why = nullptr;
-		bool ok;
+		z1_policy_result *r = &pr[i];
+		hwc2_composition_t want =
+			(r->type == Z1_POLICY_DEVICE) ? HWC2_COMPOSITION_DEVICE
+						      : HWC2_COMPOSITION_CLIENT;
 
-		if (l->composition == HWC2_COMPOSITION_CLIENT) {
-			client_above = true;
-			if (g_verbose >= 3)
-				klogf(3, "z1hwc2: layer %" PRIu64 " z=%u CLIENT "
-				     "(requested)\n", (uint64_t)l->id, l->z);
-			continue;
+		if (want != HWC2_COMPOSITION_DEVICE && l->fb.fb_id) {
+			/* Do not pin dma-bufs of layers that the GPU will
+			 * composite. */
+			fb_forget(h, &l->fb);
 		}
+		if (l->composition != want && r->report) {
+			h->changed.push_back(std::make_pair(l->id, (int32_t)want));
+			if (g_verbose >= 2)
+				klogf(2, "z1hwc2: report layer %" PRIu64
+				      " %s -> %s (%s)\n", (uint64_t)l->id,
+				      comp_name(l->composition), comp_name(want),
+				      r->why ? r->why : "deviceable");
+		}
+		l->composition = want;
 
-		ok = layer_deviceable(h, l, &why);
-		if (ok && client_above) {
-			ok = false;
-			why = "a client layer is above it";
-		}
-		if (ok && used >= device_slots) {
-			ok = false;
-			why = "no free plane";
-		}
-		if (ok && h->mode_force_client) {
-			ok = false;
-			why = "forced client (debug.z1.hwc.mode=0)";
-		}
-		if (ok) {
-			/* Import now so that presentDisplay() does not have to
-			 * fail mid-commit. */
-			if (!l->fb.fb_id || l->fb.handle != l->handle ||
-			    l->fb.src_fd != ((struct z1_handle *)l->handle)->fd) {
-				if (l->fb.fb_id)
-					fb_forget(h, &l->fb);
-				if (fb_import(h, l->handle, &l->fb) != 0) {
-					ok = false;
-					why = "not importable as dma-buf";
-				}
-			}
-		}
+		if (g_verbose >= 2) {
+			struct z1_handle *gh = (struct z1_handle *)l->handle;
 
-		if (ok) {
-			if (l->composition != HWC2_COMPOSITION_DEVICE &&
-			    l->composition != HWC2_COMPOSITION_CURSOR) {
-				/* INVALID (first frame) or a type we cannot
-				 * honour: tell SurfaceFlinger what we decided. */
-				h->changed.push_back(std::make_pair(
-					l->id, (int32_t)HWC2_COMPOSITION_DEVICE));
-			}
-			l->composition = HWC2_COMPOSITION_DEVICE;
-			used++;
-			if (g_verbose >= 2) {
-				struct z1_handle *gh =
-					(struct z1_handle *)l->handle;
-
+			if (want == HWC2_COMPOSITION_DEVICE)
 				klogf(2, "z1hwc2: layer %" PRIu64 " z=%u DEVICE "
 				     "(%dx%d+%d+%d src=%.0fx%.0f+%.0f+%.0f "
 				     "fmt=%s alpha=%.2f blend=%d vis=%d)\n",
 				      (uint64_t)l->id, l->z,
 				      l->frame.right - l->frame.left,
-				      l->frame.bottom - l->frame.top, l->frame.left,
-				      l->frame.top,
+				      l->frame.bottom - l->frame.top,
+				      l->frame.left, l->frame.top,
 				      l->crop.right - l->crop.left,
 				      l->crop.bottom - l->crop.top, l->crop.left,
-				      l->crop.top, hal_fmt_name(gh->format),
+				      l->crop.top,
+				      gh ? hal_fmt_name(gh->format) : "?",
 				      l->alpha, l->blend, l->visible_rects);
-			}
-		} else {
-			if (g_verbose >= 2)
+			else
 				klogf(2, "z1hwc2: layer %" PRIu64 " z=%u CLIENT "
 				     "(%s)\n", (uint64_t)l->id, l->z,
-				      why ? why : "?");
-			if (l->composition != HWC2_COMPOSITION_CLIENT) {
-				l->composition = HWC2_COMPOSITION_CLIENT;
-				h->changed.push_back(std::make_pair(
-					l->id, (int32_t)HWC2_COMPOSITION_CLIENT));
-			}
-			client_above = true;
+				      r->why ? r->why : "?");
 		}
 	}
 
@@ -1871,9 +1825,9 @@ static int32_t z1_validate_display(hwc2_device_t *d, hwc2_display_t display,
 	*out_num_types = (uint32_t)h->changed.size();
 	*out_num_requests = 0;
 	if (g_verbose >= 2)
-		klogf(2, "z1hwc2: validate: layers=%zu device=%d client=%d "
+		klogf(2, "z1hwc2: validate: layers=%zu device=%d client=%zu "
 		     "changes=%zu\n", order.size(), used,
-		      (int)order.size() - used, h->changed.size());
+		      order.size() - (size_t)used, h->changed.size());
 	return h->changed.empty() ? HWC2_ERROR_NONE : HWC2_ERROR_HAS_CHANGES;
 }
 

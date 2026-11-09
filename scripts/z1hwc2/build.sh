@@ -268,7 +268,7 @@ ensure_devlibs() {
 verify_so() {
     local so=$1
     local rc=0 idx=0
-    local total=5
+    local total=6
     local size fdesc actual expected hmi_line bad_line forbidden
     local missing extra
 
@@ -418,6 +418,27 @@ verify_so() {
                     "$(basename -- "$abi_lib")" "$abi_miss"
             fi
         fi
+    fi
+
+    # 6/6 composition policy unit test (pure header; host g++, optional)
+    if command -v g++ >/dev/null 2>&1 &&
+        [ -f "$SCRIPT_DIR/test/z1hwc2_policy_test.cpp" ]; then
+        local ptest=$OUTDIR/z1_policy_test
+        if g++ -std=c++17 -O1 -Wall -Wextra -o "$ptest" \
+            "$SCRIPT_DIR/test/z1hwc2_policy_test.cpp" \
+            >"$OUTDIR/policy_test.build.log" 2>&1 &&
+            "$ptest" >"$OUTDIR/policy_test.log" 2>&1; then
+            printf '  [6/%d] %-44s PASS\n' "$total" "composition policy unit test"
+            printf '          cases: %s\n' \
+                "$(grep -c '^  PASS' "$OUTDIR/policy_test.log")"
+        else
+            printf '  [6/%d] %-44s FAIL\n' "$total" "composition policy unit test"
+            printf '          see %s\n' "$OUTDIR/policy_test.log"
+            rc=1
+        fi
+    else
+        printf '  [6/%d] %-44s SKIP (no host g++)\n' "$total" \
+            "composition policy unit test"
     fi
 
     if [ "$rc" -eq 0 ]; then
