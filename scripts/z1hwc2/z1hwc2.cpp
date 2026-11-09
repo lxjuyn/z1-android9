@@ -108,7 +108,7 @@ extern "C" int __android_log_write(int prio, const char *tag, const char *text);
 #define LOG_TAG "z1hwc2"
 #include <log/log.h>
 
-#define Z1_HWC_VERSION "2026-11-10-r7"
+#define Z1_HWC_VERSION "2026-11-10-r8"
 
 /* ------------------------------------------------------------ constants --- */
 
@@ -255,7 +255,9 @@ static void klogf(int level, const char *fmt, ...)
 		if (n > (int)sizeof(buf) - 1)
 			n = (int)sizeof(buf) - 1;
 		buf[n] = '\0';
-		if (buf[n - 1] == '\n')
+		bool had_nl = n > 0 && buf[n - 1] == '\n';
+
+		if (had_nl)
 			buf[n - 1] = '\0';
 		/*
 		 * Level 1 is deliberately WARN, not INFO: this image's
@@ -271,8 +273,10 @@ static void klogf(int level, const char *fmt, ...)
 						: Z1_LOG_DEBUG,
 				    "z1hwc2", buf);
 		if (fd >= 0) {
-			buf[n - 1] = '\n';
-			buf[n] = '\0';
+			if (had_nl) {
+				buf[n - 1] = '\n';
+				buf[n] = '\0';
+			}
 			klog_raw(fd, buf);
 		}
 	}
@@ -437,6 +441,7 @@ struct z1_hwc2 : public hwc2_device_t {
 	bool powered_on;
 	bool validated;
 	bool client_expected;	/* SurfaceFlinger will supply a client target */
+	bool color_transform;	/* a non-identity colour matrix is in effect */
 
 	/* deferred framebuffer release: an fb that was replaced this frame may
 	 * still be referenced by the state the display is scanning, so it is
@@ -448,6 +453,7 @@ struct z1_hwc2 : public hwc2_device_t {
 	bool fences_on;
 	int timeline_fd;
 	uint32_t timeline_val;	/* last signalled timeline value */
+	int modeset_tries;
 	bool fences_pending;	/* fences at timeline_val+1 are outstanding */
 	uint64_t last_present_ms;
 	pthread_mutex_t fence_lock;
@@ -692,7 +698,7 @@ static int fb_import(z1_hwc2 *h, buffer_handle_t handle, z1_fb *out)
 }
 
 static int dumb_ensure(z1_hwc2 *h, z1_dumb *d, uint32_t w, uint32_t hgt,
-		       uint32_t fourcc)
+		       uint32_t fourcc, int hal_format)
 {
 	struct drm_mode_create_dumb create;
 	struct drm_mode_map_dumb map;
@@ -718,8 +724,11 @@ static int dumb_ensure(z1_hwc2 *h, z1_dumb *d, uint32_t w, uint32_t hgt,
 	memset(&create, 0, sizeof(create));
 	create.width = w;
 	create.height = hgt;
-	create.bpp = hal_bpp(fourcc == DRM_FORMAT_RGB565 ? HAL_PIXEL_FORMAT_RGB_565
-							 : HAL_PIXEL_FORMAT_RGBA_8888) * 8;
+	/* Take the bpp from the Android format that is actually being copied;
+	 * deriving it from the fourcc silently created a 32bpp dumb buffer for
+	 * RGB_888 (24bpp content) and drmModeAddFB2 does not cross-check the
+	 * pitch against the format. */
+	create.bpp = hal_bpp(hal_format) * 8;
 	if (!create.bpp)
 		return -EINVAL;
 	if (ioctl(h->drm_fd, DRM_IOCTL_MODE_CREATE_DUMB, &create)) {
@@ -731,16 +740,28 @@ static int dumb_ensure(z1_hwc2 *h, z1_dumb *d, uint32_t w, uint32_t hgt,
 	memset(&map, 0, sizeof(map));
 	map.handle = create.handle;
 	if (ioctl(h->drm_fd, DRM_IOCTL_MODE_MAP_DUMB, &map)) {
-		klogf(0, "z1hwc2: MAP_DUMB failed: %s\n", strerror(errno));
-		return -errno;
+		int err = -errno;
+		struct drm_mode_destroy_dumb destroy;
+
+		memset(&destroy, 0, sizeof(destroy));
+		destroy.handle = create.handle;
+		ioctl(h->drm_fd, DRM_IOCTL_MODE_DESTROY_DUMB, &destroy);
+		klogf(0, "z1hwc2: MAP_DUMB failed: %s\n", strerror(-err));
+		return err;
 	}
 	d->map = mmap(nullptr, create.size, PROT_READ | PROT_WRITE, MAP_SHARED,
 		      h->drm_fd, (off_t)map.offset);
 	if (d->map == MAP_FAILED) {
+		int err = -errno;
+		struct drm_mode_destroy_dumb destroy;
+
+		memset(&destroy, 0, sizeof(destroy));
+		destroy.handle = create.handle;
+		ioctl(h->drm_fd, DRM_IOCTL_MODE_DESTROY_DUMB, &destroy);
 		klogf(0, "z1hwc2: mmap dumb %u bytes failed: %s\n", create.size,
-		      strerror(errno));
+		      strerror(-err));
 		d->map = nullptr;
-		return -errno;
+		return err;
 	}
 	{
 		uint32_t handles[4] = { create.handle, 0, 0, 0 };
@@ -749,11 +770,17 @@ static int dumb_ensure(z1_hwc2 *h, z1_dumb *d, uint32_t w, uint32_t hgt,
 
 		if (drmModeAddFB2(h->drm_fd, w, hgt, fourcc, handles, pitches,
 				  offsets, &d->fb_id, 0)) {
-			klogf(0, "z1hwc2: AddFB2(dumb %ux%u fourcc=%#x) failed: %s\n",
-			      w, hgt, fourcc, strerror(errno));
+			int err = -errno;
+			struct drm_mode_destroy_dumb destroy;
+
+			klogf(0, "z1hwc2: AddFB2(dumb %ux%u fourcc=%#x) "
+			     "failed: %s\n", w, hgt, fourcc, strerror(-err));
 			munmap(d->map, create.size);
 			d->map = nullptr;
-			return -errno;
+			memset(&destroy, 0, sizeof(destroy));
+			destroy.handle = create.handle;
+			ioctl(h->drm_fd, DRM_IOCTL_MODE_DESTROY_DUMB, &destroy);
+			return err;
 		}
 	}
 	d->handle = create.handle;
@@ -790,7 +817,7 @@ static int copy_into_dumb(z1_hwc2 *h, z1_dumb *d, buffer_handle_t handle)
 	/* OVL wants an aligned pitch; keep the dumb buffer aligned the same
 	 * way gralloc aligns its strides (16 pixels). */
 	aw = ((uint32_t)gh->width + 15u) & ~15u;
-	if (dumb_ensure(h, d, aw, (uint32_t)gh->height, fourcc))
+	if (dumb_ensure(h, d, aw, (uint32_t)gh->height, fourcc, gh->format))
 		return -EINVAL;
 
 	src_pitch = (uint32_t)gh->stride * (uint32_t)bpp;
@@ -1227,7 +1254,8 @@ static int client_target_fb(z1_hwc2 *h, uint32_t *out_fb, uint32_t *out_w,
 		*out_w = (uint32_t)gh->width;
 		*out_h = (uint32_t)gh->height;
 	}
-	if (h->client_fb.fb_id && h->client_fb.handle == h->client_target) {
+	if (h->client_fb.fb_id && h->client_fb.handle == h->client_target &&
+	    h->client_fb.src_fd == gh->fd) {
 		*out_fb = h->client_fb.fb_id;
 		*how = "cached";
 		return 0;
@@ -1413,7 +1441,10 @@ static int32_t z1_get_display_attribute(hwc2_device_t *d,
 		*out_value = 160 * 1000;
 		return HWC2_ERROR_NONE;
 	default:
-		return HWC2_ERROR_BAD_PARAMETER;
+		/* hwcomposer2.h lists no BAD_PARAMETER for this call: an
+		 * attribute we do not know must report -1 and succeed. */
+		*out_value = -1;
+		return HWC2_ERROR_NONE;
 	}
 }
 
@@ -1423,7 +1454,8 @@ static int32_t z1_get_display_configs(hwc2_device_t *d,
 				      hwc2_config_t *out_configs)
 {
 	(void)d;
-	(void)display;
+	if (display != 0)
+		return HWC2_ERROR_BAD_DISPLAY;
 	if (out_configs)
 		out_configs[0] = 0;
 	*out_num_configs = 1;
@@ -1434,7 +1466,8 @@ static int32_t z1_get_active_config(hwc2_device_t *d, hwc2_display_t display,
 				    hwc2_config_t *out_config)
 {
 	(void)d;
-	(void)display;
+	if (display != 0)
+		return HWC2_ERROR_BAD_DISPLAY;
 	*out_config = 0;
 	return HWC2_ERROR_NONE;
 }
@@ -1443,7 +1476,8 @@ static int32_t z1_set_active_config(hwc2_device_t *d, hwc2_display_t display,
 				    hwc2_config_t config)
 {
 	(void)d;
-	(void)display;
+	if (display != 0)
+		return HWC2_ERROR_BAD_DISPLAY;
 	return config == 0 ? HWC2_ERROR_NONE : HWC2_ERROR_BAD_CONFIG;
 }
 
@@ -1563,14 +1597,36 @@ static int32_t z1_set_color_mode(hwc2_device_t *d, hwc2_display_t display,
 static int32_t z1_set_color_transform(hwc2_device_t *d, hwc2_display_t display,
 				      const float *matrix, int32_t hint)
 {
-	(void)d;
-	(void)matrix;
-	(void)hint;
+	z1_hwc2 *h = H(d);
+	int identity = 1;
+
 	if (display != 0)
 		return HWC2_ERROR_BAD_DISPLAY;
-	/* We never apply a colour transform; layers stay device-composable
-	 * because SurfaceFlinger only skips the client transform when the
-	 * SKIP_CLIENT_COLOR_TRANSFORM capability is advertised (we do not). */
+	if (matrix) {
+		static const float id[16] = { 1, 0, 0, 0, 0, 1, 0, 0,
+					      0, 0, 1, 0, 0, 0, 0, 1 };
+		int i;
+
+		for (i = 0; i < 16; i++) {
+			float dv = matrix[i] - id[i];
+
+			if ((dv < 0 ? -dv : dv) > 1e-4f) {
+				identity = 0;
+				break;
+			}
+		}
+	}
+	/*
+	 * SurfaceFlinger applies the colour matrix in GL only when the display
+	 * has NO device composition (SurfaceFlinger.cpp: applyColorMatrix =
+	 * !hasDeviceComposition && !skipClientColorTransform).  We cannot
+	 * program a CTM, so a non-identity matrix forces client composition --
+	 * otherwise the transform would be silently dropped.
+	 */
+	h->color_transform = !identity;
+	if (!identity)
+		klogf(1, "z1hwc2: non-identity colour matrix (hint=%d) -> "
+		     "forcing client composition\n", hint);
 	return HWC2_ERROR_NONE;
 }
 
@@ -1598,11 +1654,16 @@ static int32_t z1_set_client_target(hwc2_device_t *d, hwc2_display_t display,
 	if (display != 0)
 		return HWC2_ERROR_BAD_DISPLAY;
 
-	/* The device must be able to close the client's fd at any time, so
-	 * take our own reference. */
+	/*
+	 * Ownership: once we return HWC2_ERROR_NONE the HIDL command engine
+	 * sets closeFence=false (ComposerCommandEngine.h, executeSetClientTarget)
+	 * and never closes the fd -- it is ours now.  Do NOT dup(): a dup()
+	 * without closing the passed fd leaks one descriptor per call, and at
+	 * 60 fps that is EMFILE in seconds.
+	 */
 	if (h->client_acquire_fence >= 0)
 		close(h->client_acquire_fence);
-	h->client_acquire_fence = acquire_fence >= 0 ? dup(acquire_fence) : -1;
+	h->client_acquire_fence = acquire_fence;
 	h->client_target = target;
 	h->client_dataspace = dataspace;
 
@@ -1635,7 +1696,8 @@ static int32_t z1_set_layer_buffer(hwc2_device_t *d, hwc2_display_t display,
 	l->handle = buffer;
 	if (l->acquire_fence >= 0)
 		close(l->acquire_fence);
-	l->acquire_fence = acquire_fence >= 0 ? dup(acquire_fence) : -1;
+	/* Ownership transfers to us on HWC2_ERROR_NONE (see set_client_target). */
+	l->acquire_fence = acquire_fence;
 	return HWC2_ERROR_NONE;
 }
 
@@ -2069,7 +2131,8 @@ static int32_t z1_validate_display(hwc2_device_t *d, hwc2_display_t display,
 		if (device_slots < 0)
 			device_slots = 0;
 		used = z1_policy_decide(pl.data(), n, device_slots,
-					h->mode_force_client, pr.data());
+					h->mode_force_client || h->color_transform,
+					pr.data());
 		if (n > 0 && used == n &&
 		    layer_can_be_background(order[0], h->width, h->height)) {
 			h->client_expected = false;
@@ -2082,8 +2145,16 @@ static int32_t z1_validate_display(hwc2_device_t *d, hwc2_display_t display,
 			if (device_slots < 0)
 				device_slots = 0;
 			used = z1_policy_decide(pl.data(), n, device_slots,
-						h->mode_force_client, pr.data());
-			h->client_expected = true;
+						h->mode_force_client ||
+							h->color_transform,
+						pr.data());
+			/*
+			 * Even in this pass every layer may have fitted (n <=
+			 * plane_count - 1).  Then SurfaceFlinger has no client
+			 * composition and will not draw a new client target, so
+			 * showing the stale one would be wrong.
+			 */
+			h->client_expected = (used != n);
 		}
 	}
 
@@ -2225,6 +2296,12 @@ static int32_t z1_present_display(hwc2_device_t *d, hwc2_display_t display,
 	    h->crtc_active_prop) {
 		uint32_t blob = 0;
 
+		/* Retried every frame until it succeeds: destroy the old blob
+		 * first or each attempt leaks a kernel object. */
+		if (h->mode_blob) {
+			drmModeDestroyPropertyBlob(h->drm_fd, h->mode_blob);
+			h->mode_blob = 0;
+		}
 		if (drmModeCreatePropertyBlob(h->drm_fd, &h->mode,
 					      sizeof(h->mode), &blob) == 0) {
 			h->mode_blob = blob;
@@ -2350,7 +2427,13 @@ static int32_t z1_present_display(hwc2_device_t *d, hwc2_display_t display,
 		if (ret) {
 			drmModeAtomicFree(req);
 			h->last_device_layers = (uint32_t)device_layers.size();
-			return HWC2_ERROR_NONE; /* keep SurfaceFlinger alive */
+			/*
+			 * Tell the truth: the frame did NOT reach the display.
+			 * Returning NONE here (as an earlier version did) makes
+			 * SurfaceFlinger believe the frame is on screen and it
+			 * silently freezes.
+			 */
+			return HWC2_ERROR_NO_RESOURCES;
 		}
 	}
 	drmModeAtomicFree(req);
@@ -2390,6 +2473,12 @@ static int32_t z1_present_display(hwc2_device_t *d, hwc2_display_t display,
 		uint32_t next;
 
 		pthread_mutex_lock(&h->fence_lock);
+		/*
+		 * The commit above has replaced the plane state, so the
+		 * previous frame's buffers are only now guaranteed to be free.
+		 * (Signalling before the commit would let a producer rewrite a
+		 * buffer that is still being scanned.)
+		 */
 		if (h->fences_pending) {
 			if (sw_timeline_inc(h->timeline_fd, 1) == 0)
 				h->timeline_val++;
@@ -2410,13 +2499,35 @@ static int32_t z1_present_display(hwc2_device_t *d, hwc2_display_t display,
 	h->last_present_ms = now_ms();
 
 	if (!h->modeset_done) {
-		h->modeset_done = true;
-		if (flags & DRM_MODE_ATOMIC_ALLOW_MODESET)
-			klogf(1, "z1hwc2: first commit done with modeset: "
-			     "%ux%u\n", h->width, h->height);
-		else
-			klogf(1, "z1hwc2: first commit done (crtc already "
-			     "active): %ux%u\n", h->width, h->height);
+		/*
+		 * Latch only when the commit actually carried the modeset, or
+		 * when there was nothing to modeset.  A plane-only fallback
+		 * returns success even if the CRTC is disabled (every plane
+		 * simply clips to nothing), so latching on it could leave the
+		 * panel dark forever.  Retry the full modeset next frame, but
+		 * give up after a few attempts so a kernel that keeps rejecting
+		 * it does not double the commit count for every frame.
+		 */
+		if ((flags & DRM_MODE_ATOMIC_ALLOW_MODESET) ||
+		    !h->crtc_mode_prop) {
+			h->modeset_done = true;
+			if (flags & DRM_MODE_ATOMIC_ALLOW_MODESET)
+				klogf(1, "z1hwc2: first commit done with "
+				     "modeset: %ux%u\n", h->width, h->height);
+			else
+				klogf(1, "z1hwc2: first commit done (no mode "
+				     "property, plane-only): %ux%u\n",
+				      h->width, h->height);
+		} else if (++h->modeset_tries >= 5) {
+			h->modeset_done = true;
+			klogf(0, "z1hwc2: giving up on the modeset after %d "
+			     "attempts; using plane-only commits\n",
+			      h->modeset_tries);
+		} else {
+			klogf(1, "z1hwc2: plane-only commit accepted but the "
+			     "modeset is still pending (attempt %d)\n",
+			      h->modeset_tries);
+		}
 	}
 	if (!h->first_commit_logged ||
 	    h->frames % 600 == 0) {
