@@ -310,7 +310,9 @@ static int test_one(int fd, size_t requested, const char *backend,
     size_t page = 4096;
 
     ZLOG("---- fd %d ----\n", fd);
-    ZLOG("    requested %zu bytes -> z1_heap page-aligned result\n", requested);
+    if (requested)
+        ZLOG("    requested %zu bytes -> z1_heap page-aligned result\n",
+             requested);
     if (backend)
         ZLOG("    backend: %s%s\n", backend,
              (caps & Z1_HEAP_CAP_CONTIGUOUS) ? " (CONTIGUOUS)" : " (NOT contiguous)");
@@ -329,9 +331,13 @@ static int test_one(int fd, size_t requested, const char *backend,
              strerror(errno));
         return -1;
     }
-    ZLOG("    lseek(SEEK_END): %lld bytes%s\n", (long long)end,
-         (size_t)end >= requested ? " (>= requested, OK)" : " (< requested!)");
-    if ((size_t)end >= page && (size_t)end > requested)
+    if (requested)
+        ZLOG("    lseek(SEEK_END): %lld bytes%s\n", (long long)end,
+             (size_t)end >= requested ? " (>= requested, OK)"
+                                      : " (< requested!)");
+    else
+        ZLOG("    lseek(SEEK_END): %lld bytes\n", (long long)end);
+    if (requested && (size_t)end >= page && (size_t)end > requested)
         ZLOG("    note: %zu bytes of page/CMA alignment padding\n",
              (size_t)end - requested);
 
@@ -368,7 +374,7 @@ int main(int argc, char **argv)
         const int fd = atoi(argv[2]);
 
         ZLOG("inspecting existing fd %d\n", fd);
-        if (fd < 0 || test_one(fd, 1, NULL, 0) != 0)
+        if (fd < 0 || test_one(fd, 0, NULL, 0) != 0)
             ++failures;
     } else if (argc == 3 && strcmp(argv[1], "--size") == 0) {
         const size_t want = (size_t)strtoul(argv[2], NULL, 0);

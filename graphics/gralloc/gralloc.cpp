@@ -37,7 +37,26 @@
 #include "gr.h"
 #include "pixel_copy.h"
 #ifdef Z1_USE_LIMA
-#include "lima_allocator.h"
+#include "z1_heap.h"
+
+/*
+ * z1_heap.cpp is compiled by z1a9_gpt/scripts/z1_build_hal_stubs.sh.  The AOSP
+ * Android.mk next to this file (outside this change's edit scope) lists only
+ * lima_allocator.cpp, so reference the new entry point weakly: when z1_heap.o
+ * is linked in (the harness) the physically contiguous CMA/dumb backends are
+ * used, and when it is not, allocation falls through to ashmem instead of
+ * breaking the link.
+ */
+extern "C" int z1_heap_alloc_ex(size_t, const char *, unsigned int *,
+                                const char **) __attribute__((weak));
+
+/* "PRIV_FLAGS_CONTIG" lives in z1_heap.h (gralloc_priv.h is outside this
+ * change's edit scope).  It must not alias an existing flag; the 64-byte handle
+ * ABI itself is untouched. */
+static_assert((Z1_PRIV_FLAGS_CONTIG &
+               (private_handle_t::PRIV_FLAGS_FRAMEBUFFER |
+                private_handle_t::PRIV_FLAGS_DMABUF)) == 0,
+              "Z1_PRIV_FLAGS_CONTIG collides with an existing handle flag");
 #endif
 
 /*****************************************************************************/
@@ -150,12 +169,27 @@ static int gralloc_alloc_buffer(alloc_device_t* dev,
     size = roundUpToPageSize(size);
     
 #ifdef Z1_USE_LIMA
-    fd = z1_lima_alloc_dmabuf(size);
-    if (fd >= 0) {
-        flags |= private_handle_t::PRIV_FLAGS_DMABUF;
+    /*
+     * Physically contiguous dma-buf (CMA dma-heap -> mediatek-drm dumb ->
+     * lima).  This replaces the direct z1_lima_alloc_dmabuf() call: lima's GEM
+     * is drm_gem_shmem (scattered pages), and mediatek-drm rejects a
+     * non-contiguous sg_table in mtk_gem_prime_import_sg_table(), so OVL
+     * composition could never scan those buffers out.  See z1_heap.cpp.
+     */
+    if (z1_heap_alloc_ex) {
+        unsigned int caps = 0;
+
+        fd = z1_heap_alloc_ex(size, "gralloc", &caps, NULL);
+        if (fd >= 0) {
+            flags |= private_handle_t::PRIV_FLAGS_DMABUF;
+            if (caps & Z1_HEAP_CAP_CONTIGUOUS)
+                flags |= Z1_PRIV_FLAGS_CONTIG;
+        } else {
+            ALOGW("dma-buf allocation failed (%s); using ashmem fallback",
+                  strerror(-fd));
+        }
     } else {
-        ALOGW("Lima dma-buf allocation failed (%s); using ashmem fallback",
-              strerror(-fd));
+        ALOGW("z1_heap not linked; using ashmem fallback");
     }
 #endif
 

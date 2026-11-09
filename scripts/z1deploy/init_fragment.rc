@@ -1,0 +1,27 @@
+# ============================================================================
+# z1deploy: deployment / remote-control channel
+# ============================================================================
+# Appended verbatim to the end of /init.z1.rc by
+# z1a9_gpt/scripts/z1deploy/pack_boot.sh.
+#
+# Why a separate "on post-fs-data" block instead of adding commands to the
+# first one: init keeps one queue per trigger and executes the queued actions
+# in parse order, and actions from the same file run in file order.  This
+# block therefore runs AFTER the legacy /hwcomposer.z1.so install lines above
+# it.  `exec` is synchronous in this init (it logs "SVC_EXEC pid ... started;
+# waiting..." and "Command 'exec ...' ... took Nms"), so the legacy copy has
+# finished before /z1stage_boot.sh starts and the active/ set deterministically
+# wins.  Measured on the 2026-11-09 boot: post-fs-data actions at 16.98-19.9 s,
+# class_start hal (starts vendor.gralloc-2-0 / vendor.hwcomposer-2-1) at
+# 20.46 s -- a sub-second script here still lands >2 s before the composer.
+on post-fs-data
+    exec u:r:init:s0 root root -- /system/bin/sh /z1stage_boot.sh
+    start z1_rootd
+
+# Root command daemon for the serial-console operator (see z1rootd.sh).
+# No "oneshot": it loops forever and init must restart it if it ever dies.
+service z1_rootd /system/bin/sh /z1rootd.sh
+    class core
+    user root
+    group root
+    seclabel u:r:init:s0

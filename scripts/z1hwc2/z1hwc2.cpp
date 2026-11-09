@@ -749,23 +749,47 @@ static int drm_open(z1_hwc2 *h)
 	 * dsi probe at 0.3 s but the aggregate device registers afterwards),
 	 * while the composer service starts at ~24 s.  Wait for the node.
 	 */
-	for (i = 0; i < 100; i++) {
+	for (i = 0; i < 120; i++) {
 		h->drm_fd = open(path, O_RDWR | O_CLOEXEC);
-		if (h->drm_fd >= 0)
-			break;
-		if (errno != ENOENT && errno != ENXIO) {
-			klogf(0, "z1hwc2: open(%s) failed: %s\n", path,
-			      strerror(errno));
-			return -1;
+		if (h->drm_fd < 0) {
+			if (errno != ENOENT && errno != ENXIO) {
+				klogf(0, "z1hwc2: open(%s) failed: %s\n", path,
+				      strerror(errno));
+				return -1;
+			}
+			if (i == 0 || i % 20 == 19)
+				klogf(1, "z1hwc2: waiting for %s (%d ms)\n",
+				      path, waited_ms);
+			usleep(500 * 1000);
+			waited_ms += 500;
+			continue;
 		}
-		if (i == 0 || i % 20 == 19)
-			klogf(1, "z1hwc2: waiting for %s (%d ms)\n", path,
-			      waited_ms);
-		usleep(500 * 1000);
-		waited_ms += 500;
+		/*
+		 * DRM_IOCTL_MODE_ATOMIC is DRM_MASTER-gated (drm_ioctl.c), so
+		 * this process must own the master.  The kernel hands master to
+		 * the FIRST opener without requiring CAP_SYS_ADMIN
+		 * (drm_auth.c: drm_master_open() -> "if there is no current
+		 * master make this fd it"), and the composer service only has
+		 * CAP_SYS_NICE, so the only way to (re)acquire it is to reopen.
+		 * Another short-lived opener (the z1drmtest probe, gralloc's dumb
+		 * backend) may win the race; retry until it is released.
+		 */
+		if (drmSetMaster(h->drm_fd) == 0)
+			break;
+		{
+			int err = errno;
+
+			klogf(1, "z1hwc2: %s open but not DRM master yet (%s); "
+			     "reopening to acquire it\n", path, strerror(err));
+		}
+		close(h->drm_fd);
+		h->drm_fd = -1;
+		usleep(250 * 1000);
+		waited_ms += 250;
 	}
 	if (h->drm_fd < 0) {
-		klogf(0, "z1hwc2: cannot open %s: %s\n", path, strerror(errno));
+		klogf(0, "z1hwc2: cannot open %s as DRM master: %s\n", path,
+		      strerror(errno));
 		return -1;
 	}
 
@@ -830,8 +854,17 @@ static int drm_open(z1_hwc2 *h)
 	h->connector_crtc_prop = prop_id(h->drm_fd, h->connector_id,
 					 DRM_MODE_OBJECT_CONNECTOR, "CRTC_ID",
 					 nullptr, nullptr);
+	/* The DRM core creates this blob property as "MODE_ID"
+	 * (drm_mode_config.c: drm_property_create(..., "MODE_ID", 0)), not
+	 * "MODE".  Looking up the wrong name yields property id 0 and
+	 * drmModeAtomicAddProperty(req, crtc, 0, blob) then fails the whole
+	 * commit.  Keep "MODE" as a fallback for older kernels. */
 	h->crtc_mode_prop = prop_id(h->drm_fd, h->crtc_id, DRM_MODE_OBJECT_CRTC,
-				    "MODE", nullptr, nullptr);
+				    "MODE_ID", nullptr, nullptr);
+	if (!h->crtc_mode_prop)
+		h->crtc_mode_prop = prop_id(h->drm_fd, h->crtc_id,
+					    DRM_MODE_OBJECT_CRTC, "MODE", nullptr,
+					    nullptr);
 	h->crtc_active_prop = prop_id(h->drm_fd, h->crtc_id,
 				      DRM_MODE_OBJECT_CRTC, "ACTIVE", nullptr,
 				      nullptr);

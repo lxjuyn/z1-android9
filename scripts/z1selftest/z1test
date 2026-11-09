@@ -1,0 +1,25 @@
+#!/system/bin/sh
+# z1test — 在串口 shell 里跑 Z1 自检（配合 root 守护进程 z1selftestd）
+# 用法: z1test <info|gpu|display|touch|audio|wifi|bt|battery|gps|sensors|storage|ui|settings|shot|log|all>
+CMD=/data/local/tmp/z1st.cmd
+OUT=/data/local/tmp/z1st.out
+what=${1:-all}
+seq=$(( $(cat /data/local/tmp/z1st.seq 2>/dev/null || echo 0) + 1 ))
+echo "$seq" > /data/local/tmp/z1st.seq
+if ! pidof z1selftestd >/dev/null 2>&1; then
+    echo "z1test: 守护进程没在跑（init 服务 z1selftest 未启动？）"
+    exit 2
+fi
+printf '%s %s\n' "$seq" "$what" > "$CMD"
+i=0
+while [ $i -lt 60 ]; do
+    if grep -q "^# done seq $seq" "$OUT" 2>/dev/null; then
+        cat "$OUT"
+        exit 0
+    fi
+    sleep 0.5
+    i=$((i + 1))
+done
+echo "z1test: 超时（30s）没有结果，当前输出："
+cat "$OUT" 2>/dev/null
+exit 3
