@@ -12,7 +12,7 @@
 ```
 out/z1_v83/boot.img
   size      5,898,240 B          （boot 分区 6,291,456 B，余 393,216 B）
-  sha256    b6419720f218a18c8756a4b860297b02f6947442db4c711e7b358e2595145345
+  sha256    1b0ce33380f698699c64d55a30a529335b743ac1b57f1fa6ebb1250e9528ce70
   kernel    4,331,019 B = MTK KERNEL 4,330,507 + 512   (新内核)
   ramdisk   1,563,914 B = MTK ROOTFS 1,563,402 + 512   (85 条记录)
   cmdline   316 B，原 302 B + " iomem=relaxed"
@@ -22,7 +22,7 @@ out/z1_v83/boot.img
 
 | 记录 | 大小 | sha256（前 12） | 作用 |
 |---|---|---|---|
-| `hwcomposer.z1.so` | 144,044 | `45796d24aa7f` | HWC2 HAL r6：DEVICE 决策 + OVL 平面编程 |
+| `hwcomposer.z1.so` | 144,088 | `23d90e5875b4` | HWC2 HAL r7：DEVICE 决策 + OVL 平面编程 |
 | `gralloc.z1.so` | 28,548 | `0ed9fb2b573b` | CMA/dumb 连续内存分配器（OVL 能扫描的前提） |
 | `z1kmstest` | 122,976 | `1954132627e1` | 独立 DRM/OVL 测试工具（probe/run/regs） |
 | `z1stage_boot.sh` | ~12.6 K | `…` | post-fs-data：节点/一次性安装/权限 |
@@ -47,7 +47,8 @@ out/z1_v83/boot.img
 | 9 | **release fence**（sw_sync，属性开关） | 契约要求 device 层 buffer 等下一次提交后才能重写；内核已开 `CONFIG_SW_SYNC=y`，开机脚本挂 debugfs + chmod 0666 |
 | 10 | **内核：IOMMU defer 修复** | ovl/rdma0 的 `iommus` 指向没编驱动的 m4u ⇒ probe 被 defer 到超时（10 s 基准 + 每 driver_register 顺延 10 s）= 35 s。给 iommu 节点加 `status="disabled"` ⇒ `-ENODEV` 立即放行 |
 | 11 | **内核：vblank 回调注册顺序** | 注册早于 `mtk_crtc_init()`/`mutex_init()`，OVL 中断在 probe 时已活 ⇒ 1/11 概率 NULL panic。挪到初始化之后 |
-| 12 | **cmdline `iomem=relaxed`** | 否则 OVL/RDMA/DSI/MUTEX/MMSYS 全被 `iomem_is_exclusive()` 拒掉，`/dev/mem` 读寄存器 -EPERM |
+| 12 | **fb 销毁时机**：`RmFB` 挪到提交成功之后 | 内核 `drm_framebuffer_remove()` 会强制停用仍在引用该 fb 的平面（drm_framebuffer.c:1157），原来在 present 开头 drain 会让被替换的层闪一帧 |
+| 13 | **cmdline `iomem=relaxed`** | 否则 OVL/RDMA/DSI/MUTEX/MMSYS 全被 `iomem_is_exclusive()` 拒掉，`/dev/mem` 读寄存器 -EPERM |
 
 ---
 
