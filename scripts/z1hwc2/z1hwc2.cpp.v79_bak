@@ -1,0 +1,1196 @@
+/*
+ * z1hwc2 — a minimal HWC2 composer for the Z1 (MT6572 mediatek-drm).
+ *
+ * Why this exists instead of AOSP's external/drm_hwcomposer: the android-9
+ * tag's libs/ui and libs/nativewindow header trees disagree about where
+ * ANativeWindowBuffer is defined, so that code base cannot be built outside
+ * an AOSP tree without hand-writing libui's ABI.  This implementation needs
+ * only <hardware/hwcomposer2.h>, the gralloc handle, and libdrm.
+ *
+ * Composition policy: up to four layers are handed to the OVL planes
+ * (HWC2_COMPOSITION_DEVICE) when they are unrotated, unscaled, single-plane
+ * and use a format the OVL supports; everything else is marked CLIENT and
+ * SurfaceFlinger composites it into the client target, which takes the
+ * bottom plane.
+ */
+#include <errno.h>
+#include <stdarg.h>
+#include <fcntl.h>
+#include <inttypes.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
+#include <map>
+#include <vector>
+
+#include <hardware/hardware.h>
+#include <hardware/hwcomposer2.h>
+#include <hardware/hwcomposer_defs.h>
+
+#include <xf86drm.h>
+#include <xf86drmMode.h>
+#include <drm_fourcc.h>
+
+#include <sys/system_properties.h>
+
+#define LOG_TAG "z1hwc2"
+#include <log/log.h>
+
+static void klog(const char *fmt, ...)
+{
+	static int fd = -2;
+	char buf[512];
+	va_list ap;
+	int n;
+
+	if (fd == -2)
+		fd = open("/dev/kmsg", O_WRONLY | O_CLOEXEC);
+	if (fd < 0)
+		return;
+	va_start(ap, fmt);
+	n = vsnprintf(buf, sizeof(buf), fmt, ap);
+	va_end(ap);
+	if (n > 0)
+		(void)write(fd, buf, (size_t)n);
+}
+
+#define MAX_PLANES 4
+#define MAX_LAYERS 16
+
+/* ------- gralloc handle (matches z1a9_gpt/graphics/gralloc/gralloc_priv.h) --- */
+struct z1_handle {
+	int version;
+	int numFds;
+	int numInts;
+	int fd;
+	int magic;
+	int flags;
+	int size;
+	int offset;
+	uint64_t base __attribute__((aligned(8)));
+	int pid;
+	int width;
+	int height;
+	int stride;	/* pixels */
+	int format;	/* HAL_PIXEL_FORMAT_* */
+	int reserved;
+};
+
+#define Z1_HANDLE_MAGIC 0x3141592
+
+static int hal_bpp(int fmt)
+{
+	switch (fmt) {
+	case 1:  /* RGBA_8888 */
+	case 2:  /* RGBX_8888 */
+	case 5:  /* BGRA_8888 */
+		return 4;
+	case 3:  /* RGB_888 */
+		return 3;
+	case 4:  /* RGB_565 */
+		return 2;
+	default:
+		return 0;
+	}
+}
+
+static uint32_t hal_to_drm(int fmt)
+{
+	switch (fmt) {
+	case 1: return DRM_FORMAT_ABGR8888;	/* RGBA_8888 */
+	case 2: return DRM_FORMAT_XBGR8888;	/* RGBX_8888 */
+	case 3: return DRM_FORMAT_BGR888;	/* RGB_888  */
+	case 4: return DRM_FORMAT_BGR565;	/* RGB_565  */
+	case 5: return DRM_FORMAT_ARGB8888;	/* BGRA_8888 */
+	default: return 0;
+	}
+}
+
+struct z1_layer {
+	hwc2_layer_t id = 0;
+	buffer_handle_t handle = nullptr;
+	int acquire_fence = -1;
+
+	hwc2_composition_t composition = HWC2_COMPOSITION_INVALID;
+	hwc_rect_t frame = {};
+	hwc_frect_t crop = {};
+	float alpha = 1.0f;
+	hwc_region_t visible = {};
+	hwc_region_t damage = {};
+	hwc_transform_t transform = (hwc_transform_t)0;
+	int32_t z = 0;
+
+	bool have_buffer = false;
+	int fd = -1;
+	uint32_t width = 0, height = 0, stride_bytes = 0, format_hal = 0;
+	uint32_t drm_format = 0;
+	uint32_t gem = 0, fb_id = 0;
+};
+
+struct z1_plane {
+	uint32_t id = 0;
+	bool in_use = false;
+	uint32_t fb_id = 0;
+
+	uint32_t p_fb = 0, p_crtc = 0, p_cx = 0, p_cy = 0, p_cw = 0, p_ch = 0;
+	uint32_t p_sx = 0, p_sy = 0, p_sw = 0, p_sh = 0;
+	uint32_t p_zpos = 0;
+};
+
+struct z1_hwc2 : public hwc2_device_t {
+	hwc2_callback_data_t cb_data = nullptr;
+	hwc2_function_pointer_t cb_hotplug = nullptr;
+	hwc2_function_pointer_t cb_vsync = nullptr;
+	hwc2_function_pointer_t cb_refresh = nullptr;
+
+	std::map<hwc2_layer_t, z1_layer> layers;
+	hwc2_layer_t next_layer_id = 1;
+
+	buffer_handle_t client_target = nullptr;
+	int client_acquire_fence = -1;
+	uint32_t client_width = 0, client_height = 0;
+
+	bool validated = false;
+	std::vector<hwc2_layer_t> changed;
+
+	/* DRM */
+	int drm_fd = -1;
+	uint32_t crtc_id = 0;
+	uint32_t connector_id = 0;
+	drmModeModeInfo mode = {};
+	uint32_t width = 240, height = 320;
+	z1_plane planes[MAX_PLANES];
+	int plane_count = 0;
+	uint32_t connector_crtc_prop = 0;
+	uint32_t crtc_mode_prop = 0;
+	uint32_t crtc_active_prop = 0;
+	uint32_t mode_blob = 0;
+	uint32_t client_fb = 0, client_gem = 0;
+	buffer_handle_t client_handle = nullptr;
+	bool mode_set_done = false;
+	bool powered_on = true;
+	bool vsync_enabled = false;
+
+	std::vector<int> retire_fences;
+	std::map<hwc2_layer_t, int> release_fences;
+};
+
+/* ------------------------------------------------------------------ DRM --- */
+
+static uint32_t prop_id(int fd, uint32_t obj, uint32_t type, const char *name)
+{
+	drmModeObjectProperties *props = drmModeObjectGetProperties(fd, obj, type);
+	uint32_t id = 0;
+
+	if (!props)
+		return 0;
+	for (uint32_t i = 0; i < props->count_props; i++) {
+		drmModePropertyRes *p = drmModeGetProperty(fd, props->props[i]);
+		if (!p)
+			continue;
+		if (!strcmp(p->name, name))
+			id = p->prop_id;
+		drmModeFreeProperty(p);
+		if (id)
+			break;
+	}
+	drmModeFreeObjectProperties(props);
+	return id;
+}
+
+static int drm_open(z1_hwc2 *h)
+{
+	const char *path = "/dev/dri/card1";
+	char prop[PROP_VALUE_MAX] = {};
+
+	/* hwc.drm.device overrides; on this board card0 is lima (render only) */
+	__system_property_get("hwc.drm.device", prop);
+	if (prop[0])
+		path = prop;
+
+	/*
+	 * mediatek-drm is a component master: /dev/dri/card1 only appears once
+	 * OVL/RDMA/DSI have all probed (~33 s on this board), while the composer
+	 * service starts at ~24 s.  Wait for the node instead of failing.
+	 */
+	for (int i = 0; i < 60; i++) {
+		h->drm_fd = open(path, O_RDWR | O_CLOEXEC);
+		if (h->drm_fd >= 0)
+			break;
+		if (errno != ENOENT)
+			break;
+		if (!(i % 10))
+			klog("z1hwc2: waiting for %s (%ds)\n", path, i / 2);
+		usleep(500000);
+	}
+	if (h->drm_fd < 0) {
+		klog("z1hwc2: cannot open %s: %s\n", path, strerror(errno));
+		return -1;
+	}
+	klog("z1hwc2: opened %s fd=%d\n", path, h->drm_fd);
+	if (drmSetClientCap(h->drm_fd, DRM_CLIENT_CAP_UNIVERSAL_PLANES, 1) ||
+	    drmSetClientCap(h->drm_fd, DRM_CLIENT_CAP_ATOMIC, 1)) {
+		klog("z1hwc2: %s has no atomic modesetting\n", path);
+		return -1;
+	}
+
+	drmModeRes *res = drmModeGetResources(h->drm_fd);
+	if (!res) {
+		klog("z1hwc2: drmModeGetResources failed: %s\n", strerror(errno));
+		return -1;
+	}
+	klog("z1hwc2: resources crtcs=%d encoders=%d connectors=%d\n",
+	     res->count_crtcs, res->count_encoders, res->count_connectors);
+
+	/* first connected connector */
+	for (int i = 0; i < res->count_connectors; i++) {
+		drmModeConnector *c = drmModeGetConnector(h->drm_fd, res->connectors[i]);
+		if (!c)
+			continue;
+		if (c->connection == DRM_MODE_CONNECTED && c->count_modes) {
+			h->connector_id = c->connector_id;
+			h->mode = c->modes[0];
+			h->width = h->mode.hdisplay;
+			h->height = h->mode.vdisplay;
+			break;
+		}
+		drmModeFreeConnector(c);
+	}
+	if (!h->connector_id || !res->count_crtcs) {
+		klog("z1hwc2: no connected connector / crtc\n");
+		drmModeFreeResources(res);
+		return -1;
+	}
+	h->crtc_id = res->crtcs[0];
+
+	h->connector_crtc_prop = prop_id(h->drm_fd, h->connector_id,
+					  DRM_MODE_OBJECT_CONNECTOR, "CRTC_ID");
+	h->crtc_mode_prop = prop_id(h->drm_fd, h->crtc_id, DRM_MODE_OBJECT_CRTC, "MODE");
+	h->crtc_active_prop = prop_id(h->drm_fd, h->crtc_id, DRM_MODE_OBJECT_CRTC, "ACTIVE");
+
+	drmModePlaneRes *pres = drmModeGetPlaneResources(h->drm_fd);
+	if (pres) {
+		for (uint32_t i = 0; i < pres->count_planes && h->plane_count < MAX_PLANES; i++) {
+			drmModePlane *p = drmModeGetPlane(h->drm_fd, pres->planes[i]);
+			if (!p)
+				continue;
+			if (!(p->possible_crtcs & 1)) {	/* must be able to drive crtc0 */
+				drmModeFreePlane(p);
+				continue;
+			}
+			z1_plane *pl = &h->planes[h->plane_count];
+			pl->id = p->plane_id;
+			pl->p_fb = prop_id(h->drm_fd, pl->id, DRM_MODE_OBJECT_PLANE, "FB_ID");
+			pl->p_crtc = prop_id(h->drm_fd, pl->id, DRM_MODE_OBJECT_PLANE, "CRTC_ID");
+			pl->p_cx = prop_id(h->drm_fd, pl->id, DRM_MODE_OBJECT_PLANE, "CRTC_X");
+			pl->p_cy = prop_id(h->drm_fd, pl->id, DRM_MODE_OBJECT_PLANE, "CRTC_Y");
+			pl->p_cw = prop_id(h->drm_fd, pl->id, DRM_MODE_OBJECT_PLANE, "CRTC_W");
+			pl->p_ch = prop_id(h->drm_fd, pl->id, DRM_MODE_OBJECT_PLANE, "CRTC_H");
+			pl->p_sx = prop_id(h->drm_fd, pl->id, DRM_MODE_OBJECT_PLANE, "SRC_X");
+			pl->p_sy = prop_id(h->drm_fd, pl->id, DRM_MODE_OBJECT_PLANE, "SRC_Y");
+			pl->p_sw = prop_id(h->drm_fd, pl->id, DRM_MODE_OBJECT_PLANE, "SRC_W");
+			pl->p_sh = prop_id(h->drm_fd, pl->id, DRM_MODE_OBJECT_PLANE, "SRC_H");
+			pl->p_zpos = prop_id(h->drm_fd, pl->id, DRM_MODE_OBJECT_PLANE, "zpos");
+			h->plane_count++;
+			drmModeFreePlane(p);
+		}
+		drmModeFreePlaneResources(pres);
+	}
+	drmModeFreeResources(res);
+
+	/* 内核 zpos 是 immutable：必须按它升序排列，否则图层上下颠倒 */
+	{
+		int zpos[MAX_PLANES] = {0};
+
+		for (int i = 0; i < h->plane_count; i++) {
+			drmModeObjectProperties *props =
+				drmModeObjectGetProperties(h->drm_fd, h->planes[i].id,
+							   DRM_MODE_OBJECT_PLANE);
+			zpos[i] = i;
+			if (!props)
+				continue;
+			for (uint32_t k = 0; k < props->count_props; k++) {
+				drmModePropertyRes *pr =
+					drmModeGetProperty(h->drm_fd, props->props[k]);
+				if (pr && !strcmp(pr->name, "zpos"))
+					zpos[i] = (int)props->prop_values[k];
+				if (pr)
+					drmModeFreeProperty(pr);
+			}
+			drmModeFreeObjectProperties(props);
+		}
+		for (int i = 0; i + 1 < h->plane_count; i++)
+			for (int j = 0; j + 1 < h->plane_count - i; j++)
+				if (zpos[j] > zpos[j + 1]) {
+					int t = zpos[j];
+					z1_plane tp = h->planes[j];
+
+					zpos[j] = zpos[j + 1];
+					zpos[j + 1] = t;
+					h->planes[j] = h->planes[j + 1];
+					h->planes[j + 1] = tp;
+				}
+	}
+
+	klog("z1hwc2: drm %s crtc=%u connector=%u %ux%u planes=%d\n", path,
+	     h->crtc_id, h->connector_id, h->width, h->height, h->plane_count);
+
+	if (!h->connector_crtc_prop || !h->crtc_mode_prop || !h->crtc_active_prop) {
+		klog("z1hwc2: missing crtc/connector properties (conn_crtc=%u mode=%u active=%u)\n",
+		     h->connector_crtc_prop, h->crtc_mode_prop, h->crtc_active_prop);
+		return -1;
+	}
+	for (int i = 0; i < h->plane_count; i++) {
+		z1_plane *pl = &h->planes[i];
+
+		if (!pl->p_fb || !pl->p_crtc || !pl->p_cx || !pl->p_cy ||
+		    !pl->p_cw || !pl->p_ch || !pl->p_sw || !pl->p_sh) {
+			klog("z1hwc2: plane %u missing properties (fb=%u crtc=%u cw=%u sw=%u)\n",
+			     pl->id, pl->p_fb, pl->p_crtc, pl->p_cw, pl->p_sw);
+			return -1;
+		}
+	}
+	return 0;
+}
+
+static int import_layer(z1_hwc2 *h, z1_layer *l)
+{
+	if (l->fb_id)
+		return 0;
+
+	struct z1_handle *gh = (struct z1_handle *)l->handle;
+	uint32_t gem = 0;
+	static bool logged_once;
+
+	if (!logged_once) {
+		logged_once = true;
+		ALOGI("handle: ver=%d numFds=%d numInts=%d fd=%d magic=%#x flags=%#x "
+		      "size=%d off=%d pid=%d w=%d h=%d stride=%d fmt=%d",
+		      gh->version, gh->numFds, gh->numInts, gh->fd, gh->magic,
+		      gh->flags, gh->size, gh->offset, gh->pid, gh->width,
+		      gh->height, gh->stride, gh->format);
+	}
+
+	if (gh->magic != Z1_HANDLE_MAGIC)
+		ALOGW("unexpected gralloc magic %#x (fd=%d w=%d h=%d stride=%d fmt=%d)",
+		      gh->magic, gh->fd, gh->width, gh->height, gh->stride, gh->format);
+
+	if (gh->width <= 0 || gh->height <= 0 || gh->width > 4096 ||
+	    gh->height > 4096 || gh->stride <= 0 || gh->stride > 8192 ||
+	    gh->fd < 0) {
+		klog("z1hwc2: refusing handle: fd=%d %dx%d stride=%d fmt=%d\n",
+		     gh->fd, gh->width, gh->height, gh->stride, gh->format);
+		return -EINVAL;
+	}
+
+	int bpp = hal_bpp(gh->format);
+	uint32_t fourcc = hal_to_drm(gh->format);
+	if (!bpp || !fourcc)
+		return -EINVAL;
+
+	if (drmPrimeFDToHandle(h->drm_fd, gh->fd, &gem)) {
+		ALOGE("drmPrimeFDToHandle(%d) failed: %s", gh->fd, strerror(errno));
+		return -errno;
+	}
+
+	uint32_t pitches[4] = { (uint32_t)gh->stride * (uint32_t)bpp, 0, 0, 0 };
+	uint32_t handles[4] = { gem, 0, 0, 0 };
+	uint32_t offsets[4] = { 0, 0, 0, 0 };
+	uint32_t fb = 0;
+
+	if (drmModeAddFB2(h->drm_fd, gh->width, gh->height, fourcc, handles,
+			  pitches, offsets, &fb, 0)) {
+		ALOGE("drmModeAddFB2 failed: %s", strerror(errno));
+		drmCloseBufferHandle(h->drm_fd, gem);
+		return -errno;
+	}
+
+	l->fd = gh->fd;
+	l->width = gh->width;
+	l->height = gh->height;
+	l->stride_bytes = pitches[0];
+	l->format_hal = gh->format;
+	l->drm_format = fourcc;
+	l->gem = gem;
+	l->fb_id = fb;
+	return 0;
+}
+
+/* -------------------------------------------------------------- helpers --- */
+
+static inline z1_hwc2 *H(hwc2_device_t *d) { return static_cast<z1_hwc2 *>(d); }
+
+static int32_t find_free_plane(z1_hwc2 *h)
+{
+	for (int i = 0; i < h->plane_count; i++)
+		if (!h->planes[i].in_use)
+			return i;
+	return -1;
+}
+
+static void clear_planes(z1_hwc2 *h)
+{
+	for (int i = 0; i < h->plane_count; i++)
+		h->planes[i].in_use = false;
+}
+
+/* ------------------------------------------------------------ HWC2 core --- */
+
+static void z1_get_capabilities(hwc2_device_t *d, uint32_t *count, int32_t *caps)
+{
+	(void)d;
+	if (caps) {
+		caps[0] = HWC2_CAPABILITY_SKIP_VALIDATE;
+		caps[1] = HWC2_CAPABILITY_SKIP_CLIENT_COLOR_TRANSFORM;
+	}
+	*count = 2;
+}
+
+static void z1_register_callback(hwc2_device_t *d, int32_t descriptor,
+				 hwc2_callback_data_t data, hwc2_function_pointer_t fn)
+{
+	z1_hwc2 *h = H(d);
+
+	switch (descriptor) {
+	case HWC2_CALLBACK_HOTPLUG: h->cb_hotplug = fn; break;
+	case HWC2_CALLBACK_REFRESH: h->cb_refresh = fn; break;
+	case HWC2_CALLBACK_VSYNC:   h->cb_vsync = fn; break;
+	default: break;
+	}
+	h->cb_data = data;
+
+	if (descriptor == HWC2_CALLBACK_HOTPLUG && fn) {
+		typedef void (*hotplug_cb)(hwc2_callback_data_t, hwc2_display_t, int32_t);
+		((hotplug_cb)fn)(data, HWC_DISPLAY_PRIMARY, h->connector_id ? 1 : 0);
+	}
+}
+
+static int32_t z1_create_layer(hwc2_device_t *d, hwc2_display_t display,
+			       uint32_t *out_layer)
+{
+	z1_hwc2 *h = H(d);
+
+	if (display != HWC_DISPLAY_PRIMARY || h->layers.size() >= MAX_LAYERS)
+		return HWC2_ERROR_NO_RESOURCES;
+
+	hwc2_layer_t id = h->next_layer_id++;
+	z1_layer l;
+	l.id = id;
+	l.composition = HWC2_COMPOSITION_INVALID;
+	h->layers[id] = l;
+	*out_layer = id;
+	return HWC2_ERROR_NONE;
+}
+
+static int32_t z1_destroy_layer(hwc2_device_t *d, hwc2_display_t display,
+				hwc2_layer_t layer)
+{
+	z1_hwc2 *h = H(d);
+	auto it = h->layers.find(layer);
+
+	if (it == h->layers.end())
+		return HWC2_ERROR_BAD_LAYER;
+	if (it->second.fb_id) {
+		drmModeRmFB(h->drm_fd, it->second.fb_id);
+		drmCloseBufferHandle(h->drm_fd, it->second.gem);
+	}
+	h->layers.erase(it);
+	return HWC2_ERROR_NONE;
+}
+
+static int32_t z1_set_layer_buffer(hwc2_device_t *d, hwc2_display_t display,
+				   hwc2_layer_t layer, buffer_handle_t buffer,
+				   int32_t acquire_fence)
+{
+	z1_hwc2 *h = H(d);
+	auto it = h->layers.find(layer);
+
+	(void)display;
+	if (it == h->layers.end())
+		return HWC2_ERROR_BAD_LAYER;
+
+	z1_layer *l = &it->second;
+	if (buffer != l->handle) {
+		if (l->fb_id) {
+			drmModeRmFB(h->drm_fd, l->fb_id);
+			drmCloseBufferHandle(h->drm_fd, l->gem);
+			l->fb_id = 0;
+			l->gem = 0;
+		}
+		l->handle = buffer;
+	}
+	l->acquire_fence = acquire_fence;
+	l->have_buffer = buffer != nullptr;
+	return HWC2_ERROR_NONE;
+}
+
+static int32_t z1_set_layer_composition_type(hwc2_device_t *d, hwc2_display_t display,
+					     hwc2_layer_t layer, int32_t type)
+{
+	z1_hwc2 *h = H(d);
+	auto it = h->layers.find(layer);
+
+	(void)display;
+	if (it == h->layers.end())
+		return HWC2_ERROR_BAD_LAYER;
+	it->second.composition = (hwc2_composition_t)type;
+	return HWC2_ERROR_NONE;
+}
+
+static int32_t z1_set_layer_display_frame(hwc2_device_t *d, hwc2_display_t display,
+					  hwc2_layer_t layer, hwc_rect_t frame)
+{
+	z1_hwc2 *h = H(d);
+	auto it = h->layers.find(layer);
+
+	(void)display;
+	if (it == h->layers.end())
+		return HWC2_ERROR_BAD_LAYER;
+	it->second.frame = frame;
+	return HWC2_ERROR_NONE;
+}
+
+static int32_t z1_set_layer_source_crop(hwc2_device_t *d, hwc2_display_t display,
+					hwc2_layer_t layer, hwc_frect_t crop)
+{
+	z1_hwc2 *h = H(d);
+	auto it = h->layers.find(layer);
+
+	(void)display;
+	if (it == h->layers.end())
+		return HWC2_ERROR_BAD_LAYER;
+	it->second.crop = crop;
+	return HWC2_ERROR_NONE;
+}
+
+static int32_t z1_set_layer_plane_alpha(hwc2_device_t *d, hwc2_display_t display,
+					hwc2_layer_t layer, float alpha)
+{
+	z1_hwc2 *h = H(d);
+	auto it = h->layers.find(layer);
+
+	(void)display;
+	if (it == h->layers.end())
+		return HWC2_ERROR_BAD_LAYER;
+	it->second.alpha = alpha;
+	return HWC2_ERROR_NONE;
+}
+
+static int32_t z1_set_layer_z(hwc2_device_t *d, hwc2_display_t display,
+			      hwc2_layer_t layer, uint32_t z)
+{
+	z1_hwc2 *h = H(d);
+	auto it = h->layers.find(layer);
+
+	(void)display;
+	if (it == h->layers.end())
+		return HWC2_ERROR_BAD_LAYER;
+	it->second.z = (int32_t)z;
+	return HWC2_ERROR_NONE;
+}
+
+static int32_t z1_set_layer_visible_region(hwc2_device_t *d, hwc2_display_t display,
+					   hwc2_layer_t layer, hwc_region_t region)
+{
+	z1_hwc2 *h = H(d);
+	auto it = h->layers.find(layer);
+
+	(void)display;
+	if (it == h->layers.end())
+		return HWC2_ERROR_BAD_LAYER;
+	it->second.visible = region;
+	return HWC2_ERROR_NONE;
+}
+
+static int32_t z1_set_layer_damage(hwc2_device_t *d, hwc2_display_t display,
+				   hwc2_layer_t layer, hwc_region_t region)
+{
+	z1_hwc2 *h = H(d);
+	auto it = h->layers.find(layer);
+
+	(void)display;
+	if (it == h->layers.end())
+		return HWC2_ERROR_BAD_LAYER;
+	it->second.damage = region;
+	return HWC2_ERROR_NONE;
+}
+
+static int32_t z1_set_layer_transform(hwc2_device_t *d, hwc2_display_t display,
+				      hwc2_layer_t layer, int32_t transform)
+{
+	z1_hwc2 *h = H(d);
+	auto it = h->layers.find(layer);
+
+	(void)display;
+	if (it == h->layers.end())
+		return HWC2_ERROR_BAD_LAYER;
+	it->second.transform = (hwc_transform_t)transform;
+	return HWC2_ERROR_NONE;
+}
+
+static int32_t z1_set_layer_blend_mode(hwc2_device_t *d, hwc2_display_t display,
+				       hwc2_layer_t layer, int32_t mode)
+{
+	(void)d; (void)display; (void)layer; (void)mode;
+	return HWC2_ERROR_NONE;
+}
+
+static int32_t z1_set_layer_color(hwc2_device_t *d, hwc2_display_t display,
+				  hwc2_layer_t layer, hwc_color_t color)
+{
+	(void)d; (void)display; (void)layer; (void)color;
+	return HWC2_ERROR_NONE;
+}
+
+static int32_t z1_set_client_target(hwc2_device_t *d, hwc2_display_t display,
+				    buffer_handle_t target, int32_t acquire_fence,
+				    int32_t /*dataspace*/, hwc_region_t damage)
+{
+	z1_hwc2 *h = H(d);
+
+	(void)display; (void)damage;
+	h->client_target = target;
+	h->client_acquire_fence = acquire_fence;
+	return HWC2_ERROR_NONE;
+}
+
+static int32_t z1_validate_display(hwc2_device_t *d, hwc2_display_t display,
+				   uint32_t *num_types, uint32_t *num_requests)
+{
+	z1_hwc2 *h = H(d);
+
+	(void)display;
+	h->changed.clear();
+	clear_planes(h);
+
+	/* Sort layers bottom-to-top by z. */
+	std::vector<z1_layer *> order;
+	for (auto &kv : h->layers)
+		order.push_back(&kv.second);
+	for (size_t i = 0; i + 1 < order.size(); i++)
+		for (size_t j = 0; j + 1 < order.size() - i; j++)
+			if (order[j]->z > order[j + 1]->z) {
+				z1_layer *t = order[j];
+				order[j] = order[j + 1];
+				order[j + 1] = t;
+			}
+
+	/* Bottom plane is reserved for the client target. */
+	if (h->plane_count > 0)
+		h->planes[0].in_use = true;
+
+	for (z1_layer *l : order) {
+		hwc2_composition_t want = l->composition;
+
+		if (want == HWC2_COMPOSITION_INVALID)
+			want = HWC2_COMPOSITION_DEVICE;
+
+		if (want == HWC2_COMPOSITION_DEVICE ||
+		    want == HWC2_COMPOSITION_CURSOR) {
+			bool ok = l->have_buffer && l->transform == (hwc_transform_t)0;
+			hwc_rect_t f = l->frame;
+			hwc_frect_t c = l->crop;
+
+			if (ok) {
+				int w = (int)(c.right - c.left);
+				int hh = (int)(c.bottom - c.top);
+				if (w != (f.right - f.left) || hh != (f.bottom - f.top))
+					ok = false;	/* scaling not supported */
+				if (f.left < 0 || f.top < 0 ||
+				    f.right > (int)h->width || f.bottom > (int)h->height)
+					ok = false;
+			}
+			if (ok)
+				ok = import_layer(h, l) == 0;
+			if (ok && find_free_plane(h) < 0)
+				ok = false;
+
+			if (!ok) {
+				l->composition = HWC2_COMPOSITION_CLIENT;
+				h->changed.push_back(l->id);
+			} else {
+				l->composition = want;
+				int p = find_free_plane(h);
+				if (p >= 0)
+					h->planes[p].in_use = true;
+			}
+		} else if (want == HWC2_COMPOSITION_CLIENT) {
+			/* already client, nothing to report */
+		} else {
+			l->composition = HWC2_COMPOSITION_CLIENT;
+			h->changed.push_back(l->id);
+		}
+	}
+
+	h->validated = true;
+	*num_types = (uint32_t)h->changed.size();
+	*num_requests = 0;
+	return HWC2_ERROR_NONE;
+}
+
+static int32_t z1_get_changed_composition_types(hwc2_device_t *d, hwc2_display_t display,
+						uint32_t *num_elements,
+						hwc2_layer_t *layers, int32_t *types)
+{
+	z1_hwc2 *h = H(d);
+
+	(void)display;
+	for (size_t i = 0; i < h->changed.size(); i++) {
+		layers[i] = h->changed[i];
+		types[i] = HWC2_COMPOSITION_CLIENT;
+	}
+	*num_elements = (uint32_t)h->changed.size();
+	return HWC2_ERROR_NONE;
+}
+
+static int32_t z1_accept_display_changes(hwc2_device_t *d, hwc2_display_t display)
+{
+	(void)d; (void)display;
+	return HWC2_ERROR_NONE;
+}
+
+static int32_t z1_get_display_requests(hwc2_device_t *d, hwc2_display_t display,
+				       uint32_t *out_requests, uint32_t *out_num)
+{
+	(void)d; (void)display;
+	*out_requests = 0;
+	*out_num = 0;
+	return HWC2_ERROR_NONE;
+}
+
+/* ------------------------------------------------------------- present --- */
+
+static int program_plane(z1_hwc2 *h, drmModeAtomicReq *req, int idx,
+			 uint32_t fb_id, bool have_fb, hwc_rect_t frame,
+			 hwc_frect_t crop, int max_w, int max_h)
+{
+	z1_plane *p = &h->planes[idx];
+
+	if (!have_fb) {
+		drmModeAtomicAddProperty(req, p->id, p->p_fb, 0);
+		drmModeAtomicAddProperty(req, p->id, p->p_crtc, 0);
+		return 0;
+	}
+
+	if ((crop.right - crop.left) <= 0.0f || (crop.bottom - crop.top) <= 0.0f) {
+		klog("z1hwc2: empty crop, using full frame\n");
+		crop.left = 0.0f;
+		crop.top = 0.0f;
+		crop.right = (float)(frame.right - frame.left);
+		crop.bottom = (float)(frame.bottom - frame.top);
+	}
+
+	int w = frame.right - frame.left;
+	int hh = frame.bottom - frame.top;
+	if (w <= 0 || hh <= 0)
+		return -1;
+	if (w > max_w) w = max_w;
+	if (hh > max_h) hh = max_h;
+
+	/* SRC_* are 16.16 fixed point */
+	drmModeAtomicAddProperty(req, p->id, p->p_fb, fb_id);
+	drmModeAtomicAddProperty(req, p->id, p->p_crtc, h->crtc_id);
+	drmModeAtomicAddProperty(req, p->id, p->p_cx, frame.left);
+	drmModeAtomicAddProperty(req, p->id, p->p_cy, frame.top);
+	drmModeAtomicAddProperty(req, p->id, p->p_cw, w);
+	drmModeAtomicAddProperty(req, p->id, p->p_ch, hh);
+	drmModeAtomicAddProperty(req, p->id, p->p_sx, (uint32_t)(crop.left * 65536.0f));
+	drmModeAtomicAddProperty(req, p->id, p->p_sy, (uint32_t)(crop.top * 65536.0f));
+	drmModeAtomicAddProperty(req, p->id, p->p_sw, (uint32_t)((crop.right - crop.left) * 65536.0f));
+	drmModeAtomicAddProperty(req, p->id, p->p_sh, (uint32_t)((crop.bottom - crop.top) * 65536.0f));
+	return 0;
+}
+
+static int32_t z1_present_display(hwc2_device_t *d, hwc2_display_t display,
+				  int32_t *retire_fence)
+{
+	z1_hwc2 *h = H(d);
+	drmModeAtomicReq *req;
+	uint32_t flags = DRM_MODE_ATOMIC_NONBLOCK;
+
+	(void)display;
+	*retire_fence = -1;
+
+	if (!h->powered_on)
+		return HWC2_ERROR_NONE;
+
+	req = drmModeAtomicAlloc();
+	if (!req)
+		return HWC2_ERROR_NO_RESOURCES;
+
+	if (!h->mode_set_done) {
+		uint32_t blob = 0;
+
+		if (drmModeCreatePropertyBlob(h->drm_fd, &h->mode,
+					      sizeof(h->mode), &blob))
+			ALOGE("create mode blob failed: %s", strerror(errno));
+		h->mode_blob = blob;
+		drmModeAtomicAddProperty(req, h->connector_id,
+					 h->connector_crtc_prop, h->crtc_id);
+		drmModeAtomicAddProperty(req, h->crtc_id, h->crtc_mode_prop, blob);
+		drmModeAtomicAddProperty(req, h->crtc_id, h->crtc_active_prop, 1);
+		flags |= DRM_MODE_ATOMIC_ALLOW_MODESET;
+	}
+
+	/* plane 0: client target (bottom). planes 1..n: DEVICE layers */
+	int slot = 0;
+	hwc_rect_t full = { 0, 0, (int)h->width, (int)h->height };
+	hwc_frect_t fullc = { 0.0f, 0.0f, (float)h->width, (float)h->height };
+
+	if (h->client_target) {
+		if (h->client_target != h->client_handle) {
+			if (h->client_fb) {
+				drmModeRmFB(h->drm_fd, h->client_fb);
+				drmCloseBufferHandle(h->drm_fd, h->client_gem);
+				h->client_fb = 0;
+				h->client_gem = 0;
+			}
+			h->client_handle = h->client_target;
+			z1_layer tmp;
+
+			tmp.handle = h->client_target;
+			if (import_layer(h, &tmp) == 0) {
+				h->client_fb = tmp.fb_id;
+				h->client_gem = tmp.gem;
+			}
+		}
+		if (h->client_fb && slot < h->plane_count &&
+		    program_plane(h, req, slot, h->client_fb, true, full, fullc,
+				  h->width, h->height) == 0)
+			slot++;
+	}
+
+	/* device layers, bottom to top */
+	std::vector<z1_layer *> order;
+	for (auto &kv : h->layers)
+		order.push_back(&kv.second);
+	for (size_t i = 0; i + 1 < order.size(); i++)
+		for (size_t j = 0; j + 1 < order.size() - i; j++)
+			if (order[j]->z > order[j + 1]->z) {
+				z1_layer *t = order[j];
+				order[j] = order[j + 1];
+				order[j + 1] = t;
+			}
+
+	for (z1_layer *l : order) {
+		if (l->composition != HWC2_COMPOSITION_DEVICE &&
+		    l->composition != HWC2_COMPOSITION_CURSOR)
+			continue;
+		if (!l->fb_id)
+			continue;
+		if (slot >= h->plane_count)
+			break;
+		if (program_plane(h, req, slot, l->fb_id, true, l->frame, l->crop,
+				  h->width, h->height) == 0)
+			slot++;
+	}
+	for (int i = slot; i < h->plane_count; i++)
+		program_plane(h, req, i, 0, false, full, fullc, 0, 0);
+
+	int rc = drmModeAtomicCommit(h->drm_fd, req, flags, h);
+	if (rc) {
+		ALOGE("atomic commit failed: %s", strerror(errno));
+		drmModeAtomicFree(req);
+		return HWC2_ERROR_NO_RESOURCES;
+	}
+	drmModeAtomicFree(req);
+
+	if (!h->mode_set_done) {
+		h->mode_set_done = true;
+		ALOGI("first commit done: %ux%u", h->width, h->height);
+	}
+
+	/* release fences: buffers are consumed synchronously here */
+	for (auto &kv : h->layers) {
+		if (kv.second.acquire_fence >= 0) {
+			close(kv.second.acquire_fence);
+			kv.second.acquire_fence = -1;
+		}
+		h->release_fences[kv.first] = -1;
+	}
+	if (h->client_acquire_fence >= 0) {
+		close(h->client_acquire_fence);
+		h->client_acquire_fence = -1;
+	}
+	return HWC2_ERROR_NONE;
+}
+
+static int32_t z1_get_release_fences(hwc2_device_t *d, hwc2_display_t display,
+				     uint32_t *num_elements, hwc2_layer_t *layers,
+				     int32_t *fences)
+{
+	z1_hwc2 *h = H(d);
+	uint32_t n = 0;
+
+	(void)display;
+	for (auto &kv : h->release_fences) {
+		layers[n] = kv.first;
+		fences[n] = kv.second;
+		n++;
+	}
+	h->release_fences.clear();
+	*num_elements = n;
+	return HWC2_ERROR_NONE;
+}
+
+/* --------------------------------------------------------- display info --- */
+
+static int32_t z1_get_display_attribute(hwc2_device_t *d, hwc2_display_t display,
+					int32_t /*config*/, int32_t attribute,
+					int32_t *out_value)
+{
+	z1_hwc2 *h = H(d);
+
+	(void)display;
+	switch (attribute) {
+	case HWC2_ATTRIBUTE_WIDTH: *out_value = (int32_t)h->width; return HWC2_ERROR_NONE;
+	case HWC2_ATTRIBUTE_HEIGHT: *out_value = (int32_t)h->height; return HWC2_ERROR_NONE;
+	case HWC2_ATTRIBUTE_VSYNC_PERIOD:
+		*out_value = h->mode.vrefresh ? 1000000000 / h->mode.vrefresh : 16666667;
+		return HWC2_ERROR_NONE;
+	case HWC2_ATTRIBUTE_DPI_X: *out_value = 160 * 1000; return HWC2_ERROR_NONE;
+	case HWC2_ATTRIBUTE_DPI_Y: *out_value = 160 * 1000; return HWC2_ERROR_NONE;
+	default: return HWC2_ERROR_BAD_PARAMETER;
+	}
+}
+
+static int32_t z1_get_display_configs(hwc2_device_t *d, hwc2_display_t display,
+				      uint32_t *num_configs, hwc2_config_t *configs)
+{
+	(void)d; (void)display;
+	if (configs)
+		configs[0] = 0;
+	*num_configs = 1;
+	return HWC2_ERROR_NONE;
+}
+
+static int32_t z1_get_active_config(hwc2_device_t *d, hwc2_display_t display,
+				    hwc2_config_t *config)
+{
+	(void)d; (void)display;
+	*config = 0;
+	return HWC2_ERROR_NONE;
+}
+
+static int32_t z1_set_active_config(hwc2_device_t *d, hwc2_display_t display,
+				    hwc2_config_t config)
+{
+	(void)d; (void)display; (void)config;
+	return HWC2_ERROR_NONE;
+}
+
+static int32_t z1_get_display_type(hwc2_device_t *d, hwc2_display_t display,
+				   int32_t *type)
+{
+	(void)d; (void)display;
+	*type = HWC2_DISPLAY_TYPE_PHYSICAL;
+	return HWC2_ERROR_NONE;
+}
+
+static int32_t z1_set_power_mode(hwc2_device_t *d, hwc2_display_t display,
+				 int32_t mode)
+{
+	z1_hwc2 *h = H(d);
+
+	(void)display;
+	h->powered_on = (mode == HWC2_POWER_MODE_ON);
+	ALOGI("power mode %d", mode);
+	return HWC2_ERROR_NONE;
+}
+
+static int32_t z1_set_vsync_enabled(hwc2_device_t *d, hwc2_display_t display,
+				    int32_t enabled)
+{
+	z1_hwc2 *h = H(d);
+
+	(void)display;
+	h->vsync_enabled = (enabled == HWC2_VSYNC_ENABLE);
+	return HWC2_ERROR_NONE;
+}
+
+static int32_t z1_get_hdr_capabilities(hwc2_device_t *d, hwc2_display_t display,
+				       uint32_t *num, int32_t *types,
+				       float *max_lum, float *avg_lum)
+{
+	(void)d; (void)display;
+	(void)types; (void)max_lum; (void)avg_lum;
+	*num = 0;
+	return HWC2_ERROR_NONE;
+}
+
+static int32_t z1_get_doze_support(hwc2_device_t *d, hwc2_display_t display,
+				   int32_t *support)
+{
+	(void)d; (void)display;
+	*support = 0;
+	return HWC2_ERROR_NONE;
+}
+
+static int32_t z1_get_color_modes(hwc2_device_t *d, hwc2_display_t display,
+				  uint32_t *num, int32_t *modes)
+{
+	(void)d; (void)display;
+	if (modes)
+		modes[0] = 0; /* HAL_COLOR_MODE_NATIVE */
+	*num = 1;
+	return HWC2_ERROR_NONE;
+}
+
+static int32_t z1_set_color_mode(hwc2_device_t *d, hwc2_display_t display, int32_t mode)
+{
+	(void)d; (void)display; (void)mode;
+	return HWC2_ERROR_NONE;
+}
+
+static void z1_dump(hwc2_device_t *d, uint32_t *size, char *buffer)
+{
+	z1_hwc2 *h = H(d);
+	int n = 0;
+
+	if (buffer && *size)
+		n = snprintf(buffer, *size,
+			     "z1hwc2: %ux%u crtc=%u conn=%u planes=%d layers=%zu\n",
+			     h->width, h->height, h->crtc_id, h->connector_id,
+			     h->plane_count, h->layers.size());
+	*size = (uint32_t)n;
+}
+
+/* ---------------------------------------------------------------- module --- */
+
+static hwc2_function_pointer_t z1_get_function(hwc2_device_t *d, int32_t descriptor)
+{
+	(void)d;
+	switch (descriptor) {
+	case HWC2_FUNCTION_ACCEPT_DISPLAY_CHANGES:
+		return (hwc2_function_pointer_t)z1_accept_display_changes;
+	case HWC2_FUNCTION_CREATE_LAYER:
+		return (hwc2_function_pointer_t)z1_create_layer;
+	case HWC2_FUNCTION_DESTROY_LAYER:
+		return (hwc2_function_pointer_t)z1_destroy_layer;
+	case HWC2_FUNCTION_GET_ACTIVE_CONFIG:
+		return (hwc2_function_pointer_t)z1_get_active_config;
+	case HWC2_FUNCTION_GET_CHANGED_COMPOSITION_TYPES:
+		return (hwc2_function_pointer_t)z1_get_changed_composition_types;
+	case HWC2_FUNCTION_GET_DISPLAY_ATTRIBUTE:
+		return (hwc2_function_pointer_t)z1_get_display_attribute;
+	case HWC2_FUNCTION_GET_DISPLAY_CONFIGS:
+		return (hwc2_function_pointer_t)z1_get_display_configs;
+	case HWC2_FUNCTION_GET_DISPLAY_REQUESTS:
+		return (hwc2_function_pointer_t)z1_get_display_requests;
+	case HWC2_FUNCTION_GET_DISPLAY_TYPE:
+		return (hwc2_function_pointer_t)z1_get_display_type;
+	case HWC2_FUNCTION_GET_DOZE_SUPPORT:
+		return (hwc2_function_pointer_t)z1_get_doze_support;
+	case HWC2_FUNCTION_GET_HDR_CAPABILITIES:
+		return (hwc2_function_pointer_t)z1_get_hdr_capabilities;
+	case HWC2_FUNCTION_GET_RELEASE_FENCES:
+		return (hwc2_function_pointer_t)z1_get_release_fences;
+	case HWC2_FUNCTION_GET_COLOR_MODES:
+		return (hwc2_function_pointer_t)z1_get_color_modes;
+	case HWC2_FUNCTION_SET_ACTIVE_CONFIG:
+		return (hwc2_function_pointer_t)z1_set_active_config;
+	case HWC2_FUNCTION_SET_CLIENT_TARGET:
+		return (hwc2_function_pointer_t)z1_set_client_target;
+	case HWC2_FUNCTION_SET_COLOR_MODE:
+		return (hwc2_function_pointer_t)z1_set_color_mode;
+	case HWC2_FUNCTION_SET_LAYER_BLEND_MODE:
+		return (hwc2_function_pointer_t)z1_set_layer_blend_mode;
+	case HWC2_FUNCTION_SET_LAYER_BUFFER:
+		return (hwc2_function_pointer_t)z1_set_layer_buffer;
+	case HWC2_FUNCTION_SET_LAYER_COLOR:
+		return (hwc2_function_pointer_t)z1_set_layer_color;
+	case HWC2_FUNCTION_SET_LAYER_COMPOSITION_TYPE:
+		return (hwc2_function_pointer_t)z1_set_layer_composition_type;
+	case HWC2_FUNCTION_SET_LAYER_DISPLAY_FRAME:
+		return (hwc2_function_pointer_t)z1_set_layer_display_frame;
+	case HWC2_FUNCTION_SET_LAYER_PLANE_ALPHA:
+		return (hwc2_function_pointer_t)z1_set_layer_plane_alpha;
+	case HWC2_FUNCTION_SET_LAYER_SOURCE_CROP:
+		return (hwc2_function_pointer_t)z1_set_layer_source_crop;
+	case HWC2_FUNCTION_SET_LAYER_SURFACE_DAMAGE:
+		return (hwc2_function_pointer_t)z1_set_layer_damage;
+	case HWC2_FUNCTION_SET_LAYER_TRANSFORM:
+		return (hwc2_function_pointer_t)z1_set_layer_transform;
+	case HWC2_FUNCTION_SET_LAYER_VISIBLE_REGION:
+		return (hwc2_function_pointer_t)z1_set_layer_visible_region;
+	case HWC2_FUNCTION_SET_LAYER_Z_ORDER:
+		return (hwc2_function_pointer_t)z1_set_layer_z;
+	case HWC2_FUNCTION_SET_POWER_MODE:
+		return (hwc2_function_pointer_t)z1_set_power_mode;
+	case HWC2_FUNCTION_SET_VSYNC_ENABLED:
+		return (hwc2_function_pointer_t)z1_set_vsync_enabled;
+	case HWC2_FUNCTION_VALIDATE_DISPLAY:
+		return (hwc2_function_pointer_t)z1_validate_display;
+	case HWC2_FUNCTION_PRESENT_DISPLAY:
+		return (hwc2_function_pointer_t)z1_present_display;
+	case HWC2_FUNCTION_REGISTER_CALLBACK:
+		return (hwc2_function_pointer_t)z1_register_callback;
+	case HWC2_FUNCTION_DUMP:
+		return (hwc2_function_pointer_t)z1_dump;
+	default:
+		return nullptr;
+	}
+}
+
+static int z1_close(hw_device_t *dev)
+{
+	z1_hwc2 *h = reinterpret_cast<z1_hwc2 *>(dev);
+
+	for (auto &kv : h->layers)
+		if (kv.second.fb_id) {
+			drmModeRmFB(h->drm_fd, kv.second.fb_id);
+			drmCloseBufferHandle(h->drm_fd, kv.second.gem);
+		}
+	if (h->drm_fd >= 0)
+		close(h->drm_fd);
+	delete h;
+	return 0;
+}
+
+static int z1_open(const hw_module_t *module, const char *name, hw_device_t **device)
+{
+	z1_hwc2 *h;
+
+	klog("z1hwc2: z1_open(%s)\n", name ? name : "(null)");
+
+	if (!name || strcmp(name, HWC_HARDWARE_COMPOSER)) {
+		ALOGE("invalid module name %s", name ? name : "(null)");
+		return -EINVAL;
+	}
+
+	h = new z1_hwc2();
+	if (!h)
+		return -ENOMEM;
+
+	h->common.tag = HARDWARE_DEVICE_TAG;
+	h->common.version = HWC_DEVICE_API_VERSION_2_0;
+	h->common.module = const_cast<hw_module_t *>(module);
+	h->common.close = z1_close;
+	h->getCapabilities = z1_get_capabilities;
+	h->getFunction = z1_get_function;
+
+	if (drm_open(h) < 0) {
+		delete h;
+		return -ENODEV;
+	}
+
+	*device = &h->common;
+	return 0;
+}
+
+static struct hw_module_methods_t z1_module_methods = {
+	.open = z1_open,
+};
+
+hw_module_t HAL_MODULE_INFO_SYM = {
+	.tag = HARDWARE_MODULE_TAG,
+	.module_api_version = HARDWARE_MODULE_API_VERSION(2, 0),
+	.id = HWC_HARDWARE_MODULE_ID,
+	.name = "z1 HWC2 (mediatek-drm)",
+	.author = "z1",
+	.methods = &z1_module_methods,
+	.dso = nullptr,
+	.reserved = {0},
+};

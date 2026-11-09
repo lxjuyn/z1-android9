@@ -35,3 +35,9 @@ on post-fs-data
 # above also polls init.svc + pidof and reads the lima GP-error signature.
 on property:init.svc.surfaceflinger=*
     exec_background u:r:init:s0 root root -- /system/bin/sh /system/bin/z1_gpu_watch.sh event ${init.svc.surfaceflinger}
+
+# Z1 (2026-11-08): 让 lima 在作业出错时把 frame + 所有 BO 抓下来（默认 0 = 不抓）。
+# 之后 z1_gpu_watch.sh 会把 /sys/devices/platform/soc/13010000.gpu/error_state 存到
+# /cache，用来判定 ppmmu page fault 的地址到底落在哪个 BO 里（缺页定性靠它）。
+on post-fs-data
+    write /sys/module/lima/parameters/max_error_tasks 4

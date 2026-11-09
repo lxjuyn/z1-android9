@@ -148,6 +148,17 @@ while [ "$i" -lt "$MAX_POLLS" ]; do
     fi
     lastpid=$pid
 
+    # Z1 (2026-11-08): 一旦 dmesg 里出现 page fault，就把 lima 的 error_state
+    # （frame + 所有 BO 的 va/size，靠 max_error_tasks>=1 才会生成）存下来，
+    # 用来判定 fault 地址落在哪个 BO 里 —— 这是区分"我们映射/生命周期问题"和
+    # "Mesa 越界读"的唯一硬证据。只抓第一次。
+    if [ ! -e "$CACHE_DIR/z1_lima_error_state.bin" ] && \
+       dmesg 2>/dev/null | grep -q "page fault"; then
+        cat /sys/devices/platform/soc/13010000.gpu/error_state \
+            > "$CACHE_DIR/z1_lima_error_state.bin" 2>/dev/null && \
+            klog "dumped lima error_state -> $CACHE_DIR/z1_lima_error_state.bin"
+    fi
+
     now=$(lima_errs)
     if [ "$now" -ge $((base + K_LIMA_ERR)) ]; then
         trip "lima GP errors ${now} (baseline $base)"

@@ -99,7 +99,15 @@ static int fb_post(struct framebuffer_device_t* dev, buffer_handle_t buffer)
             dev->common.module);
 
     const bool stock = property_get_bool("ro.z1.stock_kernel", false);
-    if (!stock && (hnd->flags & private_handle_t::PRIV_FLAGS_FRAMEBUFFER)) {
+    /*
+     * Only use the pan/page-flip path when mapFrameBufferLocked() actually
+     * managed to enable it.  On the mainline DRM fbdev (mediatekdrmfb)
+     * FBIOPUT_VSCREENINFO does not accept a yoffset change, so PAGE_FLIP is
+     * cleared and the memcpy path below is the correct one.  Testing only
+     * !stock here made fb_post() fail on every frame -- which is exactly what
+     * kept the composer HAL from ever presenting.
+     */
+    if ((m->flags & PAGE_FLIP) && (hnd->flags & private_handle_t::PRIV_FLAGS_FRAMEBUFFER)) {
         const size_t offset = hnd->base - m->framebuffer->base;
         m->info.activate = FB_ACTIVATE_VBL;
         m->info.yoffset = offset / m->finfo.line_length;
@@ -253,7 +261,7 @@ int mapFrameBufferLocked(struct private_module_t* module)
                 info.blue.offset == 0 && info.blue.length == 5 &&
                 info.transp.length == 0) {
             framebufferFormat = HAL_PIXEL_FORMAT_RGB_565;
-        } else if (stock && info.bits_per_pixel == 32 &&
+        } else if (info.bits_per_pixel == 32 &&
                 info.red.length == 8 && info.green.length == 8 &&
                 info.blue.length == 8 && info.green.offset == 8 &&
                 (info.transp.length == 0 ||
