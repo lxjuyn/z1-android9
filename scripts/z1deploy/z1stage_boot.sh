@@ -270,6 +270,35 @@ else
     log "WARN /sys/class/dma_heap absent: kernel did not register a CMA heap"
 fi
 
+# --- 2b3. /dev/graphics/fb0 for the stock goldfish HWC1 fallback ------------
+# The stock module in /system/lib/hw/hwcomposer.z1.so opens the framebuffer as
+# "/dev/graphics/fb0" (AOSP goldfish hwcomposer.cpp, hwc_open ->
+# open("/dev/graphics/fb0")).  On this image that path has never worked: the
+# last boot log has 279 "could not open framebuffer".  Android's ueventd puts
+# class "graphics" devices under /dev/graphics (ueventd.rc: subsystem graphics
+# / dirname /dev/graphics), so a missing node means ueventd never processed the
+# fb0 uevent.  Recreate it from sysfs so that removing our HAL really restores
+# a live display instead of leaving the panel without any driver.
+FB_SYS=/sys/class/graphics/fb0
+if [ ! -e /dev/graphics/fb0 ] && [ -r "$FB_SYS/dev" ]; then
+    _dev=$(cat "$FB_SYS/dev" 2>/dev/null)
+    _maj=${_dev%%:*}
+    _min=${_dev##*:}
+    $MKDIR -p /dev/graphics 2>/dev/null
+    if [ -n "$_maj" ] && [ -n "$_min" ] && \
+       /system/bin/mknod /dev/graphics/fb0 c "$_maj" "$_min" 2>/dev/null; then
+        $CHMOD 0660 /dev/graphics/fb0 2>/dev/null
+        $CHOWN 0:1003 /dev/graphics/fb0 2>/dev/null
+        log "fb0: created /dev/graphics/fb0 c ${_maj}:${_min} (stock HWC1 fallback becomes usable)"
+    else
+        log "ERROR fb0: cannot create /dev/graphics/fb0 (${_maj}:${_min})"
+    fi
+elif [ -e /dev/graphics/fb0 ]; then
+    log "fb0: /dev/graphics/fb0 already present"
+else
+    log "fb0: ${FB_SYS} not present yet (drm fbdev not registered); fallback node not created"
+fi
+
 # --- 2c. debugfs (optional) -------------------------------------------------
 # sw_sync (CONFIG_SW_SYNC) exposes <debugfs>/sync/sw_sync; the HWC2 HAL uses it
 # for release fences when debug.z1.hwc.fences=1.  Android's init.rc never mounts

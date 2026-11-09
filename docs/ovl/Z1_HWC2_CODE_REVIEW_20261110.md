@@ -4,8 +4,8 @@
 > 本次按同一标准逐行重查 8 个方面：属性名 / 结构体布局 / HWC2 契约 / DRM atomic 用法 / 资源生命周期 / 并发 / 健壮性 / 性能陷阱。
 >
 > **结论：属性名这一类已经干净了**（板上 `z1drmtest` 实测也证实）；真正会咬人的是**资源生命周期**与**提交路径的失败语义**。
-> 我找到 1 个 P0、5 个 P1。**审查期间作者在并行修复**，截至终检（`md5 52da9b2a`）P0 与 4 个 P1 已被改掉，
-> 剩下 2 个 P1 + 8 个 P2 + 7 个 P3 仍存在。每条都给了**机制 + 内核/AOSP 引用 + 板上症状 + 最小修法**，
+> 我找到 1 个 P0、5 个 P1。**审查期间作者在并行修复**，截至终检（`md5 48f17a97`）P0 与 3 个 P1 已被改掉，
+> 剩下 2 个 P1 + 6 个 P2 + 7 个 P3 仍存在。每条都给了**机制 + 内核/AOSP 引用 + 板上症状 + 最小修法**，
 > 已修的条目保留下来当**回归检查项**（改错了会立刻复现）。
 
 ## 0. 版本与时间线（必读）
@@ -16,11 +16,12 @@
 | 22:24 | `7668f037` | 2691 | 分析基线 1 |
 | 22:27 | `59a943a7` | 2696 | **本报告 §2 的"分析基线"**（P0 在此版本仍存在） |
 | 22:31 | `e4a85820` | 2756 | P0/P1 大规模修复 |
-| 22:3x | `52da9b2a` | 2771 | **终检版本**，下表的"仍存在"均以此版本复核 |
+| 22:3x | `52da9b2a` | 2771 | 中间复核版本 |
+| 22:4x | `48f17a97` | 2831 | **终检版本**：下表 `[仍存在]` 的行号以此版本为准 |
 
 所以：
 - **`[已修]`** 行的行号是分析基线（`59a943a7`）的，留着做回归对照；
-- **`[仍存在]`** 行的行号是终检版本（`52da9b2a`）的。
+- **`[仍存在]`** 行的行号是终检版本（`48f17a97`）的。
 - 文件仍在被编辑；**用"锚点代码" `grep -n` 定位最可靠**，行号只是辅助。
 
 其它输入：策略头 `z1_policy.h`（204 行，未改）；内核 `fork_linux/`；客户端契约 `out/Z1_HWC2_CONTRACT_20261110.md` + `/tmp/aosp9/{hidl,sf}`（A9 源码）；板级证据 `docs/ovl/Z1_HANDOFF_20261109_HWC2.md` §2。
@@ -49,7 +50,7 @@ plane[3] type=Cursor zpos=3 rotation=1 alpha=65535 blend=Pre-multiplied
 |---|---|---|---|
 | **P0** | 1 | **0** | acquire fence fd 每帧每层泄漏 → composer `EMFILE` → 必死。**已在 22:31 修掉** |
 | **P1** | 5 | **2** | 静默冻屏 / 旧 target 复现 / modeset 锁存 / fence 恒 -1 / **open 失败无回退** |
-| **P2** | 13 | **8** | blob 泄漏、sw_sync 节点权限、offset 未处理、错误码、无 NOT_VALIDATED、矩形兜底… |
+| **P2** | 13 | **6** | blob 泄漏、sw_sync 节点权限、offset 未处理、错误码、无 NOT_VALIDATED、矩形兜底… |
 | **P3** | 7 | **7** | strdup 泄漏、id 截断、DPI 硬编码、dump 长度、dump 无锁… |
 
 **本轮最危险的一条（现已修复）**：`z1_set_client_target()` / `z1_set_layer_buffer()` 把传入的 acquire fence
@@ -66,12 +67,14 @@ plane[3] type=Cursor zpos=3 rotation=1 alpha=65535 blend=Pre-multiplied
 ## 2. 缺陷表
 
 > 状态标记：`[已修]` = 终检时已被作者改掉（保留作回归检查）；`[仍存在]` = 终检版本仍有。
+> **行号 = md5 `48f17a97`（2831 行）**；`[已修]` 行给的是分析基线（`59a943a7`）行号。
+> 作者仍在编辑，行号会漂——**以每格的"锚点"为准**，一条 `grep -n "<锚点>"` 即可定位。
 
 ### P0
 
 | 级别 | 状态 | file:line | 问题 | 为什么错（引用） | 最小修法 |
 |---|---|---|---|---|---|
-| **P0** | **`[已修]`**<br>22:31 | base `z1hwc2.cpp:1605`（client target）、`:1638`（层）<br>锚点：`= acquire_fence >= 0 ? dup(acquire_fence) : -1;` | acquire fence **dup 后不 close 传入的 fd** | ① composer 包装层在 HAL 返回 `NONE` 时把 fd 所有权交给 HAL：`/tmp/aosp9/hidl/ComposerCommandEngine.h:183-215`（`executeSetClientTarget`）与 `:356-381`（`executeSetLayerBuffer`）里 `closeFence=false`；② `/tmp/aosp9/hidl/HwcHal.h:319` 原文 "unlike in setClientTarget, releaseFence is owned by us" ⇒ 反过来说 setClientTarget/setLayerBuffer 的 fence 是"设备"的；③ `hwcomposer2.h:1527-1568 / 1980-2010` 只要求"HAL 保证 client 随时可关它" | 删掉 `dup()`，直接存传入的 fd（现在的 `h->client_acquire_fence = acquire_fence;` / `l->acquire_fence = acquire_fence;` 即为正确实现） |
+| **P0** | **`[已修]`**<br>22:31 | base `z1hwc2.cpp:1605`（client target）、`:1638`（层）<br>锚点：`= acquire_fence >= 0 ? dup(acquire_fence) : -1;` | acquire fence **dup 后不 close 传入的 fd** | ① composer 包装层在 HAL 返回 `NONE` 时把 fd 所有权交给 HAL：`/tmp/aosp9/hidl/ComposerCommandEngine.h:183-215`（`executeSetClientTarget`）与 `:356-381`（`executeSetLayerBuffer`）里 `closeFence=false`；② `/tmp/aosp9/hidl/HwcHal.h:319` 原文 "unlike in setClientTarget, releaseFence is owned by us" ⇒ 反过来说 setClientTarget/setLayerBuffer 的 fence 是"设备"的；③ `hwcomposer2.h:1527-1568 / 1980-2010` 只要求"HAL 保证 client 随时可关它" | 删掉 `dup()`，直接存传入的 fd（现在 `z1hwc2.cpp:1669` 的 `h->client_acquire_fence = acquire_fence;` 与 `:1704` 的 `l->acquire_fence = acquire_fence;` 即为正确实现） |
 | | | **板上症状** | 180 fd/s 泄漏 ⇒ 约 300 帧后 `EMFILE`：logcat 出现 SF 的 `Failed to set buffer` 或 composer 的 `failed to get hwcomposer service`（`ComposerHal.cpp:172`）；`ls /proc/$(pidof android.hardware.graphics.composer@2.1-service)/fd | wc -l` 每 5 s 涨几百。**回归检查点**：这个数字必须稳定 | | |
 
 ### P1
@@ -84,39 +87,39 @@ plane[3] type=Cursor zpos=3 rotation=1 alpha=65535 blend=Pre-multiplied
 | | | **板上症状** | 触发条件：可见层全部可上硬件、但最底层不是满屏/不透明（只有 Toast/小 SurfaceView、或底部悬浮层）。此时底层出现上一帧的 GL 合成内容 | | |
 | **P1-c** | **`[已修]`**<br>22:31 | base `:2413`<br>锚点：`h->modeset_done = true;` | 首帧带 `ALLOW_MODESET` 失败后，纯平面回退只要返回 0 就锁死 `modeset_done`，此后再不 modeset | CRTC 未 active 时纯平面提交照样返回 0：`crtc_state->enable == false` ⇒ `drm_rect_clip_scaled()` 判不可见（`drm_atomic_helper.c:922-950`）⇒ 一个平面都没点亮，而模式设置分支（`!h->modeset_done`）永不再执行 | 现版本已改成"只有本帧真带 ALLOW_MODESET（或无可设置）才锁存"，并有重试上限（正确） |
 | | | **板上症状** | 永久黑屏，日志只有 `plane-only commit accepted (no modeset)`，之后再无错误 | | |
-| **P1-d** | **`[仍存在]`** | `z1hwc2.cpp:2233`<br>锚点：`*out_retire_fence = -1;`；release fence 段在 `:2472` 的 `if (h->fences_on)` | present fence 恒 `-1`；release fence 默认关（`debug.z1.hwc.fences=0`），且**即便置 1 也打不开节点**（见 P2-c） | `hwcomposer2.h:1433-1468`、`:1471-1505`。SF 侧：① 上一块 client target 立即放回 BufferQueue（`FramebufferSurface.cpp:162-180` 只在 `fence->isValid()` 时 addReleaseFence）⇒ 撕裂；② `DispSync` 收不到 present 样本（`SurfaceFlinger.cpp:1758-1764`），无法锁相。属注释承认的 Phase-1 取舍，但确实违反契约 | 短期：先修 P2-c 再默认开 fences；正解：`OUT_FENCE_PTR`（`drm_mode_config.c:305-311`，内核有） |
-| **P1-e** | **`[仍存在]`** | `z1hwc2.cpp:2784`（`return -ENODEV;`）+ `:885`（`for (i = 0; i < 120; i++)`） | `z1_open()` 失败（card1 60 s 没出现 / `drmSetMaster` 一直失败 / probe 失败）⇒ **composer 服务彻底不存在，且没有 fb0 回退** | `HwcLoader::loadModule()` 只在 `hw_get_module()` 失败时才回退 gralloc/fb0（`/tmp/aosp9/hidl/HwcLoader.h:60-70`）；`open()` 失败只打一行 `failed to open hwcomposer device`（`:109`）返回 nullptr。当前板上能显示的路径正是"没有 `hwcomposer.z1.so` ⇒ 回退 fb0"（handoff §2）。一旦 init 把 `.so` 装进 `/vendor/lib/hw`（`out/z1_v83/embedded_init.z1.rc:42`），**open 失败 = 屏彻底没驱动** | ① 等节点预算从 60 s 压到 ≤ 35 s，日志明确写"超时会放弃"；② **回退必须写进脚本**：失败则 `mv /vendor/lib/hw/hwcomposer.z1.so{,.off}` 并重启 composer（这是唯一能回到今天可用状态的办法） |
+| **P1-d** | **`[仍存在]`** | `z1hwc2.cpp:2255`<br>锚点：`*out_retire_fence = -1;`；release fence 段在 `:2496` 的 `if (h->fences_on)` | present fence 恒 `-1`；release fence 默认关（`debug.z1.hwc.fences=0`），且**即便置 1 也打不开节点**（见 P2-c） | `hwcomposer2.h:1433-1468`、`:1471-1505`。SF 侧：① 上一块 client target 立即放回 BufferQueue（`FramebufferSurface.cpp:162-180` 只在 `fence->isValid()` 时 addReleaseFence）⇒ 撕裂；② `DispSync` 收不到 present 样本（`SurfaceFlinger.cpp:1758-1764`），无法锁相。属注释承认的 Phase-1 取舍，但确实违反契约 | 短期：先修 P2-c 再默认开 fences；正解：`OUT_FENCE_PTR`（`drm_mode_config.c:305-311`，内核有） |
+| **P1-e** | **`[仍存在]`** | `z1hwc2.cpp:2808`（`return -ENODEV;`）+ `:887`（`for (i = 0; i < 120; i++)`） | `z1_open()` 失败（card1 60 s 没出现 / `drmSetMaster` 一直失败 / probe 失败）⇒ **composer 服务彻底不存在，且没有 fb0 回退** | `HwcLoader::loadModule()` 只在 `hw_get_module()` 失败时才回退 gralloc/fb0（`/tmp/aosp9/hidl/HwcLoader.h:60-70`）；`open()` 失败只打一行 `failed to open hwcomposer device`（`:109`）返回 nullptr。当前板上能显示的路径正是"没有 `hwcomposer.z1.so` ⇒ 回退 fb0"（handoff §2）。一旦 init 把 `.so` 装进 `/vendor/lib/hw`（`out/z1_v83/embedded_init.z1.rc:42`），**open 失败 = 屏彻底没驱动** | ① 等节点预算从 60 s 压到 ≤ 35 s，日志明确写"超时会放弃"；② **回退必须写进脚本**：失败则 `mv /vendor/lib/hw/hwcomposer.z1.so{,.off}` 并重启 composer（这是唯一能回到今天可用状态的办法） |
 | | | **板上症状** | `E ComposerHal: failed to open hwcomposer device: No such device`（v79 已出现过）→ composer 反复退出 → SF 在 `ComposerHal.cpp:172` abort → 重启环，屏停在二屏/黑屏 | | |
 
 ### P2
 
 | 级别 | 状态 | file:line | 问题 | 为什么错（引用） | 最小修法 |
 |---|---|---|---|---|---|
-| **P2-a** | **`[仍存在]`** | `z1hwc2.cpp:2307`<br>锚点：`h->mode_blob = blob;` | 每次重试都新建 blob 并覆盖旧指针，旧 blob 永不销毁 | 内核 blob 带引用计数，只有 `drmModeDestroyPropertyBlob` 才释放；首帧持续失败时每帧泄漏 68 B blob + 一个 kernel object | 建之前先销毁旧的，或把 blob 缓存到 `modeset_done` 之外只建一次 |
+| **P2-a** | **`[仍存在]`** | `z1hwc2.cpp:2329`<br>锚点：`h->mode_blob = blob;` | 每次重试都新建 blob 并覆盖旧指针，旧 blob 永不销毁 | 内核 blob 带引用计数，只有 `drmModeDestroyPropertyBlob` 才释放；首帧持续失败时每帧泄漏 68 B blob + 一个 kernel object | 建之前先销毁旧的，或把 blob 缓存到 `modeset_done` 之外只建一次 |
 | **P2-b** | **`[已修]`**<br>22:31 | base `:2353` | 失败分支跳过了 `pending_release` 清理（清理已挪到提交之后）→ 提交持续失败时 fb/gem 引用无限累积 | 现在是 `if (ret) { ...; h->pending_release.clear(); }`（正确） | — |
-| **P2-c** | **`[仍存在]`** | `z1hwc2.cpp:555`<br>锚点：`open("/sys/kernel/debug/sync/sw_sync", O_RDWR \| O_CLOEXEC)` | 该 debugfs 文件是 `root:root 0644`，composer 是 `user system`、无 `CAP_DAC_OVERRIDE` ⇒ **必然 EACCES**，`fences_on` 永远 false | `sync_debug.c:110-120` 的 `debugfs_create_file_unsafe("sw_sync", 0644, ...)` | 用 `OUT_FENCE_PTR`；或在 init.rc 里 `chmod 0666 /sys/kernel/debug/sync/sw_sync`（注意 debugfs 挂载时序）。**P1-d 的短期方案依赖这条** |
+| **P2-c** | **`[仍存在]`** | `z1hwc2.cpp:557`<br>锚点：`open("/sys/kernel/debug/sync/sw_sync", O_RDWR \| O_CLOEXEC)` | 该 debugfs 文件是 `root:root 0644`，composer 是 `user system`、无 `CAP_DAC_OVERRIDE` ⇒ **必然 EACCES**，`fences_on` 永远 false | `sync_debug.c:110-120` 的 `debugfs_create_file_unsafe("sw_sync", 0644, ...)` | 用 `OUT_FENCE_PTR`；或在 init.rc 里 `chmod 0666 /sys/kernel/debug/sync/sw_sync`（注意 debugfs 挂载时序）。**P1-d 的短期方案依赖这条** |
 | **P2-d** | **`[已修]`**<br>22:31 | base `:258` | klogf 无条件把最后一个字符改成 `\n`：格式化串不以 `\n` 结尾时最后一个字符被吃掉 | 现版本已引入 `had_nl`（正确） | — |
 | **P2-e** | **`[已修]`**<br>22:31 | base `:721` | dumb 的 bpp 只区分 RGB565/其它：RGB_888 也建 32bpp dumb，但 `AddFB2` 用 24bpp 的 `BGR888` ⇒ pitch 与内容布局不一致 | 现版本 `create.bpp = hal_bpp(hal_format) * 8;`（正确） | — |
 | **P2-f** | **`[已修]`**<br>22:31 | base `:736-757` | `CREATE_DUMB` 成功但 `MAP_DUMB`/`mmap`/`AddFB2` 失败时直接 return，`create.handle` 泄漏 | 现版本三处失败路径都 `DESTROY_DUMB(create.handle)`（正确） | — |
-| **P2-g** | **`[仍存在]`** | `z1hwc2.cpp:670`、`:769`<br>锚点：`uint32_t offsets[4] = { 0, 0, 0, 0 };`；拷贝路径在 `:847` 用 `gh->fd` + 偏移 0 | 完全忽略 `private_handle_t.offset`（布局第 28 字节）；拷贝路径尺寸校验 `src_pitch*h > size + src_pitch` 多放过一行 | 当前 gralloc 恒 `offset=0`（`gralloc.cpp` 构造置 0；`pixel_copy.h:13-36` 的 `size = columns*rows*bpp+4` 也够大），所以现在不出事；一旦 gralloc 改成复用大 buffer 就整体错位 | `offsets[0] = gh->offset`；拷贝源地址加 `gh->offset`；尺寸校验改 `src_pitch*height > size` |
+| **P2-g** | **`[仍存在]`** | `z1hwc2.cpp:672`、`:771`<br>锚点：`uint32_t offsets[4] = { 0, 0, 0, 0 };`；拷贝路径在 `:826` 一带用 `gh->fd` + 偏移 0 | 完全忽略 `private_handle_t.offset`（布局第 28 字节）；拷贝路径尺寸校验 `src_pitch*h > size + src_pitch` 多放过一行 | 当前 gralloc 恒 `offset=0`（`gralloc.cpp` 构造置 0；`pixel_copy.h:13-36` 的 `size = columns*rows*bpp+4` 也够大），所以现在不出事；一旦 gralloc 改成复用大 buffer 就整体错位 | `offsets[0] = gh->offset`；拷贝源地址加 `gh->offset`；尺寸校验改 `src_pitch*height > size` |
 | **P2-h** | **`[已修]`**<br>22:31 | base `:1230` | client target 的 fb 缓存只比 `handle` 指针（层却比 `handle + src_fd`） | 现版本已加上 `&&` 的第二个条件（与层一致） | — |
 | **P2-i** | **`[已修]`**<br>22:3x | base `:1415-1417` | 未知 `getDisplayAttribute` 返回 `HWC2_ERROR_BAD_PARAMETER`（`hwcomposer2.h:1253-1274` 只列 `BAD_DISPLAY`/`BAD_CONFIG`，未知属性应 `-1` + `NONE`） | 终检版本 `return HWC2_ERROR_BAD_PARAMETER` 已不存在 | — |
-| **P2-j** | **`[仍存在]`** | `z1hwc2.cpp:1451`（`get_display_configs`）、`:1465`（`get_active_config`）、`:1475`（`set_active_config`） | 三个函数全都 `(void)display;`，不返回 `HWC2_ERROR_BAD_DISPLAY` | 契约要求 `BAD_DISPLAY`（`hwcomposer2.h` 对应段落） | 三处加 `if (display != 0) return HWC2_ERROR_BAD_DISPLAY;` |
-| **P2-k** | **`[仍存在]`** | `z1hwc2.cpp:2225-2240`（`z1_present_display` 开头，`*out_retire_fence = -1` 之后直接进 wait 循环） | 不检查 `h->validated` 就提交 | `hwcomposer2.h:1471-1505` 要求 present 前必须成功 validate，否则返回 `NOT_VALIDATED`；契约文档 §8.3 也列了这条 | 加检查，并在每次 `setLayer*` 后清 `validated` |
+| **P2-j** | **`[仍存在]`** | `z1hwc2.cpp:1454`（`get_display_configs`）、`:1468`（`get_active_config`）、`:1478`（`set_active_config`） | 三个函数全都 `(void)display;`，不返回 `HWC2_ERROR_BAD_DISPLAY` | 契约要求 `BAD_DISPLAY`（`hwcomposer2.h` 对应段落） | 三处加 `if (display != 0) return HWC2_ERROR_BAD_DISPLAY;` |
+| **P2-k** | **`[仍存在]`** | `z1hwc2.cpp:2241-2262`（`z1_present_display` 开头：`*out_retire_fence = -1` 之后只有 `display`/`powered_on` 检查，直接进 wait 循环） | 不检查 `h->validated` 就提交 | `hwcomposer2.h:1471-1505` 要求 present 前必须成功 validate，否则返回 `NOT_VALIDATED`；契约文档 §8.3 也列了这条 | 加检查，并在每次 `setLayer*` 后清 `validated` |
 | **P2-l** | **`[已修]`**<br>22:31 | base `:1563-1580` | `setColorTransform` 返回 `NONE` 但完全不应用矩阵 ⇒ 有 Device 合成时 SF 不做 GL 矩阵（`SurfaceFlinger.cpp:2917-2921` 的 `applyColorMatrix = !hasDeviceComposition && !skipClientColorTransform`）⇒ 夜间模式/色彩校正静默失效。注意：返回 `UNSUPPORTED` **不是**修法（`applyColorMatrix` 不看返回码） | 终检版本已引入 `h->color_transform` 并把它 OR 进降级条件（`mode_force_client \|\| color_transform`），等价于"有矩阵时全走 CLIENT"（正确） | — |
-| **P2-m** | **`[仍存在]`** | `z1hwc2.cpp:1168`（`program_plane`）及调用点 | `program_plane` 不做任何矩形兜底：`l->frame.right - l->frame.left` 是 int 减法，异常 rect（如 `INT_MIN`）会溢出成大正数 | 决策策略挡住绝大多数（`z1_policy.h:97-113`），但 `program_plane` 是最后一道门；溢出成巨值 `CRTC_W` 会被 `drm_atomic.c:747-757` 判 `-ERANGE` ⇒ 整帧提交失败 | 入口对 `x,y,w,h` 做 `<= 0 \|\| > 8192` 的钳位/丢弃 |
+| **P2-m** | **`[仍存在]`** | `z1hwc2.cpp:1170`（`program_plane`）及调用点 | `program_plane` 不做任何矩形兜底：`l->frame.right - l->frame.left` 是 int 减法，异常 rect（如 `INT_MIN`）会溢出成大正数 | 决策策略挡住绝大多数（`z1_policy.h:97-113`），但 `program_plane` 是最后一道门；溢出成巨值 `CRTC_W` 会被 `drm_atomic.c:747-757` 判 `-ERANGE` ⇒ 整帧提交失败 | 入口对 `x,y,w,h` 做 `<= 0 \|\| > 8192` 的钳位/丢弃 |
 
 ### P3
 
 | 级别 | 状态 | file:line | 问题 | 最小修法 |
 |---|---|---|---|---|
-| P3 | **`[仍存在]`** | `z1hwc2.cpp:877` | `strdup(prop)` 永不释放 | 用 static 缓冲 |
-| P3 | **`[仍存在]`** | `z1hwc2.cpp:2767` | `next_layer_id` 是 u64，但 `createLayer` 只回 u32（`hwcomposer2.h` 的 `outLayer` 就是 `uint32_t*`）；超 2^32 后 id 撞车 | 回绕时查 map |
-| P3 | **`[仍存在]`** | `z1hwc2.cpp:1414` | DPI 硬编码 160000（160 dpi）；面板 240×320 实际约 200 dpi | 从属性读，或返回 `-1` 让 SF 用默认 |
-| P3 | **`[仍存在]`** | `z1hwc2.cpp:2503`（`z1_dump`） | 第二次调用时 `*out_size = snprintf()` 的返回值可能大于调用方容量（当前字符串 ~190 B，不触发） | 用 `min(n, cap)` |
-| P3 | **`[仍存在]`** | `z1hwc2.cpp:1373` | `destroyLayer` 忽略 `display` | 加 `BAD_DISPLAY` 检查 |
-| P3 | **`[仍存在]`** | `z1hwc2.cpp:1059` | `p_rotation` 查了就再没用（`transform != 0` 一律降 CLIENT，是正确的） | 删掉或注释说明 |
-| P3 | **`[仍存在]`** | `z1hwc2.cpp:2503`（`dump` 读 `h->layers`）、`:2075` 附近写 `g_verbose` | HAL 被 4 个 binder 线程调用（`service.cpp:35` `defaultPassthroughServiceImplementation<IComposer>(4)`），`dump`/`getCapabilities` 不走命令队列 ⇒ 与 present 并发读 map；`g_verbose` 是无锁全局 | 只读统计可接受；`dump` 应先拷贝 size 或加锁 |
+| P3 | **`[仍存在]`** | `z1hwc2.cpp:879` | `strdup(prop)` 永不释放 | 用 static 缓冲 |
+| P3 | **`[仍存在]`** | `z1hwc2.cpp:2791` | `next_layer_id` 是 u64，但 `createLayer` 只回 u32（`hwcomposer2.h` 的 `outLayer` 就是 `uint32_t*`）；超 2^32 后 id 撞车 | 回绕时查 map |
+| P3 | **`[仍存在]`** | `z1hwc2.cpp:1440` | DPI 硬编码 160000（160 dpi）；面板 240×320 实际约 200 dpi | 从属性读，或返回 `-1` 让 SF 用默认 |
+| P3 | **`[仍存在]`** | `z1hwc2.cpp:2578`（`z1_dump`） | 第二次调用时 `*out_size = snprintf()` 的返回值可能大于调用方容量（当前字符串 ~190 B，不触发） | 用 `min(n, cap)` |
+| P3 | **`[仍存在]`** | `z1hwc2.cpp:1399` | `destroyLayer` 忽略 `display` | 加 `BAD_DISPLAY` 检查 |
+| P3 | **`[仍存在]`** | `z1hwc2.cpp:1061` | `p_rotation` 查了就再没用（`transform != 0` 一律降 CLIENT，是正确的） | 删掉或注释说明 |
+| P3 | **`[仍存在]`** | `z1hwc2.cpp:2578`（`dump` 读 `h->layers`）、`validate` 里写 `g_verbose` | HAL 被 4 个 binder 线程调用（`service.cpp:35` `defaultPassthroughServiceImplementation<IComposer>(4)`），`dump`/`getCapabilities` 不走命令队列 ⇒ 与 present 并发读 map；`g_verbose` 是无锁全局 | 只读统计可接受；`dump` 应先拷贝 size 或加锁 |
 
 ---
 
