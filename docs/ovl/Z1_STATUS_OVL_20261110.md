@@ -12,7 +12,7 @@
 ```
 out/z1_v83/boot.img
   size      5,900,288 B          （boot 分区 6,291,456 B，余 393,216 B）
-  sha256    2604bd26358c1c99b988b8647dff2853a999f052cd2ca9f7a00abbdf695e7feb
+  sha256    b8d04db52737ea87cb88985badf9d345224c719e9d652626ec01a36e40f3c46e
   kernel    4,331,019 B = MTK KERNEL 4,330,507 + 512   (新内核)
   ramdisk   1,563,914 B = MTK ROOTFS 1,563,402 + 512   (85 条记录)
   cmdline   316 B，原 302 B + " iomem=relaxed"
@@ -22,7 +22,7 @@ out/z1_v83/boot.img
 
 | 记录 | 大小 | sha256（前 12） | 作用 |
 |---|---|---|---|
-| `hwcomposer.z1.so` | 144,920 | `d452495ad362` | HWC2 HAL r9：DEVICE 决策 + OVL 平面编程 |
+| `hwcomposer.z1.so` | 145,768 | `91cb168f1474` | HWC2 HAL r10：DEVICE 决策 + OVL 平面编程 |
 | `gralloc.z1.so` | 28,548 | `0ed9fb2b573b` | CMA/dumb 连续内存分配器（OVL 能扫描的前提） |
 | `z1kmstest` | 122,976 | `1954132627e1` | 独立 DRM/OVL 测试工具（probe/run/regs） |
 | `z1stage_boot.sh` | ~12.6 K | `…` | post-fs-data：节点/一次性安装/权限 |

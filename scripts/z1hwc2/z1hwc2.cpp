@@ -108,7 +108,7 @@ extern "C" int __android_log_write(int prio, const char *tag, const char *text);
 #define LOG_TAG "z1hwc2"
 #include <log/log.h>
 
-#define Z1_HWC_VERSION "2026-11-10-r9"
+#define Z1_HWC_VERSION "2026-11-10-r10"
 
 /* ------------------------------------------------------------ constants --- */
 
@@ -669,7 +669,8 @@ static int fb_import(z1_hwc2 *h, buffer_handle_t handle, z1_fb *out)
 	{
 		uint32_t handles[4] = { gem, 0, 0, 0 };
 		uint32_t pitches[4] = { pitch, 0, 0, 0 };
-		uint32_t offsets[4] = { 0, 0, 0, 0 };
+		uint32_t offsets[4] = { gh->offset > 0 ? (uint32_t)gh->offset : 0,
+					0, 0, 0 };
 
 		if (drmModeAddFB2(h->drm_fd, (uint32_t)gh->width,
 				  (uint32_t)gh->height, fourcc, handles, pitches,
@@ -823,8 +824,9 @@ static int copy_into_dumb(z1_hwc2 *h, z1_dumb *d, buffer_handle_t handle)
 		return -EINVAL;
 
 	src_pitch = (uint32_t)gh->stride * (uint32_t)bpp;
-	if (gh->size <= 0 || src_pitch * (uint32_t)gh->height >
-				    (uint32_t)gh->size + src_pitch) {
+	if (gh->size <= 0 || gh->offset < 0 ||
+	    src_pitch * (uint32_t)gh->height + (uint32_t)gh->offset >
+		    (uint32_t)gh->size) {
 		klogf(0, "z1hwc2: copy: implausible source size %d\n", gh->size);
 		return -EINVAL;
 	}
@@ -850,7 +852,8 @@ static int copy_into_dumb(z1_hwc2 *h, z1_dumb *d, buffer_handle_t handle)
 			bytes = src_pitch;
 		for (y = 0; y < rows; y++)
 			memcpy((uint8_t *)d->map + (size_t)y * d->pitch,
-			       src + (size_t)y * src_pitch, bytes);
+			       src + (size_t)gh->offset +
+				       (size_t)y * src_pitch, bytes);
 	}
 
 	if (synced) {
@@ -875,8 +878,15 @@ static int drm_open(z1_hwc2 *h)
 
 	memset(prop, 0, sizeof(prop));
 	__system_property_get("hwc.drm.device", prop);
-	if (prop[0])
-		path = strdup(prop);
+	if (prop[0]) {
+		/* Static storage: the value lives for the whole process, so a
+		 * strdup() here is a one-off leak (harmless but pointless). */
+		static char dev_path[PROP_VALUE_MAX];
+
+		memcpy(dev_path, prop, sizeof(dev_path));
+		dev_path[sizeof(dev_path) - 1] = 0;
+		path = dev_path;
+	}
 	h->drm_path = path;
 
 	/*
@@ -1194,6 +1204,22 @@ static void program_plane(z1_hwc2 *h, drmModeAtomicReq *req, int idx,
 		sw = w;
 	if (sh <= 0)
 		sh = hgt;
+	/* Defensive clamp: nothing here may overflow the int arithmetic above or
+	 * leave the CRTC rectangle outside the display (a rect starting at
+	 * INT_MIN would otherwise be rewritten as a huge unsigned property). */
+	if (x < 0)
+		x = 0;
+	if (y < 0)
+		y = 0;
+	if (w <= 0 || w > (int)h->width || x > (int)h->width - w)
+		w = (int)h->width - x;
+	if (hgt <= 0 || hgt > (int)h->height || y > (int)h->height - hgt)
+		hgt = (int)h->height - y;
+	if (w <= 0 || hgt <= 0) {
+		add_prop(req, "FB_ID", p->id, p->p_fb, 0);
+		add_prop(req, "CRTC_ID", p->id, p->p_crtc, 0);
+		return;
+	}
 
 	add_prop(req, "FB_ID", p->id, p->p_fb, fb_id);
 	add_prop(req, "CRTC_ID", p->id, p->p_crtc, h->crtc_id);
@@ -1400,9 +1426,11 @@ static int32_t z1_destroy_layer(hwc2_device_t *d, hwc2_display_t display,
 				hwc2_layer_t layer)
 {
 	z1_hwc2 *h = H(d);
-	z1_layer *l = layer_get(h, layer);
+	z1_layer *l;
 
-	(void)display;
+	if (display != 0)
+		return HWC2_ERROR_BAD_DISPLAY;
+	l = layer_get(h, layer);
 	if (!l)
 		return HWC2_ERROR_BAD_LAYER;
 	if (l->fb.fb_id)
