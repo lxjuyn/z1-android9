@@ -44,7 +44,7 @@ z1stage: done @<N>s: seeded=… working_copies=… applied=… removed=… error
 | 时间（CST） | 事件 | 大小 | sha256 |
 |---|---|---|---|
 | 2026-11-09 21:58:01 | 本任务指定的构建（builder 报告写成） | 5,900,288 | `5b8d9c0a30a2f3e38eb99a697fa9e0ace9403d79cf2e698faf3ff27f36b5cc25` |
-| 22:02–22:07 | 本次审计读取/解析（解析输出、cpio、各段提取） | 5,900,288 | `同上（全程字节一致）` |
+| 22:02–22:07 | 本次审计读取/解析（解析输出、cpio、各段提取） | 5,900,288 | 同上（全程字节一致） |
 | 22:11:13 | `out/z1_v83/stage/hwcomposer.z1.so` 更新 | 143,048 B | `ef6389e3dfc8ec4ef0de7f1de43d8b65b2ee0dbe13a8aab18907b25a33807a01` |
 | 22:11:16 | `out/z1_v83/boot.img` 被重打 | 5,902,336 | `306fe78ecbbf91d6d7413aa9d9f0ef81d67bf5ba06d198b7ed95e8e8e756963b` |
 | 22:12:44 | `z1deploy/z1stage_boot.sh` 变为 11,968 B | 11,968 B | `e2c9b9e709c17a3a60e713ce8d48e5daf86d2a9e7ecea4af183bcbee34b70ec8` |
@@ -435,7 +435,7 @@ gzip 流解码结果（`zlib.decompressobj(16|MAX_WBITS)`）：
 > **关于“关键字是否被这份 `/init` 识别”的说明**：`/init` 二进制里 `class/group/user/oneshot/disabled/console/rlimit/socket/...` 等关键字字符串可见，
 > 但 `seclabel`、`writepid`、`keycodes` 等**不以连续 ASCII 形式出现**（LLVM 对短字符串比较做了内联/常量折叠，不能据此判“不支持”）。
 > 因此本行判定不依赖字符串表，而依赖：① A9 语义；② 这些关键字在 v79 的 6,138 B 前缀里已原样使用；
-> ③ v79 上板日志里 `init` 解析 `/init.z1.rc` **0 条** `Invalid keyword/Unknown` 错误，且服务域实际生效
+> ③ 实机日志里 `init` 解析 `/init.z1.rc` **0 条** `Invalid keyword/Unknown` 错误，且服务域实际生效（该次日志的 rc 是稍早修订，但同样含这些关键字）
 > （日志 `scontext=u:r:logpersist` 64 次、`u:r:bootanim`、`u:r:netd`、`u:r:storaged` 等，说明 `seclabel` 被应用）。
 > 新增块只用了 `exec/start/service/class/user/group/seclabel`，与文件里既有用法完全相同，**没有引入新关键字**。
 
@@ -445,16 +445,20 @@ gzip 流解码结果（`zlib.decompressobj(16|MAX_WBITS)`）：
 
 - legacy 安装两行在 **42/43 行**（`on post-fs-data`，32 行块内）：
   `exec … /system/bin/cp /hwcomposer.z1.so /vendor/lib/hw/hwcomposer.z1.so`、`exec … chmod 0644 …`。
-- 新部署 exec 在 **171 行**（第二个 `on post-fs-data` 块，170 行起）→ 42/43 < 171 ✅。
+- 新部署 exec 在 **171 行**（本文件**第三个** `on post-fs-data` 块，170 行起；前两个在 32、62 行）→ 42/43 < 171 ✅。
 - `/init.z1.rc` 里**没有**真正的 `class_start hal`（168 行只是一句注释）；它只在 `/init.rc:673`，位于 `on boot`（578 行）里。
 - `/init.rc:277` 的 `on late-init` 在 296 行 `trigger post-fs-data`，在 306–307 行才 `trigger early-boot` / `trigger boot`。
   init 的触发队列是 FIFO：post-fs-data 的**所有** action（含本文件第三个块）跑完，boot 的 action 才会跑。
 - 导入方式：`/init.rc:8` `import /init.${ro.hardware}.rc`，`androidboot.hardware=z1` ⇒ 本文件被导入；
   同文件内三个 `post-fs-data` 块按解析顺序 32 → 62 → 170 执行。
 
-**运行时证据（v79 实机日志，rc 前缀与本镜像逐字节相同）**
+**运行时证据（2026-11-09 18:38 实机日志）**
 
-| 启动样本（日志行号） | block1 `/init.z1.rc:32` | block2 `/init.z1.rc:55`（v83 为 62 行） | `class_start hal` 完成 | 余量（block2→class_start） |
+> 说明：该次启动的 `/init.z1.rc` 是当前 v79/v83 前缀的**稍早修订**（同样两个 `post-fs-data` 块、同样的 cp/chmod 行，但行号整体少 7 行：
+> 日志里的 `:44/:40/:55/:138` 对应当前文件的 `:51/:47/:62/:145`）。镜像里的 rc 与 v79 镜像逐字节相同（§4.1），
+> 所以这里用日志只证明**动作骨架与触发时序**，不用它的行号。
+
+| 启动样本（日志行号） | block1（日志 `/init.z1.rc:32`，当前文件同行） | block2（日志 `:55`，当前文件 `:62`） | `class_start hal` 完成 | 余量（block2→class_start） |
 |---|---|---|---|---|
 | #1（1426 / 1447 / 1610） | 16.985 s | 17.760 s | 20.533 s | 2.773 s |
 | #2（3192 / 3220 / 3359） | 16.649 s | 17.654 s | 19.741 s | 2.087 s |
@@ -518,18 +522,20 @@ AOSP 的 `hw_get_module()` 是 `dlsym(handle, "HMI")`（`HAL_MODULE_INFO_SYM` �
 
 `hwcomposer`/`gralloc` 的 NEEDED 里 `libc++.so`(636,332 B)、`libcutils.so`(67,476 B)、`liblog.so`(88,992 B)
 在 `/tmp/z1devlibs`（从设备 system 镜像提取的库）中都存在；`libc.so`/`libm.so`/`libdl.so` 是 bionic 基线。
-**未验证**：板子 `/system/lib` 当下的实际文件（本次审计未挂载 system 镜像；v79 日志显示这些库能正常加载）。
+**未验证**：板子 `/system/lib` 当下的实际文件（本次审计未只读挂载 system 镜像；见附录 B3）。
 
 ---
 
 ## 6. 风险发现（按影响排序，全部带字节/字段证据）
 
+| # | 等级 | 风险描述 | 字节/字段证据 | 处置建议 |
+|---|---|---|---|---|
 | R1 | 高（操作） | 审计对象在审计期间被替换：路径上现在是 5,902,336 B / `306fe78e…` 的另一版镜像；本报告只对 `5b8d9c0a…` 成立 | §1 时间线；`stat`/`sha256sum` 显示 22:11:16、22:13:15 两次写出 | 刷机前核 sha256；冻结构建后再刷 |
-| R2 | 中（部署） | 镜像内 `z1stage_boot.sh`（9,130 B / `892566a8`）是旧修订：① 无 `/dev/dma_heap/*` 节点创建，而镜像内 gralloc 会打开 `/dev/dma_heap/default_cma_region`，且 ramdisk 的 `ueventd.rc`（`d40b80e5`）**没有 dma_heap 规则**；② 自动安装把 HWC 候选永久留在 `active/`，坏 HAL 会每次开机重装 | 镜像内脚本 §2b/2c 对比当前源（11,968 B / `e2c9b9e7` 含 mknod 段）；`grep -a dma_heap ueventd.rc` 无输出；gralloc 字符串 `/dev/dma_heap/default_cma_region` | 若要启用 gralloc：先补 mknod 或换新脚本；HWC 坏了在串口 shell `rm /data/local/tmp/z1stage/active/hwcomposer.z1.so` 后重启 |
+| R2 | 中（部署） | 镜像内 `z1stage_boot.sh`（9,130 B / `892566a8`）是旧修订：① 无 `/dev/dma_heap/*` 节点创建，而镜像内 gralloc 会打开 `/dev/dma_heap/default_cma_region`，且 ramdisk 的 `ueventd.rc`（`d40b80e5`）**没有 dma_heap 规则**；② 自动安装把 HWC 候选永久留在 `active/`，坏 HAL 会每次开机重装 | 镜像内脚本 `grep -c dma_heap`=0，新脚本（11,968 B / `e2c9b9e7`）=12；`grep -a dma_heap ueventd.rc` 无输出；gralloc 字符串含 `/dev/dma_heap/default_cma_region` | 若要启用 gralloc：先补 mknod 或换新脚本；HWC 坏了在串口 shell `rm /data/local/tmp/z1stage/active/hwcomposer.z1.so` 后重启 |
 | R3 | 中（内核） | v83 的内核不是 v79 那份：zImage 不同、DTB 相同；镜像不是“只换 ramdisk”的增量 | 解压 vmlinux：v79 `#159 2026-11-09 19:45:27`，v83 `#160 21:48:02`；DTB `444c944d…` 两边相同；payload `6d879640…` vs v79 `262890c5…` | 上板首测把内核当变量；回滚用 v79 镜像 |
-| R4 | 中（显示） | 首启会把 ramdisk 里的新 HWC2（`fb45175e`）自动装到 `/vendor/lib/hw/hwcomposer.z1.so`；v79 实测里合成器一直回退原厂 ranchu 模块并 5 s 一次重启 | v79 日志：`ranchu_hw_composer hwc_open could not open framebuffer`、`vendor.hwcomposer-2-1` 反复 exit 1、全程 0 条 `z1hwc2` 日志；ramdisk 模块字符串 `z1 HWC2 (mediatek-drm)` | 看首启是否出现 `z1 HWC2`/`z1hwc2:` 日志；黑屏则删 active 副本 |
-| R5 | 低（可写性） | `/vendor` 是 `/system/vendor` 的符号链接；v79 日志里 11 条 `/proc/mounts` 快照中 `/system` 有 10 次是 `ro`，此时 legacy cp 与 apply 都会失败（只记 ERROR，不阻塞启动） | ramdisk `vendor -> /system/vendor`（cpio symlink 记录）；日志 `[/dev/block/mmcblk0p4 /system ext4 ro,…]` ×10 / `rw` ×1 | 关注 `z1stage: ERROR active/…` 行 |
-| R6 | 低（时延） | `exec` 在 post-fs-data 同步执行，z1stage 无内部超时；预算约 2.1–2.8 s（v79 5 次启动实测） | 日志：post-fs-data 16.984 s / 17.760 s → class_start hal 20.455 s；慢启动 20.420 s → 24.018 s | 看 `z1stage: done … errors=` 是否早于 class_start hal |
+| R4 | 中（显示） | 首启会把 ramdisk 里的新 HWC2（`fb45175e`）自动装到 `/vendor/lib/hw/hwcomposer.z1.so`；实机日志里实际跑的合成器是原厂 ranchu 模块（`ranchu_hw_composer …`），约 5 s 重启一次；全程 0 条 `z1hwc2` 日志 | v79 日志：`ranchu_hw_composer hwc_open could not open framebuffer`、`vendor.hwcomposer-2-1` 反复 exit 1、全程 0 条 `z1hwc2` 日志；ramdisk 模块字符串 `z1 HWC2 (mediatek-drm)` | 看首启是否出现 `z1 HWC2`/`z1hwc2:` 日志；黑屏则删 active 副本 |
+| R5 | 低（可写性） | `/vendor` 是 `/system/vendor` 的符号链接；v79 日志里 11 条 `/proc/mounts` 快照中 `/system` 有 10 条是 `ro`，此时 legacy cp 与 apply 都会失败（只记 ERROR，不阻塞启动） | ramdisk `vendor -> /system/vendor`（cpio symlink 记录）；日志 `[/dev/block/mmcblk0p4 /system ext4 ro,…]` ×10 / `rw` ×1 | 关注 `z1stage: ERROR active/…` 行 |
+| R6 | 低（时延） | `exec` 在 post-fs-data 同步执行，z1stage 无内部超时；预算约 2.1–2.8 s（v79 5 次启动实测） | 日志（5 次）：post-fs-data 16.65–20.53 s / block2 17.65–21.51 s → class_start hal 完成 19.74–24.02 s；余量 2.09–2.77 s | 看 `z1stage: done … errors=` 是否早于 class_start hal |
 | R7 | 中（安全） | `z1_rootd` 以 root 执行 `/data/local/tmp/z1stage/{cmd.sh,install.sh}`，该目录 0777、属主 shell(2000)——任何 shell 权限进程可提权到 root | 镜像内 `z1rootd.sh` 逻辑；脚本自身 `chmod 0777/chown 2000:2000` | 仅限台架；产品镜像应删掉该服务 |
 | R8 | 提示（记录） | cpio `ino=810731` 被 7 条记录共用（含 4 条新增），但 `nlink=1`，内核只在 `nlink>=2` 时做硬链接，故无实际影响；v79 里该 ino 已被 3 条共用 | cpio 头解析：`ino`/`nlink` 字段 | 无需处理 |
 | R9 | 通过（记录） | 0 条记录缺文件类型位；无重名；TRAILER 完整；类型分布 14 dir / 52 reg / 19 symlink | cpio 模式直方图 `040000/0100000/0120000`；无裸权限位 | — |
@@ -547,8 +553,8 @@ AOSP 的 `hw_get_module()` 是 `dlsym(handle, "HMI")`（`HAL_MODULE_INFO_SYM` �
    `id_bytes[0:8] == sha1(kernel_payload ‖ ramdisk_section)[:8]`：
    - v83：`808e0af58ea66672` == `sha1(4,334,579 B payload ‖ 1,561,825 B ROOTFS 段)` 前 8 字节（重算命中）；
    - v79：`29c3ae282c8137c6` == 同一规则（重算命中）。
-   其余 24 B 为 0。注意这不是 AOSP mkbootimg 的规则（AOSP 会连 `dt` 和 `len(image)` 一起哈希），
-   但 LK 不校验该字段，且 v79 用同一规则已上板，所以**无回归**。
+   其余 24 B 为 0。这不是 AOSP mkbootimg 的 id 规则（本项目打包器写的是 `sha1(kernel_payload‖ROOTFS_blob)[:8]`），
+   但 LK 根本不校验该字段，且 v79 用**同一条规则**（重算命中）已上板，所以**无回归**。
 5. **MTK 头 0xff 尾是否异常**：不是本镜像引入的——与 v79 的 ROOTFS 头逐字节比较只有 size 字段 3 个字节不同；
    0xff 尾在 v79（当前能启动）上已存在，LK 不读。
 
@@ -561,7 +567,7 @@ AOSP 的 `hw_get_module()` 是 `dlsym(handle, "HMI")`（`HAL_MODULE_INFO_SYM` �
 | V03 | 15 个头部字段逐字段解析 | 见 §2.1 表 | `python3 /tmp/z83audit/bootimg_audit.py`（输出 parse_out.txt） |
 | V04 | kernel_size = MTK KERNEL size + 512 | 4,335,091 = 4,334,579 + 512 | 同上；`struct.unpack('<I', d[0x804:0x808])` |
 | V05 | ramdisk_size = MTK ROOTFS size + 512 | 1,561,825 = 1,561,313 + 512 | 同上；ROOTFS 头在 0x423004 |
-| V06 | kernel payload = zImage‖dtb | `6d879640…` == concat sha | `cat zImage dtb | sha256sum` 对比 payload |
+| V06 | kernel payload = zImage‖dtb | `6d879640…` == concat sha | `cat zImage dtb > /tmp/k; sha256sum /tmp/k` 对比 payload |
 | V07 | payload 在 4,313,600 处切分 | 前缀==zImage，尾部==dtb（20279 B） | python 逐字节比较；dtb magic `d00dfeed` |
 | V08 | zImage ARM 头 | magic `0x016f2818`，end `0x41d200`=4,313,600 | python 读 0x24/0x2c |
 | V09 | dtb 头 | magic `d00dfeed`，totalsize 20,979 = 文件长 | python 读 dtb[:8] |
@@ -575,7 +581,7 @@ AOSP 的 `hw_get_module()` 是 `dlsym(handle, "HMI")`（`HAL_MODULE_INFO_SYM` �
 | V17 | init.z1.rc 身份 | `454e1beb…` == v79rc + `\n` + fragment | python 拼接比较；sha256sum |
 | V18 | init 语法/顺序 | 服务 9 / on 块 11 / 未知关键字 0 / tab 0 / CR 0 / 末尾 LF | `python3 /tmp/z83audit/rc_audit.py` |
 | V19 | legacy cp < 新 exec < class_start hal | 42/43 行 < 171 行；class_start hal 只在 init.rc:673（on boot） | rc_audit.py + `grep -n 'class_start hal' init.rc` |
-| V20 | 运行时顺序 | post-fs-data 16.98/17.76 s → class_start hal 20.46 s | `grep -a -n 'processing action (post-fs-data)' 日志` |
+| V20 | 运行时顺序 | block2 结束→class_start hal 完成 = 2.09–2.77 s（5 次） | `grep -a -n 'processing action (post-fs-data)' 日志` |
 | V21 | 暂存二进制 hash 链 | 镜像 == /tmp 构建输出（3/3） | `sha256sum` + `nm -D` |
 | V22 | HMI 数据符号 | hwc 0x1e9b8/128 B；gralloc 0x7c10/448 B，均 D/OBJECT/GLOBAL | `arm-linux-gnueabihf-nm -D`；`readelf -sW` |
 | V23 | ELF 头 | ELF32 LSB ARM EABI5 flags 0x5000200；.so=DYN；kms=PIE+interp | `file`；`readelf -hW/-dW/-lW` |
@@ -642,6 +648,10 @@ size=5900288 sha256=5b8d9c0a30a2f3e38eb99a697fa9e0ace9403d79cf2e698faf3ff27f36b5
 
 > 所有解析脚本都在 `/tmp/z83audit/`（临时目录）。核心解析逻辑已固化在 §8 的一行命令里；
 > 下面是各类检查实际用过的命令，报告里的每一行都能由其中一条复算。
+
+> 注：A.1–A.4 中对 `out/z1_v83/boot.img` 的读取发生在 22:02 的审计快照上；该路径现在是另一版（§1）。
+> 要复算本报告的数字，把路径换成 `/tmp/z83audit/boot_v83_5900288_RECON.img`（本次用解析段重建、sha256 已验证相同），
+> 或任何 sha256 = `5b8d9c0a…` 的副本。
 
 **A.1 头/布局/尺寸**
 
@@ -713,8 +723,7 @@ z1a9_gpt/scripts/z1kmstest/build.sh    /tmp/kms_rebuild
 ```bash
 stat -c '%y %s' out/z1_v83/boot.img out/z1_v83/stage/* z1a9_gpt/scripts/z1deploy/z1stage_boot.sh
 cp --preserve=timestamps out/z1_v83/boot.img /tmp/z83audit/boot_v83_NEW.img
-python3 - <<'EOF'   # 解新镜像的 cpio 并与审计版逐记录 diff
-EOF
+python3 -c "import struct,zlib;d=open('/tmp/z83audit/boot_v83_NEW.img','rb').read();f=struct.unpack('<8s10I16s512s8I1024s',d[:1632]);ro=((f[8]+f[1]+f[8]-1)//f[8])*f[8];print(len(zlib.decompress(d[ro+512:ro+f[3]],31)))"
 grep -a 'RESULT|' out/z1_v83/pack_boot_report.txt | tail -3
 ```
 
