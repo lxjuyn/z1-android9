@@ -108,7 +108,7 @@ extern "C" int __android_log_write(int prio, const char *tag, const char *text);
 #define LOG_TAG "z1hwc2"
 #include <log/log.h>
 
-#define Z1_HWC_VERSION "2026-11-10-r10"
+#define Z1_HWC_VERSION "2026-11-10-r12"
 
 /* ------------------------------------------------------------ constants --- */
 
@@ -400,6 +400,9 @@ struct z1_layer {
 	bool have_crop;
 	int release_fence;	/* sw_sync fence, ownership transfers to SF */
 	int import_failed_fd;	/* fd whose import already failed (-1 = none) */
+	bool use_small;		/* buffer is smaller than the kernel's 64x64 fb
+				 * minimum and is presented through a padded copy */
+	z1_dumb small;		/* the padded copy for use_small */
 	bool lost_fb;		/* present had to skip it: force CLIENT next */
 	z1_fb fb;
 };
@@ -427,6 +430,7 @@ struct z1_hwc2 : public hwc2_device_t {
 	/* drm */
 	int drm_fd;
 	const char *drm_path;
+	char drm_path_buf[64];
 	uint32_t crtc_id;
 	uint32_t connector_id;
 	uint32_t connector_type;
@@ -869,89 +873,93 @@ static int copy_into_dumb(z1_hwc2 *h, z1_dumb *d, buffer_handle_t handle)
 
 static int drm_open(z1_hwc2 *h)
 {
+	static const char *const kCards[] = { "/dev/dri/card0", "/dev/dri/card1",
+					      "/dev/dri/card2", "/dev/dri/card3" };
 	char prop[PROP_VALUE_MAX];
-	const char *path = "/dev/dri/card1";
+	char forced[PROP_VALUE_MAX];
 	drmModeRes *res = nullptr;
 	drmModePlaneRes *pres = nullptr;
 	int waited_ms = 0;
 	int i;
 
 	memset(prop, 0, sizeof(prop));
+	memset(forced, 0, sizeof(forced));
 	__system_property_get("hwc.drm.device", prop);
 	if (prop[0]) {
-		/* Static storage: the value lives for the whole process, so a
-		 * strdup() here is a one-off leak (harmless but pointless). */
-		static char dev_path[PROP_VALUE_MAX];
-
-		memcpy(dev_path, prop, sizeof(dev_path));
-		dev_path[sizeof(dev_path) - 1] = 0;
-		path = dev_path;
+		memcpy(forced, prop, sizeof(forced) - 1);
+		forced[sizeof(forced) - 1] = 0;
 	}
-	h->drm_path = path;
 
 	/*
-	 * The mediatek-drm component master binds late (~35 s on Z1: ovl/rdma/
-	 * dsi probe at 0.3 s but the aggregate device registers afterwards),
-	 * while the composer service starts at ~24 s.  Wait for the node.
+	 * The cardN numbers are NOT stable.  Both lima (render-only, no KMS) and
+	 * mediatek-drm register as /dev/dri/cardN in probe order: before the
+	 * IOMMU fix mediatek bound at ~35 s and got card1 with lima on card0;
+	 * now it binds at 0.3 s and gets card0 while lima moves to card1.
+	 * Identify the node by capability (universal planes + atomic), never by
+	 * a hard-coded name, and only then take DRM master.
 	 */
 	for (i = 0; i < 120; i++) {
-		h->drm_fd = open(path, O_RDWR | O_CLOEXEC);
-		if (h->drm_fd < 0) {
-			if (errno != ENOENT && errno != ENXIO) {
-				klogf(0, "z1hwc2: open(%s) failed: %s\n", path,
-				      strerror(errno));
-				return -1;
-			}
-			if (i == 0 || i % 20 == 19)
-				klogf(1, "z1hwc2: waiting for %s (%d ms)\n",
-				      path, waited_ms);
-			usleep(500 * 1000);
-			waited_ms += 500;
-			continue;
-		}
-		/*
-		 * DRM_IOCTL_MODE_ATOMIC is DRM_MASTER-gated (drm_ioctl.c), so
-		 * this process must own the master.  The kernel hands master to
-		 * the FIRST opener without requiring CAP_SYS_ADMIN
-		 * (drm_auth.c: drm_master_open() -> "if there is no current
-		 * master make this fd it"), and the composer service only has
-		 * CAP_SYS_NICE, so the only way to (re)acquire it is to reopen.
-		 * Another short-lived opener (the z1drmtest probe, gralloc's dumb
-		 * backend) may win the race; retry until it is released.
-		 */
-		if (drmSetMaster(h->drm_fd) == 0)
-			break;
-		{
-			int err = errno;
+		size_t c;
 
-			klogf(1, "z1hwc2: %s open but not DRM master yet (%s); "
-			     "reopening to acquire it\n", path, strerror(err));
+		for (c = 0; c <= sizeof(kCards) / sizeof(kCards[0]); c++) {
+			const char *path = (c == 0)
+				? (forced[0] ? forced : NULL) : kCards[c - 1];
+			drmVersion *v;
+			int fd;
+
+			if (!path)
+				continue;
+			fd = open(path, O_RDWR | O_CLOEXEC);
+			if (fd < 0)
+				continue;
+			if (drmSetClientCap(fd, DRM_CLIENT_CAP_UNIVERSAL_PLANES, 1) ||
+			    drmSetClientCap(fd, DRM_CLIENT_CAP_ATOMIC, 1)) {
+				/* e.g. lima: a render node with no KMS at all */
+				close(fd);
+				continue;
+			}
+			/*
+			 * DRM_IOCTL_MODE_ATOMIC is DRM_MASTER-gated
+			 * (drm_ioctl.c).  The kernel hands master to the FIRST
+			 * opener without CAP_SYS_ADMIN (drm_auth.c:
+			 * drm_master_open()), and the composer only has
+			 * CAP_SYS_NICE, so if somebody else holds it we must
+			 * close and retry until they release it.
+			 */
+			if (drmSetMaster(fd) != 0) {
+				close(fd);
+				continue;
+			}
+			h->drm_fd = fd;
+			memcpy(h->drm_path_buf, path, sizeof(h->drm_path_buf) - 1);
+			h->drm_path_buf[sizeof(h->drm_path_buf) - 1] = 0;
+			h->drm_path = h->drm_path_buf;
+			v = drmGetVersion(fd);
+			klogf(1, "z1hwc2: opened %s fd=%d driver=%s "
+			     "(waited %d ms)\n", path, fd,
+			      v && v->name ? v->name : "?", waited_ms);
+			if (v)
+				drmFreeVersion(v);
+			break;
 		}
-		close(h->drm_fd);
-		h->drm_fd = -1;
-		usleep(250 * 1000);
-		waited_ms += 250;
+		if (h->drm_fd >= 0)
+			break;
+		if (i == 0 || i % 20 == 19)
+			klogf(1, "z1hwc2: waiting for an atomic DRM node "
+			     "(%d ms elapsed)\n", waited_ms);
+		usleep(500 * 1000);
+		waited_ms += 500;
 	}
 	if (h->drm_fd < 0) {
-		klogf(0, "z1hwc2: cannot open %s as DRM master: %s\n", path,
-		      strerror(errno));
+		klogf(0, "z1hwc2: no atomic-capable DRM node became available "
+		     "within %d ms\n", waited_ms);
 		return -1;
-	}
-
-	{
-		drmVersion *v = drmGetVersion(h->drm_fd);
-
-		if (v) {
-			klogf(1, "z1hwc2: opened %s fd=%d driver=%s (waited %d ms)\n",
-			      path, h->drm_fd, v->name ? v->name : "?", waited_ms);
-			drmFreeVersion(v);
-		}
 	}
 
 	if (drmSetClientCap(h->drm_fd, DRM_CLIENT_CAP_UNIVERSAL_PLANES, 1) ||
 	    drmSetClientCap(h->drm_fd, DRM_CLIENT_CAP_ATOMIC, 1)) {
-		klogf(0, "z1hwc2: %s has no atomic modesetting (%s)\n", path,
-		      strerror(errno));
+		klogf(0, "z1hwc2: %s has no atomic modesetting (%s)\n",
+		      h->drm_path, strerror(errno));
 		return -1;
 	}
 
@@ -2032,6 +2040,70 @@ static int32_t z1_get_client_target_support(hwc2_device_t *d,
 /* -------------------------------------------------------------- validate --- */
 
 /*
+ * The kernel refuses framebuffers smaller than 64x64 in either axis
+ * (mtk_drm_drv.c sets mode_config.min_width/min_height = 64 and
+ * drm_internal_framebuffer_create() rejects anything below that with
+ * -EINVAL).  A status bar is 240x24, so it can never be scanned directly --
+ * and because CLIENT layers must sit at the bottom of the stack, demoting it
+ * would force the whole screen back to client composition.
+ *
+ * Instead: copy the small layer into a dumb buffer that is padded to at least
+ * 64 rows and hand THAT to the OVL, with a source rectangle covering only the
+ * real content.  A 240x24 status bar is 23 KiB, so this costs almost nothing
+ * and keeps every other layer on hardware planes.
+ */
+static int small_layer_sync(z1_hwc2 *h, z1_layer *l)
+{
+	struct z1_handle *gh = (struct z1_handle *)l->handle;
+	struct dma_buf_sync sync;
+	uint32_t fourcc, aw, ah, src_pitch, bytes;
+	int bpp, ret = 0, y;
+	uint8_t *src, *dst;
+	bool synced = false;
+
+	if (!gh)
+		return -EINVAL;
+	bpp = hal_bpp(gh->format);
+	fourcc = hal_to_drm(gh->format);
+	if (!bpp || !fourcc)
+		return -EINVAL;
+
+	aw = ((uint32_t)gh->width + 15u) & ~15u;
+	ah = (uint32_t)gh->height < 64u ? 64u : (uint32_t)gh->height;
+	if (dumb_ensure(h, &l->small, aw, ah, fourcc, gh->format) != 0)
+		return -ENOMEM;
+
+	src_pitch = (uint32_t)gh->stride * (uint32_t)bpp;
+	bytes = (uint32_t)gh->width * (uint32_t)bpp;
+	if (gh->size <= 0 || gh->offset < 0 ||
+	    src_pitch * (uint32_t)gh->height + (uint32_t)gh->offset >
+		    (uint32_t)gh->size || bytes > src_pitch)
+		return -EINVAL;
+
+	src = (uint8_t *)mmap(nullptr, (size_t)gh->size, PROT_READ, MAP_SHARED,
+			      gh->fd, 0);
+	if (src == MAP_FAILED)
+		return -errno;
+	memset(&sync, 0, sizeof(sync));
+	sync.flags = DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ;
+	if (ioctl(gh->fd, DMA_BUF_IOCTL_SYNC, &sync) == 0)
+		synced = true;
+
+	dst = (uint8_t *)l->small.map;
+	for (y = 0; y < gh->height; y++)
+		memcpy(dst + (size_t)y * l->small.pitch,
+		       src + (size_t)gh->offset + (size_t)y * src_pitch, bytes);
+	__sync_synchronize();
+
+	if (synced) {
+		sync.flags = DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ;
+		(void)ioctl(gh->fd, DMA_BUF_IOCTL_SYNC, &sync);
+	}
+	munmap(src, (size_t)gh->size);
+	return ret;
+}
+
+/*
  * True when this layer can be the bottom-most OVL plane with no client target
  * underneath: it must cover the whole display and be fully opaque.  Otherwise
  * whatever the OVL shows outside its rectangle is undefined, and the safe
@@ -2125,6 +2197,14 @@ static int32_t z1_validate_display(hwc2_device_t *d, hwc2_display_t display,
 
 			probe.importable = 1;
 			if (z1_policy_device_block_reason(&probe) == 0) {
+				if (gh->width < 64 || gh->height < 64) {
+					/* below the kernel's fb minimum: padded
+					 * copy instead of a scanout import */
+					l->use_small = true;
+					p->importable = 1;
+					goto next_layer;
+				}
+				l->use_small = false;
 				if (l->import_failed_fd == gh->fd) {
 					/* Already known bad for this exact
 					 * buffer: do not hammer the kernel with
@@ -2144,6 +2224,7 @@ static int32_t z1_validate_display(hwc2_device_t *d, hwc2_display_t display,
 						l->import_failed_fd = gh->fd;
 				}
 			}
+next_layer:
 			/* A layer whose framebuffer disappeared during present must
 			 * be reported back as CLIENT, otherwise it silently stays
 			 * missing from the screen. */
@@ -2393,6 +2474,31 @@ static int32_t z1_present_display(hwc2_device_t *d, hwc2_display_t display,
 				      (uint64_t)l->id);
 				continue;
 			}
+		}
+		if (l->use_small) {
+			struct z1_handle *gh = (struct z1_handle *)l->handle;
+			hwc_frect_t crop;
+
+			if (!gh || small_layer_sync(h, l) != 0) {
+				l->lost_fb = true;
+				klogf(0, "z1hwc2: small layer %" PRIu64
+				     " copy failed, skipping\n",
+				      (uint64_t)l->id);
+				continue;
+			}
+			memset(&crop, 0, sizeof(crop));
+			crop.right = (float)gh->width;
+			crop.bottom = (float)gh->height;
+			program_plane(h, req, slot, l->small.fb_id,
+				      l->frame.left, l->frame.top,
+				      l->frame.right - l->frame.left,
+				      l->frame.bottom - l->frame.top,
+				      &crop, l->alpha, l->blend,
+				      l->small.fourcc == DRM_FORMAT_ABGR8888 ||
+					      l->small.fourcc == DRM_FORMAT_ARGB8888);
+			scanned.push_back(l);
+			slot++;
+			continue;
 		}
 		program_plane(h, req, slot, l->fb.fb_id,
 			      l->frame.left, l->frame.top,
