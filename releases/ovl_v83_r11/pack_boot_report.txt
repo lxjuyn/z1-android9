@@ -1,0 +1,357 @@
+== pack_boot: z1_v83 ==
+
+  template     /home/lxj/claude/6572/out/z1_v79/boot.img
+               5808128 B, sha256 d332b5e962438b8f07efa22ebb785f895516454fb3cc8548990d11c75bf0fc84
+  base rootfs  /tmp/rootfs_v79.bin
+               1470144 B, sha256 9f069ed1d3945b2d3ad7370e61d3ef1b4db69ecb94d8481c93236087a3b2b2c3
+  zImage       /home/lxj/claude/6572/fork_linux/arch/arm/boot/zImage
+               4309504 B, sha256 11eb75e490c0c49cbe01fc311286ff8a7fcbd90ca9d8bd569e07dfd4229a7da0
+  dtb          /home/lxj/claude/6572/fork_linux/arch/arm/boot/dts/mediatek/mt6572-z1.dtb
+               21003 B, sha256 cf7b5928ee41e69ad7ce361d73e7e479492a2cc0cc0af8fae5040c8874705d39
+  init fragment /home/lxj/claude/6572/z1a9_gpt/scripts/z1deploy/init_fragment.rc (1430 B)
+  stage dir    /tmp/stage_r11
+  output       /tmp/recon_r11.img
+  report       /tmp/recon_r11_report.txt
+
+== 1. /init.z1.rc: extract, append the fragment, re-parse ==
+== init.z1.rc patch ==
+  original: 6138 bytes, 152 lines
+  fragment: 1430 bytes, appended at EOF (a separate 'on post-fs-data' block)
+  rc syntax: 10 on-blocks, 28 action commands, 8 services, all services have a class
+  action commands used: exec, exec_background, mount_all, restorecon_recursive, setprop, start, swapon_all, write
+  rc syntax: 11 on-blocks, 30 action commands, 9 services, all services have a class
+  action commands used: exec, exec_background, mount_all, restorecon_recursive, setprop, start, swapon_all, write
+  found line 171: exec u:r:init:s0 root root -- /system/bin/sh /z1stage_boot.sh
+  found line 172: start z1_rootd
+  found line 176: service z1_rootd /system/bin/sh /z1rootd.sh
+  wrote patched rc: /tmp/z1pack.vdfgW5/init.z1.rc.patched (7569 bytes)
+
+== diff against the original ==
+--- init.z1.rc (original)
++++ init.z1.rc (patched)
+@@ -151,2 +151,30 @@
+     group root wifi inet
+     seclabel u:r:init:s0
++
++# ============================================================================
++# z1deploy: deployment / remote-control channel
++# ============================================================================
++# Appended verbatim to the end of /init.z1.rc by
++# z1a9_gpt/scripts/z1deploy/pack_boot.sh.
++#
++# Why a separate "on post-fs-data" block instead of adding commands to the
++# first one: init keeps one queue per trigger and executes the queued actions
++# in parse order, and actions from the same file run in file order.  This
++# block therefore runs AFTER the legacy /hwcomposer.z1.so install lines above
++# it.  `exec` is synchronous in this init (it logs "SVC_EXEC pid ... started;
++# waiting..." and "Command 'exec ...' ... took Nms"), so the legacy copy has
++# finished before /z1stage_boot.sh starts and the active/ set deterministically
++# wins.  Measured on the 2026-11-09 boot: post-fs-data actions at 16.98-19.9 s,
++# class_start hal (starts vendor.gralloc-2-0 / vendor.hwcomposer-2-1) at
++# 20.46 s -- a sub-second script here still lands >2 s before the composer.
++on post-fs-data
++    exec u:r:init:s0 root root -- /system/bin/sh /z1stage_boot.sh
++    start z1_rootd
++
++# Root command daemon for the serial-console operator (see z1rootd.sh).
++# No "oneshot": it loops forever and init must restart it if it ever dies.
++service z1_rootd /system/bin/sh /z1rootd.sh
++    class core
++    user root
++    group root
++    seclabel u:r:init:s0
+
+
+== 2. record set to bake in ==
+  replace init.z1.rc  7569 B  mode 0100750  sha256 454e1beb23659a0be5562b00125d956dc587d8e30c1f2cb97396c367c4a5bcb9
+  add     z1stage_boot.sh  12253 B  mode 0100755  sha256 3379f48078a8144db640ff7ebdb5f1c0d7d7df4e102b2b0a94907b1d5816c88c
+  add     z1rootd.sh  6240 B  mode 0100755  sha256 0ab441da8956130adbe691f6339aa7df775a9a3b23a4c7f9fd2fe384b9fd374a
+  replace hwcomposer.z1.so  145916 B  mode 0100644  sha256 8966bc6618d76666b48c0faed044fadffe7ee0316ee2bd36dfd98b30035090af
+  add     gralloc.z1.so  28548 B  mode 0100644  sha256 0ed9fb2b573bfe4bf2e533b7f709ad054a1dc95482d420aca184d6c95823b77d
+  add     z1kmstest  122976 B  mode 0100755  sha256 1954132627e18d96cc5fe4d2c2baa652d122aa0c2df75618c94fa57b7820ccaf
+
+== 3. rebuilding the ramdisk (record-level edit) ==
+wrote /tmp/z1pack.vdfgW5/rootfs.new.bin: 1564682 bytes, initrd-end 0x8427de0a
+
+== 4. verifying the produced ramdisk ==
+== produced ramdisk records ==
+   0 .                                        0 B  mode 040775   sha256 e3b0c44298fc
+   1 plat_hwservice_contexts               7212 B  mode 0100644  sha256 852ec77ce415
+   2 product                                 15 B  mode 0120777  sha256 c0b274b992ff
+   3 z1_audio_probe.sh                      700 B  mode 0100755  sha256 8eaee82dc2f3
+   4 sbin                                     0 B  mode 040750   sha256 e3b0c44298fc
+   5 plat_service_contexts                14700 B  mode 0100644  sha256 19a3921576be
+   6 z1_art_seed.sh                        1528 B  mode 0100755  sha256 2071e548f2a3
+   7 ueventd.z1.rc                          466 B  mode 0100644  sha256 1cb150de0952
+   8 plat_property_contexts                7102 B  mode 0100644  sha256 b23709b08626
+   9 dev                                      0 B  mode 040755   sha256 e3b0c44298fc
+  10 fstab.z1                              1232 B  mode 0100640  sha256 529753c44e37
+  11 charger                                 13 B  mode 0120777  sha256 20c053e10688
+  12 d                                       17 B  mode 0120777  sha256 5a5c30126e2e
+  13 z1_gps_prep.sh                        2416 B  mode 0100755  sha256 4042b0557905
+  14 ueventd.rc                            5359 B  mode 0100644  sha256 d40b80e5c106
+  15 z1_wifi_connect.sh                    3759 B  mode 0100755  sha256 f7a401b05159
+  16 z1_boot_heal.sh                        892 B  mode 0100755  sha256 e083ecbb9c14
+  17 vendor_file_contexts                  7165 B  mode 0100644  sha256 1d2c6c5ddc5d
+  18 plat_seapp_contexts                   1551 B  mode 0100644  sha256 62ef07f4b361
+  19 z1_fbcon_takeover.sh                  1437 B  mode 0100755  sha256 c56a3843e081
+  20 z1_touch_load.sh                      2948 B  mode 0100755  sha256 73a415c88d62
+  21 z1_logpersist.sh                      2718 B  mode 0100755  sha256 1aa6f042b26f
+  22 z1_provision.sh                       1483 B  mode 0100755  sha256 8f5fe4869ce8
+  23 z1_bootdiag                         406756 B  mode 0100755  sha256 3759abd5894a
+  24 proc                                     0 B  mode 040755   sha256 e3b0c44298fc
+  25 oem                                      0 B  mode 040755   sha256 e3b0c44298fc
+  26 storage                                  0 B  mode 040751   sha256 e3b0c44298fc
+  27 system                                   0 B  mode 040755   sha256 e3b0c44298fc
+  28 sepolicy                            384652 B  mode 0100644  sha256 e01a4c589f13
+  29 config                                   0 B  mode 040555   sha256 e3b0c44298fc
+  30 init.zygote32.rc                       511 B  mode 0100750  sha256 2c49f23834f3
+  31 init.rc                              29382 B  mode 0100750  sha256 e7b97d1a10b3
+  32 cache                                    0 B  mode 040770   sha256 e3b0c44298fc
+  33 sys                                      0 B  mode 040755   sha256 e3b0c44298fc
+  34 acct                                     0 B  mode 040755   sha256 e3b0c44298fc
+  35 init.environ.rc                       1154 B  mode 0100750  sha256 475d3a9df35b
+  36 bin                                     11 B  mode 0120777  sha256 5a846af391ce
+  37 init                               1637512 B  mode 0100750  sha256 285382ea87da
+  38 sdcard                                  21 B  mode 0120777  sha256 3c52a3129630
+  39 z1_klog_relay.sh                      4851 B  mode 0100755  sha256 19dd1df2fd5a
+  40 z1_wifi_pre.sh                        3103 B  mode 0100755  sha256 d80e6aab3ba5
+  41 z1_pm_guard.sh                        2228 B  mode 0100755  sha256 d74c579b4476
+  42 regulatory.db                         6248 B  mode 0100644  sha256 872b1654f84b
+  43 odm                                      0 B  mode 040755   sha256 e3b0c44298fc
+  44 z1_sf_dump.sh                          594 B  mode 0100755  sha256 7bfe5e936c82
+  45 vendor_seapp_contexts                    0 B  mode 0100644  sha256 e3b0c44298fc
+  46 z1_cst836u.ko                        14068 B  mode 0100644  sha256 b48245e3be13
+  47 z1_radio_finish.sh                    3703 B  mode 0100755  sha256 9adada4b764d
+  48 vndservice_contexts                     65 B  mode 0100644  sha256 81594a08b688
+  49 bugreports                              50 B  mode 0120777  sha256 760916c0eec6
+  50 wifi-nvram-WIFI.bin                    512 B  mode 0100644  sha256 d28c5264265f
+  51 data                                     0 B  mode 040771   sha256 e3b0c44298fc
+  52 z1_heartbeat.sh                       1421 B  mode 0100755  sha256 4a24dd003552
+  53 default.prop                          1598 B  mode 0100600  sha256 38f4799fb9a1
+  54 init.z1.network.rc                    6675 B  mode 0100750  sha256 358c274d37f3
+  55 vendor                                  14 B  mode 0120777  sha256 ebc95e6449b8
+  56 z1_gpio_hunt.ko                      18592 B  mode 0100644  sha256 1935d5651018
+  57 z1_wifi_probe.sh                      6467 B  mode 0100755  sha256 cbbbac7b55dd
+  58 init.z1.rc                            7569 B  mode 0100750  sha256 454e1beb2365
+  59 vendor_property_contexts               218 B  mode 0100644  sha256 ad5da6b58f63
+  60 vendor_hwservice_contexts             1989 B  mode 0100644  sha256 383597d8c5d8
+  61 z1_display_takeover.sh                 825 B  mode 0100755  sha256 f71e0393661c
+  62 plat_file_contexts                   25053 B  mode 0100644  sha256 06e5046601ec
+  63 vendor_service_contexts                  0 B  mode 0100644  sha256 e3b0c44298fc
+  64 etc                                     11 B  mode 0120777  sha256 fa7072dfb48c
+  65 mnt                                      0 B  mode 040755   sha256 e3b0c44298fc
+  66 z1_wpa_start.sh                       3664 B  mode 0100755  sha256 62b487207a3f
+  67 odm/app                                 15 B  mode 0120777  sha256 6baf243aaa7f
+  68 odm/firmware                            20 B  mode 0120777  sha256 25802d5eebbc
+  69 odm/lib64                               17 B  mode 0120777  sha256 03d9fef5f236
+  70 odm/overlay                             19 B  mode 0120777  sha256 67f67e690ce3
+  71 odm/bin                                 15 B  mode 0120777  sha256 ff48448a8a94
+  72 odm/framework                           21 B  mode 0120777  sha256 010b5a62527a
+  73 odm/lib                                 15 B  mode 0120777  sha256 f3f2c93f9f84
+  74 odm/priv-app                            20 B  mode 0120777  sha256 b643fcc5122e
+  75 odm/etc                                 15 B  mode 0120777  sha256 33c86902a880
+  76 sbin/watchdogd                           7 B  mode 0120777  sha256 2d2c3fd77b63
+  77 sbin/ueventd                             7 B  mode 0120777  sha256 2d2c3fd77b63
+  78 z1drmtest                            81260 B  mode 0100755  sha256 adaa9ddbc451
+  79 hwcomposer.z1.so                    145916 B  mode 0100644  sha256 8966bc6618d7
+  80 z1stage_boot.sh                      12253 B  mode 0100755  sha256 3379f48078a8
+  81 z1rootd.sh                            6240 B  mode 0100755  sha256 0ab441da8956
+  82 gralloc.z1.so                        28548 B  mode 0100644  sha256 0ed9fb2b573b
+  83 z1kmstest                           122976 B  mode 0100755  sha256 1954132627e1
+  84 TRAILER!!!                               0 B  mode 0100000  sha256 e3b0c44298fc
+  records=85 body=3040328 trailing=72 bytes
+
+== expected staged records ==
+  OK   init.z1.rc                   7569 B  mode 0100750  sha256 454e1beb2365
+  OK   z1stage_boot.sh             12253 B  mode 0100755  sha256 3379f48078a8
+  OK   z1rootd.sh                   6240 B  mode 0100755  sha256 0ab441da8956
+  OK   hwcomposer.z1.so           145916 B  mode 0100644  sha256 8966bc6618d7
+  OK   gralloc.z1.so               28548 B  mode 0100644  sha256 0ed9fb2b573b
+  OK   z1kmstest                  122976 B  mode 0100755  sha256 1954132627e1
+  OK   init.z1.rc line 171: exec u:r:init:s0 root root -- /system/bin/sh /z1stage_boot.sh
+  OK   init.z1.rc line 172: start z1_rootd
+  OK   init.z1.rc line 176: service z1_rootd /system/bin/sh /z1rootd.sh
+
+== untouched-record integrity ==
+  OK   2 replaced, 4 added, 78 untouched records byte-identical
+  OK   new records inserted before TRAILER: z1stage_boot.sh, z1rootd.sh, gralloc.z1.so, z1kmstest
+  OK   cpio trailer preserved (72 trailing bytes)
+  OK   gzip blob: 1564170 bytes (MTK ROOTFS header size field matches)
+RESULT|rootfs=/tmp/z1pack.vdfgW5/rootfs.new.bin|records=85|added=4|replaced=2|untouched=78|gz=1564170|blob=1564682
+
+== 5. packing boot.img ==
+kernel  = zImage 4309504 + dtb 21003 = 4330507
+rootfs  = header 512 + gzip 1564170 = 1564682
+image   = 5900288 bytes  (limit 6291456)
+initrd-end should be 0x8427e00a
+
+== 6. verifying the final boot.img (reverse check of the embedded rc) ==
+== boot.img header ==
+  image     5900288 bytes  name='z1_v83'  page=2048
+  cmdline   console=ttyS0,921600n8 root=/dev/ram panic=10 loglevel=7 clk_ignore_unused regulator_ignore_unused pd_ignore_unused oops=panic sysrq_always_enabled rdinit=/init earlycon=mtk8250,0x11005000 androidboot.hardware=z1 androidboot.selinux=permissive firmware_class.path=/system/etc/firmware printk.devkmsg=on iomem=relaxed
+
+== MTK headers ==
+  KERNEL    MTK size 4330507, Android kernel_size 4331019 = MTK + 512  OK
+  kernel    zImage 4309504 + dtb 21003 = 4330507 B, sha256 be9cb8f8ee8766ea4078df2db72ac1b68a43efa4fd1e7d827746ebe61532262f  OK
+  ROOTFS    MTK size 1564170, Android ramdisk_size 1564682 = MTK + 512  OK
+  rootfs    embedded blob sha256 272ce9cf78d3852224c04241579c5f573f2b238b9bafc4f01a9041a5b9ac8ff5  OK
+  id field  hdr[576:584]=1113d5fb932fa7e2 == sha1(kernel+rootfs)[:8]  OK
+            (z1_pack_mtk_bootimg.py scheme; not the legacy mkbootimg rule, which LK ignores)
+  size      5900288 bytes < 6000000 limit (partition 6291456)  OK
+
+== reverse check: records inside the FINAL boot.img ==
+   0 .                                        0 B  mode 040775   sha256 e3b0c44298fc
+   1 plat_hwservice_contexts               7212 B  mode 0100644  sha256 852ec77ce415
+   2 product                                 15 B  mode 0120777  sha256 c0b274b992ff
+   3 z1_audio_probe.sh                      700 B  mode 0100755  sha256 8eaee82dc2f3
+   4 sbin                                     0 B  mode 040750   sha256 e3b0c44298fc
+   5 plat_service_contexts                14700 B  mode 0100644  sha256 19a3921576be
+   6 z1_art_seed.sh                        1528 B  mode 0100755  sha256 2071e548f2a3
+   7 ueventd.z1.rc                          466 B  mode 0100644  sha256 1cb150de0952
+   8 plat_property_contexts                7102 B  mode 0100644  sha256 b23709b08626
+   9 dev                                      0 B  mode 040755   sha256 e3b0c44298fc
+  10 fstab.z1                              1232 B  mode 0100640  sha256 529753c44e37
+  11 charger                                 13 B  mode 0120777  sha256 20c053e10688
+  12 d                                       17 B  mode 0120777  sha256 5a5c30126e2e
+  13 z1_gps_prep.sh                        2416 B  mode 0100755  sha256 4042b0557905
+  14 ueventd.rc                            5359 B  mode 0100644  sha256 d40b80e5c106
+  15 z1_wifi_connect.sh                    3759 B  mode 0100755  sha256 f7a401b05159
+  16 z1_boot_heal.sh                        892 B  mode 0100755  sha256 e083ecbb9c14
+  17 vendor_file_contexts                  7165 B  mode 0100644  sha256 1d2c6c5ddc5d
+  18 plat_seapp_contexts                   1551 B  mode 0100644  sha256 62ef07f4b361
+  19 z1_fbcon_takeover.sh                  1437 B  mode 0100755  sha256 c56a3843e081
+  20 z1_touch_load.sh                      2948 B  mode 0100755  sha256 73a415c88d62
+  21 z1_logpersist.sh                      2718 B  mode 0100755  sha256 1aa6f042b26f
+  22 z1_provision.sh                       1483 B  mode 0100755  sha256 8f5fe4869ce8
+  23 z1_bootdiag                         406756 B  mode 0100755  sha256 3759abd5894a
+  24 proc                                     0 B  mode 040755   sha256 e3b0c44298fc
+  25 oem                                      0 B  mode 040755   sha256 e3b0c44298fc
+  26 storage                                  0 B  mode 040751   sha256 e3b0c44298fc
+  27 system                                   0 B  mode 040755   sha256 e3b0c44298fc
+  28 sepolicy                            384652 B  mode 0100644  sha256 e01a4c589f13
+  29 config                                   0 B  mode 040555   sha256 e3b0c44298fc
+  30 init.zygote32.rc                       511 B  mode 0100750  sha256 2c49f23834f3
+  31 init.rc                              29382 B  mode 0100750  sha256 e7b97d1a10b3
+  32 cache                                    0 B  mode 040770   sha256 e3b0c44298fc
+  33 sys                                      0 B  mode 040755   sha256 e3b0c44298fc
+  34 acct                                     0 B  mode 040755   sha256 e3b0c44298fc
+  35 init.environ.rc                       1154 B  mode 0100750  sha256 475d3a9df35b
+  36 bin                                     11 B  mode 0120777  sha256 5a846af391ce
+  37 init                               1637512 B  mode 0100750  sha256 285382ea87da
+  38 sdcard                                  21 B  mode 0120777  sha256 3c52a3129630
+  39 z1_klog_relay.sh                      4851 B  mode 0100755  sha256 19dd1df2fd5a
+  40 z1_wifi_pre.sh                        3103 B  mode 0100755  sha256 d80e6aab3ba5
+  41 z1_pm_guard.sh                        2228 B  mode 0100755  sha256 d74c579b4476
+  42 regulatory.db                         6248 B  mode 0100644  sha256 872b1654f84b
+  43 odm                                      0 B  mode 040755   sha256 e3b0c44298fc
+  44 z1_sf_dump.sh                          594 B  mode 0100755  sha256 7bfe5e936c82
+  45 vendor_seapp_contexts                    0 B  mode 0100644  sha256 e3b0c44298fc
+  46 z1_cst836u.ko                        14068 B  mode 0100644  sha256 b48245e3be13
+  47 z1_radio_finish.sh                    3703 B  mode 0100755  sha256 9adada4b764d
+  48 vndservice_contexts                     65 B  mode 0100644  sha256 81594a08b688
+  49 bugreports                              50 B  mode 0120777  sha256 760916c0eec6
+  50 wifi-nvram-WIFI.bin                    512 B  mode 0100644  sha256 d28c5264265f
+  51 data                                     0 B  mode 040771   sha256 e3b0c44298fc
+  52 z1_heartbeat.sh                       1421 B  mode 0100755  sha256 4a24dd003552
+  53 default.prop                          1598 B  mode 0100600  sha256 38f4799fb9a1
+  54 init.z1.network.rc                    6675 B  mode 0100750  sha256 358c274d37f3
+  55 vendor                                  14 B  mode 0120777  sha256 ebc95e6449b8
+  56 z1_gpio_hunt.ko                      18592 B  mode 0100644  sha256 1935d5651018
+  57 z1_wifi_probe.sh                      6467 B  mode 0100755  sha256 cbbbac7b55dd
+  58 init.z1.rc                            7569 B  mode 0100750  sha256 454e1beb2365
+  59 vendor_property_contexts               218 B  mode 0100644  sha256 ad5da6b58f63
+  60 vendor_hwservice_contexts             1989 B  mode 0100644  sha256 383597d8c5d8
+  61 z1_display_takeover.sh                 825 B  mode 0100755  sha256 f71e0393661c
+  62 plat_file_contexts                   25053 B  mode 0100644  sha256 06e5046601ec
+  63 vendor_service_contexts                  0 B  mode 0100644  sha256 e3b0c44298fc
+  64 etc                                     11 B  mode 0120777  sha256 fa7072dfb48c
+  65 mnt                                      0 B  mode 040755   sha256 e3b0c44298fc
+  66 z1_wpa_start.sh                       3664 B  mode 0100755  sha256 62b487207a3f
+  67 odm/app                                 15 B  mode 0120777  sha256 6baf243aaa7f
+  68 odm/firmware                            20 B  mode 0120777  sha256 25802d5eebbc
+  69 odm/lib64                               17 B  mode 0120777  sha256 03d9fef5f236
+  70 odm/overlay                             19 B  mode 0120777  sha256 67f67e690ce3
+  71 odm/bin                                 15 B  mode 0120777  sha256 ff48448a8a94
+  72 odm/framework                           21 B  mode 0120777  sha256 010b5a62527a
+  73 odm/lib                                 15 B  mode 0120777  sha256 f3f2c93f9f84
+  74 odm/priv-app                            20 B  mode 0120777  sha256 b643fcc5122e
+  75 odm/etc                                 15 B  mode 0120777  sha256 33c86902a880
+  76 sbin/watchdogd                           7 B  mode 0120777  sha256 2d2c3fd77b63
+  77 sbin/ueventd                             7 B  mode 0120777  sha256 2d2c3fd77b63
+  78 z1drmtest                            81260 B  mode 0100755  sha256 adaa9ddbc451
+  79 hwcomposer.z1.so                    145916 B  mode 0100644  sha256 8966bc6618d7
+  80 z1stage_boot.sh                      12253 B  mode 0100755  sha256 3379f48078a8
+  81 z1rootd.sh                            6240 B  mode 0100755  sha256 0ab441da8956
+  82 gralloc.z1.so                        28548 B  mode 0100644  sha256 0ed9fb2b573b
+  83 z1kmstest                           122976 B  mode 0100755  sha256 1954132627e1
+  84 TRAILER!!!                               0 B  mode 0100000  sha256 e3b0c44298fc
+  OK   init.z1.rc                   7569 B  mode 0100750  sha256 454e1beb2365
+  OK   z1stage_boot.sh             12253 B  mode 0100755  sha256 3379f48078a8
+  OK   z1rootd.sh                   6240 B  mode 0100755  sha256 0ab441da8956
+  OK   hwcomposer.z1.so           145916 B  mode 0100644  sha256 8966bc6618d7
+  OK   gralloc.z1.so               28548 B  mode 0100644  sha256 0ed9fb2b573b
+  OK   z1kmstest                  122976 B  mode 0100755  sha256 1954132627e1
+
+== reverse check: init.z1.rc extracted from the FINAL boot.img ==
+  7569 bytes, sha256 454e1beb23659a0be5562b00125d956dc587d8e30c1f2cb97396c367c4a5bcb9
+  rc syntax: 11 on-blocks, 30 action commands, 9 services, all services have a class
+  action commands used: exec, exec_background, mount_all, restorecon_recursive, setprop, start, swapon_all, write
+  deployment block = lines 154..180 of the embedded rc:
+    154  # ============================================================================
+    155  # z1deploy: deployment / remote-control channel
+    156  # ============================================================================
+    157  # Appended verbatim to the end of /init.z1.rc by
+    158  # z1a9_gpt/scripts/z1deploy/pack_boot.sh.
+    159  #
+    160  # Why a separate "on post-fs-data" block instead of adding commands to the
+    161  # first one: init keeps one queue per trigger and executes the queued actions
+    162  # in parse order, and actions from the same file run in file order.  This
+    163  # block therefore runs AFTER the legacy /hwcomposer.z1.so install lines above
+    164  # it.  `exec` is synchronous in this init (it logs "SVC_EXEC pid ... started;
+    165  # waiting..." and "Command 'exec ...' ... took Nms"), so the legacy copy has
+    166  # finished before /z1stage_boot.sh starts and the active/ set deterministically
+    167  # wins.  Measured on the 2026-11-09 boot: post-fs-data actions at 16.98-19.9 s,
+    168  # class_start hal (starts vendor.gralloc-2-0 / vendor.hwcomposer-2-1) at
+    169  # 20.46 s -- a sub-second script here still lands >2 s before the composer.
+    170  on post-fs-data
+    171      exec u:r:init:s0 root root -- /system/bin/sh /z1stage_boot.sh
+    172      start z1_rootd
+    173  
+    174  # Root command daemon for the serial-console operator (see z1rootd.sh).
+    175  # No "oneshot": it loops forever and init must restart it if it ever dies.
+    176  service z1_rootd /system/bin/sh /z1rootd.sh
+    177      class core
+    178      user root
+    179      group root
+    180      seclabel u:r:init:s0
+  exec of /z1stage_boot.sh at line 171
+  service z1_rootd options: class core, group root, seclabel u:r:init:s0, user root
+  dumped embedded rc -> /tmp/embedded_init.z1.rc
+
+== result ==
+  boot.img   /tmp/recon_r11.img
+  size       5900288 bytes (limit 6000000, partition 6291456, headroom 391168)
+  sha256     10e92e2a2536c40b1ec7fa8b10b8542eb32b5db2cb296c9135100c1b10f7da11
+  ALL CHECKS PASSED
+RESULT|image=/tmp/recon_r11.img|size=5900288|sha256=10e92e2a2536c40b1ec7fa8b10b8542eb32b5db2cb296c9135100c1b10f7da11|kernel_size=4331019|mtk_kernel=4330507|ramdisk_size=1564682|mtk_rootfs=1564170|records=85|name=z1_v83
+
+== SUMMARY ==
+  step                                                     result
+  inputs (template/rootfs/zImage/dtb)                      OK
+  init.z1.rc patched                                       OK, no tabs, LF only, trailing newline, fragment at EOF
+  init.z1.rc re-parsed                                     OK, every service has a class, all keywords known
+  ramdisk rebuilt                                          OK, 85 records, gzip 1564170 B
+  staged records present                                   OK, 6 records: size+sha256+mode all match
+  record diff                                              OK, 2 replaced, 4 added, 78 untouched byte-identical
+  boot.img MTK/Android size rule                           OK, kernel 4331019 = 4330507+512, ramdisk 1564682 = 1564170+512
+  kernel payload                                           OK, == zImage+dtb (sha256 verified)
+  embedded ROOTFS                                          OK, == produced rootfs (sha256 verified)
+  reverse check of the embedded rc                         OK, z1_rootd service + /z1stage_boot.sh exec present
+  image size                                               OK, 5900288 B < 6000000 (partition 6291456, headroom 391168)
+  image sha256                                             10e92e2a2536c40b1ec7fa8b10b8542eb32b5db2cb296c9135100c1b10f7da11
+
+boot.img  /tmp/recon_r11.img
+report    /tmp/recon_r11_report.txt
+embedded init.z1.rc dumped to /tmp/embedded_init.z1.rc
+done.
