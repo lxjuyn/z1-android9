@@ -181,42 +181,55 @@ seed gralloc.z1.so 0644
 seed z1kmstest 0755
 seed z1rootd.sh 0755
 
-# --- 2b. one-shot auto-install of the ramdisk HWC candidate -----------------
-# The first boot after a flash tests the HAL that was baked into the ramdisk,
-# so a single physical flash yields both the root channel AND the first HAL
-# result.  A marker file makes this happen exactly once: if the candidate is
-# broken (no display), a plain reboot falls back to the stock HWC1 in
-# /system/lib/hw without any operator action.  gralloc is deliberately NOT
-# auto-installed -- it is the whole-UI allocator.
+# --- 2b. one-shot auto-install of the ramdisk candidates --------------------
+# The first boot after a flash tests the modules that were baked into the
+# ramdisk, so one physical flash yields both the root channel AND the first
+# real OVL result.  That has to cover BOTH modules: the HWC2 compositor is what
+# programs the OVL planes, and the gralloc is what makes the layer buffers
+# physically contiguous so those planes can scan them out.  With the stock
+# (lima) gralloc every layer is non-contiguous and every frame falls back to
+# client composition, i.e. nothing of the OVL path gets exercised.
+#
 # IMPORTANT: the auto-installed copy must NOT stay in active/, otherwise a
-# broken HAL would be re-installed forever (and the legacy pre-v83 rc line
+# broken module would be re-installed forever (and the legacy pre-v83 rc line
 # 42 that copies /hwcomposer.z1.so into /vendor on every boot would keep it
 # alive even without active/).  So: apply it for this boot only, then delete
-# the active copy.  On the next boot active/ is empty again, the "apply"
-# step below removes whatever the legacy line installed, and libhardware
-# falls back to the stock HWC1 in /system/lib/hw.  An explicit install via
+# the active copy.  On the next boot active/ is empty again, the "apply" step
+# below removes whatever the legacy line installed, and libhardware falls back
+# to the stock module in /system/lib/hw.  An explicit install via
 # z1_install_hal.sh writes active/ itself and therefore persists.
-AUTO_MARK="$STAGE/.hwc_auto_installed"
-AUTO_CAND="$STAGE/hwcomposer.z1.so"
-AUTO_ONCE=0
-if [ -f "$AUTO_MARK" ]; then
-    log "auto-install: already done once (${AUTO_MARK}), skipped"
-elif [ ! -f "$AUTO_CAND" ]; then
-    log "auto-install: no candidate at ${AUTO_CAND}, skipped"
-else
-    if $CP "$AUTO_CAND" "$STAGE/active/hwcomposer.z1.so" 2>/dev/null; then
-        $CHMOD 0644 "$STAGE/active/hwcomposer.z1.so" 2>/dev/null
-        $CHOWN "$SHELL_UID:$SHELL_GID" "$STAGE/active/hwcomposer.z1.so" 2>/dev/null
-        printf 'auto-installed %s at %ss\n' "$(sha_of "$AUTO_CAND")" "$(uptime_s)" \
-            > "$AUTO_MARK" 2>/dev/null
-        $CHMOD 0666 "$AUTO_MARK" 2>/dev/null
-        AUTO_ONCE=1
-        log "auto-install: applying ${AUTO_CAND} for this boot only (sha256 $(sha_of "$AUTO_CAND")), marker ${AUTO_MARK} written"
+# One marker per module so a half-broken pair can be rolled back separately.
+AUTO_ONCE_HWC=0
+AUTO_ONCE_GRALLOC=0
+auto_once() {   # auto_once <file> <marker-suffix> <once-var-name>
+    _name=$1
+    _mark="$STAGE/.${2}_auto_installed"
+    _cand="$STAGE/$_name"
+
+    if [ -f "$_mark" ]; then
+        log "auto-install ${_name}: already done once (${_mark}), skipped"
+        return 0
+    fi
+    if [ ! -f "$_cand" ]; then
+        log "auto-install ${_name}: no candidate at ${_cand}, skipped"
+        return 0
+    fi
+    if $CP "$_cand" "$STAGE/active/$_name" 2>/dev/null; then
+        $CHMOD 0644 "$STAGE/active/$_name" 2>/dev/null
+        $CHOWN "$SHELL_UID:$SHELL_GID" "$STAGE/active/$_name" 2>/dev/null
+        printf 'auto-installed %s at %ss\n' "$(sha_of "$_cand")" "$(uptime_s)" \
+            > "$_mark" 2>/dev/null
+        $CHMOD 0666 "$_mark" 2>/dev/null
+        log "auto-install ${_name}: applying for this boot only (sha256 $(sha_of "$_cand")), marker ${_mark} written"
+        eval "${3}=1"
     else
         ERRORS=$((ERRORS + 1))
-        log "ERROR auto-install: cannot create active/hwcomposer.z1.so"
+        log "ERROR auto-install ${_name}: cannot create active/${_name}"
     fi
-fi
+}
+
+auto_once hwcomposer.z1.so hwc AUTO_ONCE_HWC
+auto_once gralloc.z1.so gralloc AUTO_ONCE_GRALLOC
 
 # --- 2b2. dma-heap device node (needed for contiguous scanout buffers) ------
 # The kernel registers the CMA heap as /sys/class/dma_heap/default_cma_region
@@ -283,9 +296,13 @@ else
     log "ERROR ${VENDOR_HW} missing; active/ set NOT applied"
 fi
 
-if [ "${AUTO_ONCE:-0}" = 1 ]; then
+if [ "${AUTO_ONCE_HWC:-0}" = 1 ]; then
     $RM -f "$STAGE/active/hwcomposer.z1.so" 2>/dev/null
-    log "auto-install: removed the one-shot active copy -> next boot falls back to the stock HWC1 unless an operator installs one"
+    log "auto-install: removed the one-shot HWC copy -> next boot falls back to the stock HWC1 unless an operator installs one"
+fi
+if [ "${AUTO_ONCE_GRALLOC:-0}" = 1 ]; then
+    $RM -f "$STAGE/active/gralloc.z1.so" 2>/dev/null
+    log "auto-install: removed the one-shot gralloc copy -> next boot falls back to the stock gralloc unless an operator installs one"
 fi
 
 T1=$(uptime_s)

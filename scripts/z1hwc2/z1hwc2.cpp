@@ -74,6 +74,20 @@
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+/*
+ * The build shadows <log/log.h> with a no-op stub (scripts/hal_stub/log/log.h)
+ * that redefines the ANDROID_LOG_* enum, so including <android/log.h> here
+ * clashes.  Declare liblog's entry point directly: it is exported by
+ * /system/lib/liblog.so, which is already in NEEDED.
+ */
+extern "C" int __android_log_write(int prio, const char *tag, const char *text);
+
+/* android/log.h priorities; spelled out because this tree builds against a
+ * reduced <log/log.h> shim. */
+#define Z1_LOG_DEBUG 3
+#define Z1_LOG_INFO 4
+#define Z1_LOG_WARN 5
+#define Z1_LOG_ERROR 6
 #include <sys/types.h>
 #include <sys/system_properties.h>
 
@@ -94,7 +108,7 @@
 #define LOG_TAG "z1hwc2"
 #include <log/log.h>
 
-#define Z1_HWC_VERSION "2026-11-10-r3"
+#define Z1_HWC_VERSION "2026-11-10-r4"
 
 /* ------------------------------------------------------------ constants --- */
 
@@ -206,10 +220,15 @@ static void klogf(int level, const char *fmt, ...)
 
 	if (level > g_verbose)
 		return;
+	/*
+	 * The composer service runs as `system` and /dev/kmsg is root-only, so
+	 * the kernel log is only a bonus (it works when the HAL is run by hand
+	 * as root).  logd is the channel that always works, and this image's
+	 * /z1_klog_relay.sh mirrors logcat to the serial console, so `logcat -s
+	 * z1hwc2` and the serial capture both see every line.
+	 */
 	if (fd == -2)
 		fd = open("/dev/kmsg", O_WRONLY | O_CLOEXEC);
-	if (fd < 0)
-		return;
 	clock_gettime(CLOCK_MONOTONIC, &ts);
 	if (ts.tv_sec != last_sec) {
 		last_sec = ts.tv_sec;
@@ -218,9 +237,9 @@ static void klogf(int level, const char *fmt, ...)
 			char note[96];
 
 			snprintf(note, sizeof(note),
-				 "z1hwc2: (%d earlier line(s) dropped by klog budget)\n",
+				 "z1hwc2: (%d earlier line(s) dropped by klog budget)",
 				 dropped);
-			klog_raw(fd, note);
+			__android_log_write(Z1_LOG_WARN, "z1hwc2", note);
 			dropped = 0;
 		}
 	}
@@ -236,7 +255,17 @@ static void klogf(int level, const char *fmt, ...)
 		if (n > (int)sizeof(buf) - 1)
 			n = (int)sizeof(buf) - 1;
 		buf[n] = '\0';
-		klog_raw(fd, buf);
+		if (buf[n - 1] == '\n')
+			buf[n - 1] = '\0';
+		__android_log_write(level == 0 ? Z1_LOG_ERROR
+				   : level == 1 ? Z1_LOG_INFO
+						: Z1_LOG_DEBUG,
+				    "z1hwc2", buf);
+		if (fd >= 0) {
+			buf[n - 1] = '\n';
+			buf[n] = '\0';
+			klog_raw(fd, buf);
+		}
 	}
 }
 
@@ -398,6 +427,7 @@ struct z1_hwc2 : public hwc2_device_t {
 	bool modeset_done;
 	bool powered_on;
 	bool validated;
+	bool client_expected;	/* SurfaceFlinger will supply a client target */
 
 	/* deferred framebuffer release: an fb that was replaced this frame may
 	 * still be referenced by the state the display is scanning, so it is
@@ -1898,6 +1928,25 @@ static int32_t z1_get_client_target_support(hwc2_device_t *d,
 
 /* -------------------------------------------------------------- validate --- */
 
+/*
+ * True when this layer can be the bottom-most OVL plane with no client target
+ * underneath: it must cover the whole display and be fully opaque.  Otherwise
+ * whatever the OVL shows outside its rectangle is undefined, and the safe
+ * choice is to keep plane 0 for the client target.
+ */
+static bool layer_can_be_background(const z1_layer *l, uint32_t w, uint32_t h)
+{
+	if (!l || !l->handle)
+		return false;
+	if (l->frame.left > 0 || l->frame.top > 0)
+		return false;
+	if (l->frame.right < (int)w || l->frame.bottom < (int)h)
+		return false;
+	if (l->alpha < 0.999f)
+		return false;
+	return true;
+}
+
 static int32_t z1_validate_display(hwc2_device_t *d, hwc2_display_t display,
 				   uint32_t *out_num_types,
 				   uint32_t *out_num_requests)
@@ -1985,16 +2034,49 @@ static int32_t z1_validate_display(hwc2_device_t *d, hwc2_display_t display,
 	}
 
 	/*
-	 * Always reserve the bottom plane: SurfaceFlinger calls
-	 * setClientTarget() *after* validateDisplay(), so h->client_target is
-	 * still the previous frame's buffer (NULL on the very first frame).
+	 * How many planes may the DEVICE layers use?
+	 *
+	 * The point of this HAL is to put every layer on the OVL, so plane 0 is
+	 * only reserved for the client target when a client target will actually
+	 * exist and be visible:
+	 *
+	 *   - First try all planes.  If every layer fits as DEVICE *and* the
+	 *     bottom layer covers the whole display opaquely, SurfaceFlinger has
+	 *     no client composition at all, never calls setClientTarget(), and
+	 *     plane 0 is free for a device layer.
+	 *   - Otherwise reserve plane 0 for the client target and decide again
+	 *     (the demoted layers are always the bottom of the stack, which is
+	 *     exactly what the client target shows).
+	 *
+	 * Note that SurfaceFlinger calls setClientTarget() *after*
+	 * validateDisplay(), so h->client_target is still the previous frame's
+	 * buffer at this point; that is why the decision is made here and
+	 * remembered in h->client_expected instead of being inferred later.
 	 */
-	device_slots = h->plane_count - 1;
-	if (device_slots < 0)
-		device_slots = 0;
+	{
+		int n = (int)pl.size();
 
-	used = z1_policy_decide(pl.data(), (int)pl.size(), device_slots,
-				h->mode_force_client, pr.data());
+		device_slots = h->plane_count;
+		if (device_slots < 0)
+			device_slots = 0;
+		used = z1_policy_decide(pl.data(), n, device_slots,
+					h->mode_force_client, pr.data());
+		if (n > 0 && used == n &&
+		    layer_can_be_background(order[0], h->width, h->height)) {
+			h->client_expected = false;
+			if (g_verbose >= 1 &&
+			    (h->frames < 3 || h->frames % 600 == 0))
+				klogf(1, "z1hwc2: all %d layer(s) on hardware "
+				     "planes, no client target\n", n);
+		} else {
+			device_slots = h->plane_count - 1;
+			if (device_slots < 0)
+				device_slots = 0;
+			used = z1_policy_decide(pl.data(), n, device_slots,
+						h->mode_force_client, pr.data());
+			h->client_expected = true;
+		}
+	}
 
 	for (size_t i = 0; i < order.size(); i++) {
 		z1_layer *l = order[i];
@@ -2114,9 +2196,15 @@ static int32_t z1_present_display(hwc2_device_t *d, hwc2_display_t display,
 		h->client_acquire_fence = -1;
 	}
 
-	if (client_target_fb(h, &client_fb, &client_w, &client_h,
-			     &client_how) != 0)
+	/* The previous frame's client target must not be re-shown on a frame
+	 * where the validate pass decided that every layer goes to hardware. */
+	if (!h->client_expected) {
 		client_fb = 0;
+		client_how = "unused (all layers on hardware planes)";
+	} else if (client_target_fb(h, &client_fb, &client_w, &client_h,
+				    &client_how) != 0) {
+		client_fb = 0;
+	}
 
 	/* Collect device layers bottom-to-top. */
 	for (std::map<hwc2_layer_t, z1_layer>::iterator it = h->layers.begin();
@@ -2537,6 +2625,7 @@ static int z1_open(const hw_module_t *module, const char *name,
 	if (!h)
 		return -ENOMEM;
 	h->drm_fd = -1;
+	h->client_expected = true;
 	h->timeline_fd = -1;
 	h->client_acquire_fence = -1;
 	h->client_copy_slot = 0;
