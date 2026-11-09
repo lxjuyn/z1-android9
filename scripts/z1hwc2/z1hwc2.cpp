@@ -108,7 +108,7 @@ extern "C" int __android_log_write(int prio, const char *tag, const char *text);
 #define LOG_TAG "z1hwc2"
 #include <log/log.h>
 
-#define Z1_HWC_VERSION "2026-11-10-r5"
+#define Z1_HWC_VERSION "2026-11-10-r7"
 
 /* ------------------------------------------------------------ constants --- */
 
@@ -257,8 +257,17 @@ static void klogf(int level, const char *fmt, ...)
 		buf[n] = '\0';
 		if (buf[n - 1] == '\n')
 			buf[n - 1] = '\0';
+		/*
+		 * Level 1 is deliberately WARN, not INFO: this image's
+		 * /z1_klog_relay.sh mirrors logcat to the serial console with a
+		 * '*:W' priority filter, so INFO lines never reach the only
+		 * always-on log channel this board has.  Level 1 is used only
+		 * for milestones (rate-limited to 5 lines/s), never for
+		 * per-frame chatter -- that is level 2/3 (DEBUG, retrievable
+		 * with `logcat -s z1hwc2` over the console shell).
+		 */
 		__android_log_write(level == 0 ? Z1_LOG_ERROR
-				   : level == 1 ? Z1_LOG_INFO
+				   : level == 1 ? Z1_LOG_WARN
 						: Z1_LOG_DEBUG,
 				    "z1hwc2", buf);
 		if (fd >= 0) {
@@ -2160,19 +2169,6 @@ static int32_t z1_present_display(hwc2_device_t *d, hwc2_display_t display,
 
 	h->frames++;
 
-	/* A framebuffer replaced during the previous frame can be destroyed
-	 * now; the display can no longer be scanning it after this commit. */
-	if (!h->pending_release.empty()) {
-		for (size_t i = 0; i < h->pending_release.size(); i++) {
-			if (h->pending_release[i].first)
-				drmModeRmFB(h->drm_fd, h->pending_release[i].first);
-			if (h->pending_release[i].second)
-				drmCloseBufferHandle(h->drm_fd,
-						     h->pending_release[i].second);
-		}
-		h->pending_release.clear();
-	}
-
 	/* Wait for producers before touching their memory. */
 	for (std::map<hwc2_layer_t, z1_layer>::iterator it = h->layers.begin();
 	     it != h->layers.end(); ++it) {
@@ -2358,6 +2354,24 @@ static int32_t z1_present_display(hwc2_device_t *d, hwc2_display_t display,
 		}
 	}
 	drmModeAtomicFree(req);
+
+	/*
+	 * Destroy the framebuffers that were replaced before this commit, NOW
+	 * that the new plane state is in place.  Order matters: the kernel's
+	 * drm_framebuffer_remove() force-disables any plane that still
+	 * references the framebuffer being removed (it must, per the DRM ABI),
+	 * so doing this before the commit would blank the layer for one frame.
+	 */
+	if (!h->pending_release.empty()) {
+		for (size_t i = 0; i < h->pending_release.size(); i++) {
+			if (h->pending_release[i].first)
+				drmModeRmFB(h->drm_fd, h->pending_release[i].first);
+			if (h->pending_release[i].second)
+				drmCloseBufferHandle(h->drm_fd,
+						     h->pending_release[i].second);
+		}
+		h->pending_release.clear();
+	}
 
 	/*
 	 * Release fences.  A device layer's buffer may only be written again
