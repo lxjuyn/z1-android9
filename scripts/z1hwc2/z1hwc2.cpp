@@ -60,6 +60,7 @@
 #include <pthread.h>
 #include <time.h>
 #include <stdarg.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -93,7 +94,7 @@
 #define LOG_TAG "z1hwc2"
 #include <log/log.h>
 
-#define Z1_HWC_VERSION "2026-11-10-r2"
+#define Z1_HWC_VERSION "2026-11-10-r3"
 
 /* ------------------------------------------------------------ constants --- */
 
@@ -144,13 +145,61 @@ struct z1_handle {
 	int reserved;
 };
 
+/*
+ * ABI self-checks.  A wrong struct layout would be invisible at compile time
+ * but fatal at run time: the composer HIDL adapter calls getFunction() at
+ * byte offset 68 of our hwc2_device_t and close() at 60 of hw_device_t (both
+ * confirmed in android.hardware.graphics.composer@2.1-impl.so), and the HAL
+ * parses gralloc's private_handle_t by hand.
+ */
+static_assert(sizeof(hw_device_t) == 64, "hw_device_t must be 64 bytes");
+static_assert(offsetof(hw_device_t, close) == 60, "close() must be at 60");
+static_assert(offsetof(hwc2_device_t, getCapabilities) == 64,
+	      "getCapabilities() must be at 64");
+static_assert(offsetof(hwc2_device_t, getFunction) == 68,
+	      "getFunction() must be at 68");
+static_assert(sizeof(struct z1_handle) == 64,
+	      "gralloc private_handle_t must be 64 bytes");
+static_assert(offsetof(struct z1_handle, fd) == 12, "handle.fd must be at 12");
+static_assert(offsetof(struct z1_handle, width) == 44,
+	      "handle.width must be at 44");
+static_assert(offsetof(struct z1_handle, height) == 48,
+	      "handle.height must be at 48");
+static_assert(offsetof(struct z1_handle, stride) == 52,
+	      "handle.stride must be at 52");
+static_assert(offsetof(struct z1_handle, format) == 56,
+	      "handle.format must be at 56");
+
 /* --------------------------------------------------------------- logging --- */
 
-static int g_verbose = 2;
+static int g_verbose = 1;
+
+/*
+ * /dev/kmsg applies the printk ratelimit to userspace writes as well
+ * (~10 messages per 5 s), and a dropped message is gone for good -- which is
+ * how a chatty HAL ends up blind in the field.  So the HAL keeps its own,
+ * stricter budget (5 lines/s) and reports how many lines it had to drop.
+ */
+static void klog_raw(int fd, const char *buf)
+{
+	size_t n = strlen(buf);
+
+	if (n == 0)
+		return;
+	if (n > 900)
+		n = 900;
+	if (write(fd, buf, n) < 0) {
+		/* kmsg full or unavailable: stay silent */
+	}
+}
 
 static void klogf(int level, const char *fmt, ...)
 {
 	static int fd = -2;
+	static long last_sec;
+	static int used;
+	static int dropped;
+	struct timespec ts;
 	char buf[512];
 	va_list ap;
 	int n;
@@ -161,15 +210,33 @@ static void klogf(int level, const char *fmt, ...)
 		fd = open("/dev/kmsg", O_WRONLY | O_CLOEXEC);
 	if (fd < 0)
 		return;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	if (ts.tv_sec != last_sec) {
+		last_sec = ts.tv_sec;
+		used = 0;
+		if (dropped) {
+			char note[96];
+
+			snprintf(note, sizeof(note),
+				 "z1hwc2: (%d earlier line(s) dropped by klog budget)\n",
+				 dropped);
+			klog_raw(fd, note);
+			dropped = 0;
+		}
+	}
+	if (used >= 5) {
+		dropped++;
+		return;
+	}
+	used++;
 	va_start(ap, fmt);
 	n = vsnprintf(buf, sizeof(buf), fmt, ap);
 	va_end(ap);
 	if (n > 0) {
 		if (n > (int)sizeof(buf) - 1)
 			n = (int)sizeof(buf) - 1;
-		if (write(fd, buf, (size_t)n) < 0) {
-			/* kmsg full or unavailable: stay silent */
-		}
+		buf[n] = '\0';
+		klog_raw(fd, buf);
 	}
 }
 
@@ -1145,10 +1212,13 @@ static int client_target_fb(z1_hwc2 *h, uint32_t *out_fb, uint32_t *out_w,
 			h->client_copy_slot ^= 1;
 			*out_fb = d->fb_id;
 			*how = "copied";
-			klogf(2, "z1hwc2: client target copied: fd=%d %dx%d "
-			     "stride=%d fmt=%s -> dumb fb=%u\n", gh->fd,
-			      gh->width, gh->height, gh->stride,
-			      hal_fmt_name(gh->format), d->fb_id);
+			if (h->frames < 3 || h->frames % 600 == 0)
+				klogf(1, "z1hwc2: client target COPIED (slow "
+				     "path): fd=%d %dx%d stride=%d fmt=%s -> "
+				     "dumb fb=%u frame=%" PRIu64 "\n", gh->fd,
+				      gh->width, gh->height, gh->stride,
+				      hal_fmt_name(gh->format), d->fb_id,
+				      h->frames);
 			return 0;
 		}
 	}
@@ -1846,7 +1916,7 @@ static int32_t z1_validate_display(hwc2_device_t *d, hwc2_display_t display,
 
 	h->changed.clear();
 	h->mode_force_client = prop_int("debug.z1.hwc.mode", 1) == 0;
-	g_verbose = prop_int("debug.z1.hwc.verbose", 2);
+	g_verbose = prop_int("debug.z1.hwc.verbose", 1);
 
 	/* ascend by z, ties by creation order (stable) */
 	for (std::map<hwc2_layer_t, z1_layer>::iterator it = h->layers.begin();
@@ -1940,15 +2010,15 @@ static int32_t z1_validate_display(hwc2_device_t *d, hwc2_display_t display,
 		}
 		if (l->composition != want && r->report) {
 			h->changed.push_back(std::make_pair(l->id, (int32_t)want));
-			if (g_verbose >= 2)
-				klogf(2, "z1hwc2: report layer %" PRIu64
+			if (g_verbose >= 1)
+				klogf(1, "z1hwc2: report layer %" PRIu64
 				      " %s -> %s (%s)\n", (uint64_t)l->id,
 				      comp_name(l->composition), comp_name(want),
 				      r->why ? r->why : "deviceable");
 		}
 		l->composition = want;
 
-		if (g_verbose >= 2) {
+		if (g_verbose >= 2 && (h->frames < 3 || !h->changed.empty())) {
 			struct z1_handle *gh = (struct z1_handle *)l->handle;
 
 			if (want == HWC2_COMPOSITION_DEVICE)
@@ -1974,10 +2044,11 @@ static int32_t z1_validate_display(hwc2_device_t *d, hwc2_display_t display,
 	h->validated = true;
 	*out_num_types = (uint32_t)h->changed.size();
 	*out_num_requests = 0;
-	if (g_verbose >= 2)
-		klogf(2, "z1hwc2: validate: layers=%zu device=%d client=%zu "
-		     "changes=%zu\n", order.size(), used,
-		      order.size() - (size_t)used, h->changed.size());
+	if (g_verbose >= 1 &&
+	    (h->frames < 3 || !h->changed.empty() || h->frames % 600 == 0))
+		klogf(1, "z1hwc2: validate: layers=%zu device=%d client=%zu "
+		     "changes=%zu frame=%" PRIu64 "\n", order.size(), used,
+		      order.size() - (size_t)used, h->changed.size(), h->frames);
 	return h->changed.empty() ? HWC2_ERROR_NONE : HWC2_ERROR_HAS_CHANGES;
 }
 
@@ -2236,7 +2307,7 @@ static int32_t z1_present_display(hwc2_device_t *d, hwc2_display_t display,
 			     "active): %ux%u\n", h->width, h->height);
 	}
 	if (!h->first_commit_logged ||
-	    h->frames % 120 == 0) {
+	    h->frames % 600 == 0) {
 		h->first_commit_logged = true;
 		klogf(1, "z1hwc2: frame %" PRIu64 ": device=%zu client=%s "
 		     "plane0=%s\n", h->frames, device_layers.size(), client_how,
@@ -2480,7 +2551,7 @@ static int z1_open(const hw_module_t *module, const char *name,
 	h->getCapabilities = z1_get_capabilities;
 	h->getFunction = z1_get_function;
 
-	g_verbose = prop_int("debug.z1.hwc.verbose", 2);
+	g_verbose = prop_int("debug.z1.hwc.verbose", 1);
 
 	if (drm_open(h) < 0) {
 		if (h->drm_fd >= 0)

@@ -188,8 +188,17 @@ seed z1rootd.sh 0755
 # broken (no display), a plain reboot falls back to the stock HWC1 in
 # /system/lib/hw without any operator action.  gralloc is deliberately NOT
 # auto-installed -- it is the whole-UI allocator.
+# IMPORTANT: the auto-installed copy must NOT stay in active/, otherwise a
+# broken HAL would be re-installed forever (and the legacy pre-v83 rc line
+# 42 that copies /hwcomposer.z1.so into /vendor on every boot would keep it
+# alive even without active/).  So: apply it for this boot only, then delete
+# the active copy.  On the next boot active/ is empty again, the "apply"
+# step below removes whatever the legacy line installed, and libhardware
+# falls back to the stock HWC1 in /system/lib/hw.  An explicit install via
+# z1_install_hal.sh writes active/ itself and therefore persists.
 AUTO_MARK="$STAGE/.hwc_auto_installed"
 AUTO_CAND="$STAGE/hwcomposer.z1.so"
+AUTO_ONCE=0
 if [ -f "$AUTO_MARK" ]; then
     log "auto-install: already done once (${AUTO_MARK}), skipped"
 elif [ ! -f "$AUTO_CAND" ]; then
@@ -201,22 +210,66 @@ else
         printf 'auto-installed %s at %ss\n' "$(sha_of "$AUTO_CAND")" "$(uptime_s)" \
             > "$AUTO_MARK" 2>/dev/null
         $CHMOD 0666 "$AUTO_MARK" 2>/dev/null
-        log "auto-install: seeded active/hwcomposer.z1.so from ${AUTO_CAND} (sha256 $(sha_of "$AUTO_CAND")), marker ${AUTO_MARK} written"
+        AUTO_ONCE=1
+        log "auto-install: applying ${AUTO_CAND} for this boot only (sha256 $(sha_of "$AUTO_CAND")), marker ${AUTO_MARK} written"
     else
         ERRORS=$((ERRORS + 1))
         log "ERROR auto-install: cannot create active/hwcomposer.z1.so"
     fi
 fi
 
+# --- 2b2. dma-heap device node (needed for contiguous scanout buffers) ------
+# The kernel registers the CMA heap as /sys/class/dma_heap/default_cma_region
+# (drivers/dma-buf/dma-heap.c, dma_heap_devnode() returns "dma_heap/<name>"),
+# but on this image ueventd has never materialised /dev/dma_heap/*, so gralloc
+# falls back to lima and the display cannot scan the buffers out.  Create the
+# node ourselves from the sysfs major:minor.  Cheap, idempotent, and it also
+# reports whether the kernel created the heap at all.
+if [ -e /sys/class/dma_heap ]; then
+    for _h in /sys/class/dma_heap/*; do
+        [ -e "$_h/dev" ] || continue
+        _n=${_h##*/}
+        _d=/dev/dma_heap/$_n
+        if [ -e "$_d" ]; then
+            # ueventd may have created it 0600 root:root; the allocator runs
+            # as `system` and must be able to open it.
+            $CHMOD 0666 "$_d" 2>/dev/null
+            log "dma_heap ${_n}: node already present (mode fixed to 0666)"
+            continue
+        fi
+        _dev=$(cat "$_h/dev" 2>/dev/null)
+        _maj=${_dev%%:*}
+        _min=${_dev##*:}
+        if [ -n "$_maj" ] && [ -n "$_min" ]; then
+            $MKDIR -p /dev/dma_heap 2>/dev/null
+            if /system/bin/mknod "$_d" c "$_maj" "$_min" 2>/dev/null; then
+                $CHMOD 0666 "$_d" 2>/dev/null
+                log "dma_heap ${_n}: mknod ${_d} c ${_maj}:${_min} ok"
+            else
+                log "ERROR dma_heap ${_n}: mknod ${_d} c ${_maj}:${_min} failed"
+            fi
+        else
+            log "ERROR dma_heap ${_n}: cannot read major:minor"
+        fi
+    done
+else
+    log "WARN /sys/class/dma_heap absent: kernel did not register a CMA heap"
+fi
+
 # --- 2c. debugfs (optional) -------------------------------------------------
 # sw_sync (CONFIG_SW_SYNC) exposes <debugfs>/sync/sw_sync; the HWC2 HAL uses it
 # for release fences when debug.z1.hwc.fences=1.  Android's init.rc never mounts
 # debugfs on this image, so do it here.  Failure is harmless.
+if [ -e /sys/kernel/debug/sync/sw_sync ]; then
+    $CHMOD 0666 /sys/kernel/debug/sync/sw_sync 2>/dev/null
+fi
 if [ ! -e /sys/kernel/debug/sync/sw_sync ]; then
     /system/bin/mkdir -p /sys/kernel/debug 2>/dev/null
     /system/bin/mount -t debugfs none /sys/kernel/debug 2>/dev/null
     if [ -e /sys/kernel/debug/sync/sw_sync ]; then
-        log "debugfs mounted, sw_sync available"
+        # sw_sync creates the file 0600 root; the composer runs as `system`.
+        $CHMOD 0666 /sys/kernel/debug/sync/sw_sync 2>/dev/null
+        log "debugfs mounted, sw_sync available (mode $(ls -l /sys/kernel/debug/sync/sw_sync 2>/dev/null | cut -c1-10))"
     else
         log "sw_sync not available (debugfs mount failed or CONFIG_SW_SYNC=n); fences stay -1"
     fi
@@ -228,6 +281,11 @@ if [ -d "$VENDOR_HW" ]; then
 else
     ERRORS=$((ERRORS + 1))
     log "ERROR ${VENDOR_HW} missing; active/ set NOT applied"
+fi
+
+if [ "${AUTO_ONCE:-0}" = 1 ]; then
+    $RM -f "$STAGE/active/hwcomposer.z1.so" 2>/dev/null
+    log "auto-install: removed the one-shot active copy -> next boot falls back to the stock HWC1 unless an operator installs one"
 fi
 
 T1=$(uptime_s)

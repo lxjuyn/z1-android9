@@ -560,3 +560,55 @@ setprop ctl.restart surfaceflinger
 sha256sum /vendor/lib/hw/hwcomposer.z1.so /system/lib/hw/hwcomposer.z1.so \
           /data/local/tmp/z1stage/active/hwcomposer.z1.so
 ```
+
+---
+
+## 附录 A（主会话修订，2026-11-10 22:10）：一次性自动安装 + 三处加固
+
+### A.1 为什么改：v79 遗留的 rc 第 42 行会破坏"重启自动回退"
+`/init.z1.rc` 里 v79 时代就有的两行，每次开机都会无条件把 ramdisk 里的
+`/hwcomposer.z1.so` 装进 `/vendor/lib/hw/`：
+
+```
+42:    exec u:r:init:s0 root root -- /system/bin/cp /hwcomposer.z1.so /vendor/lib/hw/hwcomposer.z1.so
+43:    exec u:r:init:s0 root root -- /system/bin/chmod 0644 /vendor/lib/hw/hwcomposer.z1.so
+```
+
+而 `pack_boot.sh` 只**追加**、不改已有字节，所以这两行还在。如果一次性自动安装把
+候选留在 `active/` 里，那么"坏 HAL → 重启回退到原厂 HWC1"就永远不成立
+（第 42 行每次装、`active/` 每次又装回去）。
+
+### A.2 新语义（已用三次开机本机模拟验证）
+- **首启**：若 `.hwc_auto_installed` 标记不存在且有 `$STAGE/hwcomposer.z1.so`，
+  复制到 `active/` → 走正常 apply → **本次开机有效** → 结尾**删掉** `active/` 里的副本并写标记。
+- **第二启**：标记存在 → 不自动装；`active/` 为空 → apply 步骤**主动删除**第 42 行装进去的
+  `/vendor/lib/hw/hwcomposer.z1.so` → libhardware 回落到 `/system/lib/hw` 的原厂 HWC1。
+- **显式安装**（`z1_install_hal.sh install` / 手工 `cp` 到 `active/`）：文件留在 `active/` 里，
+  每次开机都重新 apply，**不会被回退**。
+- gralloc 任何情况下都**不自动装**。
+
+模拟结果（`/tmp/z1sim2`，把 4 条绝对路径重定向后真跑脚本）：
+```
+BOOT1: vendor = 候选(18 B) | active = 空 | marker = 已写
+       log: "auto-install: removed the one-shot active copy -> next boot falls back ..."
+BOOT2: vendor = 不存在      (log: "no active/hwcomposer.z1.so -> removed ...")
+BOOT3: active/ 里放 OPERATOR-BUILD -> vendor = OPERATOR-BUILD
+```
+
+### A.3 另外三处加固
+1. **dma_heap 设备节点**：本机观察 `/dev/dma_heap` 一直不存在（内核 CMA 池 96 MiB 已建、
+   `CONFIG_DMABUF_HEAPS_CMA=y`、`add_cma_heaps` 符号在 vmlinux 里），说明是 ueventd 没建节点。
+   现在开机脚本读 `/sys/class/dma_heap/*/dev` 自己 `mknod /dev/dma_heap/<name> c maj:min`（0666），
+   并打印 `/sys/class/dma_heap` 是否存在——**这也是判断"内核到底建没建 heap"的证据**。
+   没有这个节点，gralloc 只能回退 lima（不连续）→ HWC 只能 CPU 拷贝（有画面但慢）。
+2. **debugfs + sw_sync 权限**：`sync_debug.c` 用 `debugfs_create_file_unsafe("sw_sync", 0644, ...)`
+   建的是 root:root 0644，而 composer 以 `system` 运行 → 追加 `chmod 0666`。
+   （`CONFIG_SW_SYNC=y` 已在 v83 内核里；`debug.z1.hwc.fences` 默认仍是 0。）
+3. **一次性脚本绝不做长操作**：post-fs-data 的 `exec` 是同步的，实测整段 ~0.06 s，
+   与 class_start hal 之间约 2 s 余量。
+
+### A.4 事实核对（值得记住）
+- `init.z1.rc` 被解析的顺序早于 `/vendor/etc/init/*.rc`；Android 9 init 对**重复 service 定义**
+  打 `ignored duplicate definition of service 'X'` 并**保留第一个**。所以将来若需要给
+  `vendor.hwcomposer-2-1` 加 `capabilities SYS_ADMIN`，可以在 ramdisk 的 `/init.z1.rc` 里
+  先定义同名 service 覆盖 vendor 的那份（本轮不需要：DRM master 靠"第一个 open 者"就拿到）。
