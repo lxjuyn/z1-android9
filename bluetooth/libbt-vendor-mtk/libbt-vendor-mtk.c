@@ -101,7 +101,7 @@ static int z1_bt_userial_open(void *param) {
 
   if (fd_array == NULL) return 0;
   for (channel = 0; channel < CH_MAX; ++channel) fd_array[channel] = -1;
-  if (mtk_bt_enable == NULL || hci_fd >= 0) {
+  if (vendor_callbacks == NULL || mtk_bt_enable == NULL || hci_fd >= 0) {
     ALOGE("invalid Bluetooth USERIAL_OPEN state");
     return 0;
   }
@@ -180,9 +180,17 @@ static int z1_bt_op(bt_vendor_opcode_t opcode, void *param) {
 }
 
 static void z1_bt_cleanup(void) {
-  if (hci_fd >= 0) z1_bt_userial_close();
-  clear_driver();
   vendor_callbacks = NULL;
+  /* Z1 factory disable returns negative before calling bt_restore(fd).
+   * Keep both the fd and its only release path on failure; a later cleanup
+   * may retry. Do not reopen/reinit or claim the fd was consumed meanwhile.
+   * The restore path owns close(fd), so a raw close here could double-close.
+   */
+  if (hci_fd >= 0 && z1_bt_userial_close() < 0) {
+    ALOGE("Bluetooth cleanup deferred; driver and HCI fd retained for retry");
+    return;
+  }
+  clear_driver();
 }
 
 const bt_vendor_interface_t BLUETOOTH_VENDOR_LIB_INTERFACE = {
