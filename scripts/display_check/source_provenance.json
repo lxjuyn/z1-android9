@@ -1,0 +1,140 @@
+{
+  "retrieved_at": "2026-11-10T22:08:03.805946+08:00",
+  "sources": [
+    {
+      "id": "aosp_light_types",
+      "url": "https://android.googlesource.com/platform/hardware/interfaces/+/android-9.0.0_r61/light/2.0/types.hal",
+      "retrieval_url": "https://android.googlesource.com/platform/hardware/interfaces/+/android-9.0.0_r61/light/2.0/types.hal?format=TEXT",
+      "revision": "android-9.0.0_r61",
+      "sha256": "d9584bfcaedd6e62cf337881748246b23e36cbc2bc3aa84c01b6a1e622061400",
+      "bytes": 4028,
+      "anchors": {
+        "BACKLIGHT": [
+          87
+        ],
+        "color": [
+          60,
+          84,
+          107,
+          113,
+          114,
+          120
+        ],
+        "brightnessMode": [
+          133
+        ]
+      },
+      "fetch_status": "verified"
+    },
+    {
+      "id": "aosp_light_wrapper",
+      "url": "https://android.googlesource.com/platform/hardware/interfaces/+/android-9.0.0_r61/light/2.0/default/Light.cpp",
+      "retrieval_url": "https://android.googlesource.com/platform/hardware/interfaces/+/android-9.0.0_r61/light/2.0/default/Light.cpp?format=TEXT",
+      "revision": "android-9.0.0_r61",
+      "sha256": "5af45ffbc9d89edf92a2bdbe8c7600772d7cbe928f70596736d75c4ffb882119",
+      "bytes": 5382,
+      "anchors": {
+        "Light::setLight": [
+          50
+        ],
+        "Type::BACKLIGHT": [
+          102
+        ],
+        "lights.size() == 0": [
+          171
+        ]
+      },
+      "fetch_status": "verified"
+    },
+    {
+      "id": "aosp_display_power",
+      "url": "https://android.googlesource.com/platform/frameworks/base/+/android-9.0.0_r61/services/core/java/com/android/server/display/DisplayPowerState.java",
+      "retrieval_url": "https://android.googlesource.com/platform/frameworks/base/+/android-9.0.0_r61/services/core/java/com/android/server/display/DisplayPowerState.java?format=TEXT",
+      "revision": "android-9.0.0_r61",
+      "sha256": "ba8c5ac4c63f12a915b5441031aa011c126bff4cada129644872be92114cebc0",
+      "bytes": 15691,
+      "anchors": {
+        "Display.STATE_OFF ? 0": [],
+        "setBrightness": [],
+        "requestDisplayState": [
+          437
+        ]
+      },
+      "fetch_status": "verified"
+    },
+    {
+      "id": "linux_backlight_abi",
+      "url": "https://kernel.googlesource.com/pub/scm/linux/kernel/git/torvalds/linux/+/v7.0-rc7/Documentation/ABI/stable/sysfs-class-backlight",
+      "retrieval_url": "https://kernel.googlesource.com/pub/scm/linux/kernel/git/torvalds/linux/+/v7.0-rc7/Documentation/ABI/stable/sysfs-class-backlight?format=TEXT",
+      "revision": "v7.0-rc7",
+      "sha256": "89759505aed0d3bd160db6dceb2db5de14c1f45a35aa5f2a7990242a98fdf382",
+      "bytes": 2207,
+      "anchors": {
+        "actual_brightness": [
+          21,
+          24
+        ],
+        "stored in the driver": [
+          20
+        ],
+        "FB_BLANK_POWERDOWN": [
+          10
+        ]
+      },
+      "fetch_status": "verified"
+    },
+    {
+      "id": "linux_led_abi",
+      "url": "https://kernel.googlesource.com/pub/scm/linux/kernel/git/torvalds/linux/+/v7.0-rc7/Documentation/ABI/testing/sysfs-class-led",
+      "retrieval_url": "https://kernel.googlesource.com/pub/scm/linux/kernel/git/torvalds/linux/+/v7.0-rc7/Documentation/ABI/testing/sysfs-class-led?format=TEXT",
+      "revision": "v7.0-rc7",
+      "sha256": "a1f663912453475972b6f126faf0c2595abaf93b7824393b1c889af5a0db4fc2",
+      "bytes": 2873,
+      "anchors": {
+        "Writing 0 to this file": [
+          28
+        ],
+        "max_brightness": [
+          20,
+          26,
+          35
+        ],
+        "trigger": [
+          28,
+          30,
+          31,
+          62,
+          67,
+          70,
+          72,
+          73,
+          75,
+          77,
+          87
+        ]
+      },
+      "fetch_status": "verified"
+    },
+    {
+      "id": "linux_led_core",
+      "url": "https://kernel.googlesource.com/pub/scm/linux/kernel/git/torvalds/linux/+/v7.0-rc7/drivers/leds/led-class.c",
+      "retrieval_url": "https://kernel.googlesource.com/pub/scm/linux/kernel/git/torvalds/linux/+/v7.0-rc7/drivers/leds/led-class.c?format=TEXT",
+      "revision": "v7.0-rc7",
+      "sha256": "93d35ac1b13274d9a1cce50ae440f7aac020d0f6f7c8e4dcb25f73dbb9e7f2e7",
+      "bytes": 17875,
+      "anchors": {
+        "led_update_brightness": [
+          37,
+          566
+        ],
+        "led_trigger_remove": [
+          63
+        ],
+        "brightness_store": [
+          44
+        ]
+      },
+      "fetch_status": "verified"
+    }
+  ]
+}
