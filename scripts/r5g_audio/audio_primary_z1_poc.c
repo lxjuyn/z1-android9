@@ -2,6 +2,11 @@
  * audio_primary_z1_poc.c — minimal A9 (SDK28) audio PRIMARY HAL for Z1 (MT6572 + MT6323)
  * Implementation: AOSP audio_hw_hal.cpp "legacy wrapper" layout, backed by tinyalsa.
  *
+ * r5h revision (2026-11-10): retry failed PCM opens with a separate write
+ * countdown; report unsupported hardware volume so AudioFlinger retains its
+ * software volume handling. Regression tests: tests/run_tests.sh.
+ * Capture remains unimplemented; these changes do not establish audible output.
+ *
  * r5g revision (2026-10-30), derived from scripts/r5d_audio_hal/audio_primary_z1_poc.c
  * (r5d 原版 316 行原样未动)。本轮改动 (依据 2026-10-30 ABI 判定 abi.changes;
  * 工具链换 arm-linux-gnueabihf-gcc, 构建见同目录 build_r5g.sh):
@@ -83,7 +88,8 @@ struct z1_stream_out {
     size_t          frame_bytes;
     audio_devices_t device;
     uint64_t        frames_written;   /* 累计写入帧数 (get_presentation_position) */
-    uint32_t        open_fails;       /* pcm_open 连续失败计数 (退避 + 日志限流) */
+    uint32_t        open_fails;       /* actual consecutive pcm_open failures */
+    uint32_t        open_retry_wait;  /* writes to skip before retrying */
 };
 
 struct z1_audio_device {
@@ -161,6 +167,8 @@ static int out_standby(struct audio_stream *s)
 { struct z1_stream_out *o = (struct z1_stream_out *)s;
   pthread_mutex_lock(&o->lock);
   if (o->pcm) { pcm_close(o->pcm); o->pcm = NULL; }
+  o->open_fails = 0;
+  o->open_retry_wait = 0;
   pthread_mutex_unlock(&o->lock);
   return 0; }
 
@@ -190,11 +198,12 @@ static int pcm_ensure_open(struct z1_stream_out *o)
     struct pcm_config cfg;
     if (o->pcm) { o->open_fails = 0; return 0; }
 
-    /* 退避: 连续失败期间每 Z1_OPEN_RETRY_EVERY 次 write 才真正试 1 次 pcm_open。
-     * 首次失败 (open_fails==0) 必真实尝试; 之后 9 次 write 直接返回, 第 10 次再试。
-     * pcm_open 对缺失节点立即失败, 此路径无 sleep, 不阻塞 AudioFlinger。 */
-    if (o->open_fails != 0 && (o->open_fails % Z1_OPEN_RETRY_EVERY) != 0)
+    /* Keep retry timing independent of the actual failure/log counter.
+     * After a failed open, skip nine writes and retry on the tenth. */
+    if (o->open_retry_wait != 0) {
+        o->open_retry_wait--;
         return -ENODEV;
+    }
 
     memset(&cfg, 0, sizeof(cfg));
     cfg.channels     = o->channels;
@@ -207,6 +216,7 @@ static int pcm_ensure_open(struct z1_stream_out *o)
     o->frame_bytes = cfg.channels * sizeof(uint16_t);
     o->pcm = pcm_open(Z1_PCM_CARD, Z1_PCM_DEV, PCM_OUT, &cfg);
     if (!o->pcm || !pcm_is_ready(o->pcm)) {
+        o->open_retry_wait = Z1_OPEN_RETRY_EVERY - 1;
         o->open_fails++;
         if (o->open_fails == 1 || (o->open_fails % Z1_OPEN_LOG_EVERY) == 0)
             ALOGE("pcm_open(card%d,dev%d) failed (consecutive=%u): %s", Z1_PCM_CARD,
@@ -216,6 +226,7 @@ static int pcm_ensure_open(struct z1_stream_out *o)
         return -ENODEV;
     }
     o->open_fails = 0;
+    o->open_retry_wait = 0;
     ALOGI("pcm_open ok card%d dev%d %uHz %uch", Z1_PCM_CARD, Z1_PCM_DEV,
           cfg.rate, cfg.channels);
     return 0;
@@ -251,8 +262,10 @@ static ssize_t out_write(struct audio_stream_out *stream, const void *buffer, si
 static uint32_t out_get_latency(const struct audio_stream_out *s)
 { (void)s; return 20; }
 
+/* No hardware stream gain: do not claim the VoIP gain was applied.
+ * AOSP9 Threads.cpp retains software stream gain when this call fails. */
 static int out_set_volume(struct audio_stream_out *s, float l, float r)
-{ (void)s; (void)l; (void)r; return 0; }
+{ (void)s; (void)l; (void)r; return -ENOTSUP; }
 
 static int out_get_render_position(const struct audio_stream_out *s, uint32_t *f)
 {
@@ -294,8 +307,13 @@ static int out_get_presentation_position(const struct audio_stream_out *s,
 static int adev_init_check(const struct audio_hw_device *dev) { (void)dev; return 0; }
 
 static int adev_set_voice_volume(struct audio_hw_device *dev, float v) { (void)dev; (void)v; return 0; }
-static int adev_set_master_volume(struct audio_hw_device *dev, float v) { (void)dev; (void)v; return 0; }
-static int adev_get_master_volume(struct audio_hw_device *dev, float *v) { (void)dev; if (v) *v = 1.0f; return 0; }
+/* No hardware master gain. AOSP9 AudioFlinger.cpp sets
+ * AHWD_CAN_SET_MASTER_VOLUME only on success; Threads.cpp otherwise retains
+ * software master gain. Do not report a fabricated initial gain either. */
+static int adev_set_master_volume(struct audio_hw_device *dev, float v)
+{ (void)dev; (void)v; return -ENOTSUP; }
+static int adev_get_master_volume(struct audio_hw_device *dev, float *v)
+{ (void)dev; (void)v; return -ENOTSUP; }
 static int adev_set_mode(struct audio_hw_device *dev, audio_mode_t m)
 { ((struct z1_audio_device *)dev)->in_call = (m == AUDIO_MODE_IN_CALL); return 0; }
 static int adev_set_mic_mute(struct audio_hw_device *dev, bool s) { (void)dev; (void)s; return 0; }
