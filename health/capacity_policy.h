@@ -7,9 +7,9 @@
 #include <ctype.h>
 
 // Distinguish an unavailable state of charge from a measured zero percent.
-// No replacement capacity or temperature is invented.
-static inline bool z1_capacity_available(const char* path) {
-    if (!path || !*path) return false;
+// Return the exact validated sample; do not invent capacity or temperature.
+static inline bool z1_read_capacity(const char* path, int* capacity) {
+    if (!path || !*path || !capacity) return false;
     int fd;
     do { fd = open(path, O_RDONLY | O_CLOEXEC); } while(fd < 0 && errno == EINTR);
     if(fd < 0) return false;
@@ -24,11 +24,22 @@ static inline bool z1_capacity_available(const char* path) {
     const long value = strtol(text, &end, 10);
     if(errno || end == text || value < 0 || value > 100) return false;
     while(*end && isspace(static_cast<unsigned char>(*end))) ++end;
-    return *end == '\0';
+    if (end != text + count) return false; // Reject embedded NUL/trailing bytes.
+    *capacity = static_cast<int>(value);
+    return true;
 }
 
 template<typename Properties>
-static inline void z1_mark_capacity_unknown(Properties* props, bool available) {
-    if (!available) props->batteryStatus = 1; // BATTERY_STATUS_UNKNOWN
+static inline bool z1_update_capacity(Properties* props, const char* path) {
+    int capacity;
+    const bool available = z1_read_capacity(path, &capacity);
+    if (available) {
+        // The earlier BatteryMonitor read may have failed or differed.
+        // Report the sample we validated, rather than certifying that read.
+        props->batteryLevel = capacity;
+    } else {
+        props->batteryStatus = 1; // BATTERY_STATUS_UNKNOWN
+    }
+    return available;
 }
 #endif

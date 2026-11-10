@@ -14,21 +14,17 @@ void healthd_board_init(healthd_config* config) {
 
 int healthd_board_battery_update(android::BatteryProperties* props) {
     const char* path = gConfig ? gConfig->batteryCapacityPath.string() : nullptr;
-    const bool available = z1_capacity_available(path);
+    const bool available = z1_update_capacity(props, path);
     static int previous = -1;
     if (previous != int(available)) {
         if (!available) {
             ALOGW("Capacity unavailable: reporting status UNKNOWN; level=%d is not a measured state of charge; voltage=%d temperature=%d retained",
                   props->batteryLevel, props->batteryVoltage, props->batteryTemperature);
         } else {
-            ALOGI("Real capacity available at %s: preserving measured battery state", path);
+            ALOGI("Valid capacity sample at %s: preserving status and charger state", path);
         }
         previous = int(available);
     }
-    // Framework treats UNKNOWN as unavailable power state. Retain measured
-    // voltage/temperature, online state and presence. A valid measured 0%
-    // remains 0% with its original status and normal low-battery shutdown.
-    z1_mark_capacity_unknown(props, available);
     return 0;
 }
 
