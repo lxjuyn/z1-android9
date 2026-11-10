@@ -1256,24 +1256,50 @@ static bool add_prop(drmModeAtomicReq *req, const char *name, uint32_t obj,
 
 static int wait_fence(int fd, int timeout_ms)
 {
-	struct pollfd pfd;
-	int ret;
-	int tries;
+	struct pollfd pfd = { fd, POLLIN, 0 };
+	struct timespec ts;
+	int64_t deadline_ns;
+	int remaining_ms = timeout_ms;
 
 	if (fd < 0)
 		return 0;
-	pfd.fd = fd;
-	pfd.events = POLLIN;
-	for (tries = 0; tries < 3; tries++) {
-		ret = poll(&pfd, 1, timeout_ms << tries);
-		if (ret > 0)
-			return 0;
+	/* Never turn an invalid budget into poll's infinite wait. */
+	if (timeout_ms < 0)
+		return -EINVAL;
+	if (clock_gettime(CLOCK_MONOTONIC, &ts) < 0)
+		return -errno;
+	deadline_ns = (int64_t)ts.tv_sec * 1000000000LL + ts.tv_nsec +
+		      (int64_t)timeout_ms * 1000000LL;
+
+	for (;;) {
+		int ret;
+		int64_t remaining_ns;
+
+		pfd.revents = 0;
+		ret = poll(&pfd, 1, remaining_ms);
+		if (ret > 0) {
+			/* Error bits take precedence even when POLLIN is set. */
+			if (pfd.revents & POLLNVAL)
+				return -EBADF;
+			if (pfd.revents & (POLLERR | POLLHUP))
+				return -EIO;
+			return (pfd.revents & POLLIN) ? 0 : -EIO;
+		}
 		if (ret == 0)
-			continue;
+			return -ETIME;
 		if (errno != EINTR)
 			return -errno;
+
+		/* EINTR consumes the same finite monotonic budget; it must
+		 * neither restart nor exponentially extend the timeout. */
+		if (clock_gettime(CLOCK_MONOTONIC, &ts) < 0)
+			return -errno;
+		remaining_ns = deadline_ns -
+			((int64_t)ts.tv_sec * 1000000000LL + ts.tv_nsec);
+		if (remaining_ns <= 0)
+			return -ETIME;
+		remaining_ms = (int)((remaining_ns + 999999LL) / 1000000LL);
 	}
-	return -ETIME;
 }
 
 static void program_plane(z1_hwc2 *h, drmModeAtomicReq *req, int idx,
@@ -2470,17 +2496,29 @@ static int32_t z1_present_display(hwc2_device_t *d, hwc2_display_t display,
 		if (l->composition != HWC2_COMPOSITION_DEVICE)
 			continue;
 		if (l->acquire_fence >= 0) {
-			if (wait_fence(l->acquire_fence, 100) < 0)
+			ret = wait_fence(l->acquire_fence, 100);
+			if (ret < 0) {
 				klogf(0, "z1hwc2: layer %" PRIu64
-				      " acquire fence timed out\n",
-				      (uint64_t)l->id);
+				      " acquire fence fd=%d failed: %s\n",
+				      (uint64_t)l->id, l->acquire_fence,
+				      strerror(-ret));
+				/* Keep ownership for retry/replacement/destruction.
+				 * HWC2 has no timeout error; preserve validation and
+				 * report that this frame cannot be presented. */
+				return HWC2_ERROR_NO_RESOURCES;
+			}
 			close(l->acquire_fence);
 			l->acquire_fence = -1;
 		}
 	}
-	if (h->client_acquire_fence >= 0) {
-		if (wait_fence(h->client_acquire_fence, 100) < 0)
-			klogf(0, "z1hwc2: client target acquire fence timed out\n");
+	if (h->client_expected && h->client_acquire_fence >= 0) {
+		ret = wait_fence(h->client_acquire_fence, 100);
+		if (ret < 0) {
+			klogf(0, "z1hwc2: client target acquire fence fd=%d "
+			      "failed: %s\n", h->client_acquire_fence,
+			      strerror(-ret));
+			return HWC2_ERROR_NO_RESOURCES;
+		}
 		close(h->client_acquire_fence);
 		h->client_acquire_fence = -1;
 	}
@@ -2490,10 +2528,17 @@ static int32_t z1_present_display(hwc2_device_t *d, hwc2_display_t display,
 	if (!h->client_expected) {
 		client_fb = 0;
 		client_how = "unused (all layers on hardware planes)";
-	} else if (client_target_fb(h, &client_fb, &client_w, &client_h,
-				    &client_how) != 0) {
-		client_fb = 0;
-		client_how = "FAILED";
+	} else {
+		ret = client_target_fb(h, &client_fb, &client_w, &client_h,
+				      &client_how);
+		if (ret != 0 || !client_fb) {
+			/* A required target may also be absent (success with fb=0).
+			 * Neither failure permits a partial/blank frame commit. */
+			klogf(0, "z1hwc2: required client target unavailable "
+			      "(ret=%d fb=%u path=%s)\n", ret, client_fb,
+			      client_how);
+			return HWC2_ERROR_NO_RESOURCES;
+		}
 	}
 	/* The client target path decides whether a client-composed frame can be
 	 * shown at all, so make a change of path visible without verbose=3. */
