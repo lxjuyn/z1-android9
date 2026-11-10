@@ -1,0 +1,73 @@
+{
+  "version": 1,
+  "host": "Linux Python3; O_PATH/O_NOFOLLOW and /proc/self/fd required",
+  "mode": "offline regular-file snapshots only; no board collector included",
+  "usage": "python3 inspect_power.py --snapshot /absolute/path/to/offline_snapshot",
+  "exit_codes": {
+    "2": "invalid/unsafe input",
+    "3": "observed active userspace lock or PMIC IRQ failure in supplied snapshot",
+    "4": "readiness unproven; does not mean inspection failed"
+  },
+  "limits": {
+    "bytes_per_file": 65536,
+    "max_files": 128,
+    "actual_allowlist_files": 24,
+    "rtc_indices": [
+      0,
+      1,
+      2,
+      3
+    ]
+  },
+  "minimum_safe_inputs": [
+    "sys/power/state",
+    "sys/power/mem_sleep",
+    "sys/power/wake_lock",
+    "kernel.config",
+    "init.z1.rc",
+    "z1_pm_guard.sh",
+    "power_kernel.log",
+    "proc/bus/input/devices",
+    "selected_pmic_keylayout.kl",
+    "sys/class/rtc/rtc0/name",
+    "sys/class/rtc/rtc0/wakealarm",
+    "sys/class/rtc/rtc0/device/power/wakeup",
+    "sys/class/watchdog/watchdog0/state",
+    "sys/class/watchdog/watchdog0/timeout",
+    "sys/class/watchdog/watchdog0/nowayout"
+  ],
+  "provenance_required_outside_inspector": [
+    "Capture date and boot-image/kernel hashes; snapshots from one boot, no mixed candidates",
+    "Record permission failures and missing paths separately; absence of supplied file is UNKNOWN",
+    "InputReader-selected keylayout filename and sanitized key116 press/release events; not merely Generic.kl existence",
+    "Sanitized PMIC parent and RTC/key child interrupt counters before/after already-authorized normal key interaction; no new wake test authorized",
+    "Existing suspend entry/exit logs from the same kernel, if already captured. A successful new suspend test is NOT authorized by this inspector."
+  ],
+  "failure_branches": {
+    "active_lock": "BLOCKED for cooperative Android autosuspend; does not certify all direct state writes are prevented",
+    "missing_state": "UNKNOWN; cannot infer CONFIG_SUSPEND=n without matching config",
+    "mem_s2idle": "deep sleep NOT_ADVERTISED; mem is not evidence of deep sleep",
+    "rtc_interface": "alarm access exists; parent IRQ delivery and resume UNKNOWN",
+    "pmic_fallback": "parent request_irq failure can coexist with RTC/input nodes, because MFD retains irq_domain",
+    "watchdog_sysfs_missing": "UNKNOWN; local CONFIG_WATCHDOG_SYSFS=n explains missing attributes",
+    "watchdog_active": "hazard to assess; source suspend callback exists but bound running driver and success unknown"
+  },
+  "excluded_inputs": [
+    "/sys/power/wakeup_count (read can block)",
+    "/dev/watchdog*",
+    "/dev/rtc*",
+    "/dev/input/event*",
+    "/dev/mem",
+    "credentials",
+    "SSID",
+    "location",
+    "full unfiltered system logs"
+  ],
+  "prohibitions": [
+    "No writes to power/state, mem_sleep, wake_lock/unlock, RTC alarm, watchdog or PMIC",
+    "No live services/process changes, charging-policy changes, flashing, or guessed GPIO/registers",
+    "No readiness PASS from passive snapshots alone"
+  ],
+  "hardware_tested": false,
+  "config_input": "kernel.config must contain only selected CONFIG_PM_*, SUSPEND, RTC, WATCHDOG, MEDIATEK_WATCHDOG and KEYBOARD_MTK_PMIC lines, retain not-set lines and source hash; complete local config196240 bytes intentionally rejected by64KiB bound."
+}

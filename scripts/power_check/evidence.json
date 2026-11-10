@@ -1,0 +1,115 @@
+{
+  "scope": "Read-only analysis of existing source and fix3q candidate image; no current-board assertions.",
+  "findings": [
+    {
+      "status": "VERIFIED_SOURCE_AND_PACKED_CANDIDATE",
+      "topic": "anti-suspend policy",
+      "claim": "Source and extracted fix3q init acquire z1diag; boot-completed pm_guard acquires it again. Configured policy is verified, execution/active state on board unknown.",
+      "references": [
+        "sources/packed_init.z1.rc:25,65,80",
+        "sources/packed_z1_pm_guard.sh:12",
+        "sources/packed_boot_manifest.json"
+      ]
+    },
+    {
+      "status": "VERIFIED_SOURCE",
+      "topic": "autosleep distinction",
+      "claim": "CONFIG_SUSPEND=y and CONFIG_PM_WAKELOCKS=y, CONFIG_PM_AUTOSLEEP=n. Android9 libsuspend reads/writes wakeup_count then writes mem; kernel autosleep disabled does not disable this route. Direct state writes alone do not implement wakeup_count handshake.",
+      "references": [
+        "/home/lxj/claude/6572/fork_linux/.config:618,624,626",
+        "sources/autosuspend_wakeup_count.cpp:72-97",
+        "/home/lxj/claude/6572/fork_linux/kernel/power/main.c:845-868"
+      ]
+    },
+    {
+      "status": "VERIFIED_SOURCE_LIMITED_SCOPE",
+      "topic": "s2idle versus deep",
+      "claim": "pm_states_init always advertises mem and freeze under suspend; mem_sleep initially s2idle, deep requires valid platform suspend ops. No suspend_set_ops/platform_suspend_ops/cpu_suspend match in local arch/arm/mach-mediatek. This limited source search is not proof running kernel lacks deep suspend; need same-boot mem_sleep.",
+      "references": [
+        "/home/lxj/claude/6572/fork_linux/kernel/power/suspend.c:176-242"
+      ]
+    },
+    {
+      "status": "VERIFIED_SOURCE",
+      "topic": "RTC alarm versus wake",
+      "claim": "MT6323 compatible maps to rtc-mt6397; read_alarm/set_alarm exist, wakeup enabled in probe, suspend calls enable_irq_wake but ignores return. RTC node or enabled wake policy does not verify IRQ delivery or resume.",
+      "references": [
+        "/home/lxj/claude/6572/fork_linux/drivers/rtc/rtc-mt6397.c:240-309,330"
+      ]
+    },
+    {
+      "status": "VERIFIED_SOURCE",
+      "topic": "PMIC fallback can hide broken parent IRQ",
+      "claim": "mt6397_irq_init returns0 on parent IRQ request failure, keeps irq_domain and permits MFD children but skips PM notifier registration. Existing RTC/input nodes therefore cannot prove parent wake path. Storm guard masks parent after64 empty entries. Current board occurrence unverified.",
+      "references": [
+        "/home/lxj/claude/6572/fork_linux/drivers/mfd/mt6397-irq.c:139-147,325-338"
+      ]
+    },
+    {
+      "status": "VERIFIED_SOURCE",
+      "topic": "power key propagation",
+      "claim": "mt6323.dtsi power child has Linux116 and wakeup-source; key driver reports EV_KEY and sync and enables IRQ wake on suspend. AOSP Generic.kl maps116 POWER. Guard comment saying no wakeup-capable keys is stale versus this source. Actual selected InputReader layout, press/release event delivery and wake are unverified.",
+      "references": [
+        "/home/lxj/claude/6572/fork_linux/arch/arm/boot/dts/mediatek/mt6323.dtsi:268-270",
+        "/home/lxj/claude/6572/fork_linux/drivers/input/keyboard/mtk-pmic-keys.c:222-223,271-284,397-398",
+        "sources/Generic.kl:138",
+        "sources/packed_z1_pm_guard.sh:3-5"
+      ]
+    },
+    {
+      "status": "VERIFIED_SOURCE_WITH_UNTESTED_HARDWARE_HAZARD",
+      "topic": "watchdog request and suspend",
+      "claim": "Packed watchdogd10 30 means interval10 plus margin30 -> requested40 seconds, not timeout10. Local WDT_MAX_TIMEOUT31 is used for max_hw_heartbeat_ms; set_timeout stores requested value and shifts it without clamp. Core timeout validation does not cap by max_hw_heartbeat_ms; hardware behavior for40 must not be guessed. Suspend stops active watchdog; resume starts and pings. Source callbacks do not prove bound driver or board behavior. Safety worker skips active watchdog and is not a substitute for suspend handling.",
+      "references": [
+        "sources/watchdogd.cpp:40-55",
+        "/home/lxj/claude/6572/fork_linux/drivers/watchdog/mtk_wdt.c:37,275-297,431,483-484,535-557",
+        "/home/lxj/claude/6572/fork_linux/include/linux/watchdog.h:172-191",
+        "/home/lxj/claude/6572/fork_linux/drivers/watchdog/watchdog_dev.c:368-384"
+      ]
+    },
+    {
+      "status": "VERIFIED_SOURCE",
+      "topic": "missing watchdog sysfs",
+      "claim": "CONFIG_WATCHDOG_SYSFS=n; missing class attributes must remain UNKNOWN, not no-watchdog. Never open watchdog character node as a readiness check.",
+      "references": [
+        "/home/lxj/claude/6572/fork_linux/.config:2849"
+      ]
+    },
+    {
+      "status": "VERIFIED_SOURCE_AND_FIXTURE",
+      "topic": "passive read blocking",
+      "claim": "wakeup_count_show calls pm_get_wakeup_count(block=true); it waits for ongoing wake events to complete. Inspector deliberately never reads that path, works only with copied local regular files, and FIFO at that name does not block tests.",
+      "references": [
+        "/home/lxj/claude/6572/fork_linux/kernel/power/main.c:862-869",
+        "/home/lxj/claude/6572/fork_linux/drivers/base/power/wakeup.c:951-985",
+        "test_inspect_power.py:test_missing_wakeup_count_never_read"
+      ]
+    }
+  ],
+  "known_unknowns": [
+    "Running boot/kernel/module/DT identity and actual active guard",
+    "s2idle or deep suspend entry/exit and power consumption",
+    "PMIC parent polarity/physical routing and real interrupt delivery",
+    "RTC armed alarm delivery, wake from suspend, and wake from full poweroff are three separate unverified functions",
+    "Power key Android event handling and selected keylayout",
+    "Hardware watchdog acceptance/effective timeout40 and observed suspend/resume behavior"
+  ],
+  "next_safe_data": "See snapshot_contract.json. Only already-captured sanitized same-boot observations; no automatic board collection or new power transition.",
+  "limitations": [
+    "Inspector needs Linux host Python3, not installed or tested on Android",
+    "Bounds file count/bytes, not guaranteed elapsed time under stalled storage; use trusted local snapshots, not remote or hostile mounts",
+    "Source hashes are captured snapshots; other agents may later change production files",
+    "Candidate image is not asserted to be currently running",
+    "27 passing fixtures are host logic/safety evidence only, no hardware or energy measurement"
+  ],
+  "official_sources": "Exact official AOSP android-9.0.0_r61 and Linux v7.0-rc7 URLs and SHA256 hashes are in sources/manifest.json. Direct HTTPS download and hash verification succeeded. Browser tool could not fetch the two Android pages (Internal Error), so downloaded source is the verification basis. Initial watchdogd location404 resolved to init/watchdogd.cpp.",
+  "backup_paths": [
+    "/home/lxj/claude/6572/bridge_backups/power_check_precreate_20261110_221242",
+    "/home/lxj/claude/6572/bridge_backups/power_check_precreate_20261110_220512",
+    "/home/lxj/claude/6572/bridge_backups/power_inspector_before_review_20261110_221815.py",
+    "/home/lxj/claude/6572/bridge_backups/power_check_prefinal_20261110_222059",
+    "/home/lxj/claude/6572/bridge_backups/power_check_candidate_fix_20261110_222234",
+    "/home/lxj/claude/6572/bridge_backups/power_evidence_before_external_check_20261110_222349.json"
+  ],
+  "test_note": "First candidate test correctly rejected complete196240-byte kernel.config (exit2); filtered power configuration supplied with source hash recorded in local_manifest.json; rerun below."
+}

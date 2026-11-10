@@ -1,0 +1,62 @@
+[
+  {
+    "path": "/home/lxj/claude/6572/fork_linux/.config",
+    "sha256": "10593ca7a80dc75591bbda9fefe00b26d1dd359e9914f4adcd7885c17c90fe7c"
+  },
+  {
+    "path": "/home/lxj/claude/6572/fork_linux/drivers/rtc/rtc-mt6397.c",
+    "sha256": "fa9fb999e4f22cde90b2a931e8ac547c87d3e267c94be6e6ab48f286fae2881c"
+  },
+  {
+    "path": "/home/lxj/claude/6572/fork_linux/drivers/input/keyboard/mtk-pmic-keys.c",
+    "sha256": "2af2987eec56970eae4cf0a917407edf91817894bcbb830ba69be0be2756cc3d"
+  },
+  {
+    "path": "/home/lxj/claude/6572/fork_linux/drivers/mfd/mt6397-irq.c",
+    "sha256": "538211f0b87fbf933406ac4f42727f18d63eb282b151c210964489c5de0c9024"
+  },
+  {
+    "path": "/home/lxj/claude/6572/fork_linux/drivers/watchdog/mtk_wdt.c",
+    "sha256": "95e41b04614023668e0ecf1dca8dacc504155e02583f5a6ddf83ec5e44376df8"
+  },
+  {
+    "path": "/home/lxj/claude/6572/fork_linux/kernel/power/suspend.c",
+    "sha256": "71c4a16ad3db8cac349b7d8b52cdfddae26a8918216f18ec54a68c1761077576"
+  },
+  {
+    "path": "/home/lxj/claude/6572/fork_linux/kernel/power/main.c",
+    "sha256": "7b60dabe707cf070b416f6375946c213b96bf3f67c3161b69c9a4fcfc9f53955"
+  },
+  {
+    "path": "/home/lxj/claude/6572/fork_linux/kernel/power/wakelock.c",
+    "sha256": "7979a184f311239b62f12718677dc0621018d61e361738e0236c1868c786838a"
+  },
+  {
+    "path": "/home/lxj/claude/6572/fork_linux/drivers/base/power/wakeup.c",
+    "sha256": "aa96d0594d9848f244ca40085630678dcd29bb5c89d7d686cc418ef58458b93b"
+  },
+  {
+    "path": "/home/lxj/claude/6572/fork_linux/drivers/watchdog/watchdog_dev.c",
+    "sha256": "0b6958a598045e4c64b54632a98efb8bbc87a3783b93ae865ed0ea0a5cfc7932"
+  },
+  {
+    "path": "/home/lxj/claude/6572/fork_linux/include/linux/watchdog.h",
+    "sha256": "e10b3886a41df8f0099e90eb028fdb2c643d9304e362d7e0712f1e5fd1a44c8e"
+  },
+  {
+    "path": "/home/lxj/claude/6572/fork_linux/arch/arm/boot/dts/mediatek/mt6323.dtsi",
+    "sha256": "e48f30cf119648918273ee9160e07c356ddf6fc4ecc2743ef3a34bada0aefb4c"
+  },
+  {
+    "path": "/home/lxj/claude/6572/fork_linux/arch/arm/boot/dts/mediatek/mt6572-z1.dts",
+    "sha256": "8a6d23e6e7a8a65b86629cc03d94f30e1c74da6bd2647049d10e5e935422f544"
+  },
+  {
+    "path": "/home/lxj/claude/6572/z1a9_gpt/rootdir/init.z1.rc",
+    "sha256": "40a6721a6b09ac78622a988bf0d393252642de83858c2d999eb8ddf7e29bd56f"
+  },
+  {
+    "path": "/home/lxj/claude/6572/z1a9_gpt/stock/z1_pm_guard.sh",
+    "sha256": "c43ca39ffc1988363cc6b782559af7d633674122e0b458179624e8cda78585d1"
+  }
+]

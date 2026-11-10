@@ -1,0 +1,41 @@
+[
+  {
+    "file": "autosuspend_wakeup_count.cpp",
+    "url": "https://android.googlesource.com/platform/system/core/+/android-9.0.0_r61/libsuspend/autosuspend_wakeup_count.cpp?format=TEXT",
+    "revision": "android-9.0.0_r61",
+    "sha256": "0a1cc4726836c97d3318c590d9fb02d82585bbd38dd17de8df98994806540570",
+    "bytes": 6452
+  },
+  {
+    "file": "watchdogd.cpp",
+    "url": "https://android.googlesource.com/platform/system/core/+/android-9.0.0_r61/watchdogd/watchdogd.cpp?format=TEXT",
+    "error": "HTTP Error 404: Not Found"
+  },
+  {
+    "file": "autosuspend.c",
+    "url": "https://android.googlesource.com/platform/system/core/+/android-9.0.0_r61/libsuspend/autosuspend.c?format=TEXT",
+    "revision": "android-9.0.0_r61",
+    "sha256": "184256bd52388b5e289c35a93166a270504c2ab4ef434de98a6552ad060813e4",
+    "bytes": 2308
+  },
+  {
+    "file": "sleep-states.rst",
+    "url": "https://raw.githubusercontent.com/torvalds/linux/v7.0-rc7/Documentation/admin-guide/pm/sleep-states.rst",
+    "revision": "v7.0-rc7",
+    "sha256": "c910a8056f69b248595fb25f2bf35676ca8a038fcde3c9006569267f015ea781",
+    "bytes": 13567
+  },
+  {
+    "file": "Generic.kl",
+    "url": "https://android.googlesource.com/platform/frameworks/base/+/android-9.0.0_r61/data/keyboards/Generic.kl?format=TEXT",
+    "revision": "android-9.0.0_r61",
+    "sha256": "d0a9a1b6ee567e52929e8387545f6e52d119a92d8185206b22c433faed2f5115",
+    "bytes": 9193
+  },
+  {
+    "file": "watchdogd.cpp",
+    "url": "https://android.googlesource.com/platform/system/core/+/android-9.0.0_r61/init/watchdogd.cpp?format=TEXT",
+    "revision": "android-9.0.0_r61",
+    "sha256": "e8e440f405bbe777affd743ecca2228bcbabcf1585132c013056fe42e6650b78"
+  }
+]

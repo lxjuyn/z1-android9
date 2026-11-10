@@ -1,0 +1,26 @@
+{
+  "path": "/home/lxj/claude/6572/out/z1_fix3q_boot/boot.img",
+  "sha256": "9c198659cb99904abd01be112709163cbf1104d912fd0a31cb47ad40cb95cba0",
+  "ramdisk_offset": 4239360,
+  "files": [
+    {
+      "name": "init.rc",
+      "output": "packed_init.rc",
+      "sha256": "e7b97d1a10b30c3fd472d7dbd18335f455ad4fa2fc48697e58ff65002e10be1c",
+      "bytes": 29382
+    },
+    {
+      "name": "init.z1.rc",
+      "output": "packed_init.z1.rc",
+      "sha256": "a2827d03a929cf2d3e2ed960eaf784170288bd6275384c6477f6bb14d17d3570",
+      "bytes": 5300
+    },
+    {
+      "name": "z1_pm_guard.sh",
+      "output": "packed_z1_pm_guard.sh",
+      "sha256": "c43ca39ffc1988363cc6b782559af7d633674122e0b458179624e8cda78585d1",
+      "bytes": 1861
+    }
+  ],
+  "scope": "candidate image only, running image unverified"
+}
