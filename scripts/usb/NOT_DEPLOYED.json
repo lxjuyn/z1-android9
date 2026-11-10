@@ -1,0 +1,48 @@
+{
+  "status": "NOT_DEPLOYED",
+  "opt_in_property": "ro.z1.usb.candidate=1",
+  "request_property": "sys.z1.usb.candidate.request=acm,adb",
+  "deployed": false,
+  "device_runtime_verified": false,
+  "adb_working": false,
+  "scope": [
+    "ACM",
+    "authenticated USB ADB"
+  ],
+  "current_image_blockers": [
+    "v35/v83 do not define service adbd",
+    "v83 boot + v35 system properties set ro.adb.secure=0"
+  ],
+  "deployment_prerequisites": [
+    "Separately reviewed image integration; no import or device.mk change is supplied",
+    "Exactly one imported disabled adbd service with adbd auth socket and ARM executable",
+    "ro.secure=1 and ro.adb.secure=1; no root or TCP ADB request",
+    "Exclusive gadget ownership; current ACM logger cannot run concurrently",
+    "New z1_usb_candidate SELinux domain and property/file permissions reviewed in enforcing mode",
+    "Unique known MUSB controller, mounted FunctionFS and both daemon and kernel readiness",
+    "On-board unknown-host rejection and authorized-host acceptance remain unverified"
+  ],
+  "startup_order": [
+    "create ffs.adb",
+    "mount FunctionFS",
+    "start adbd",
+    "wait for descriptor readiness",
+    "bind ACM+ADB"
+  ],
+  "offline_check": "python3 scripts/usb/check_z1_usb_candidate.py --rootfs EXTRACTED_ROOT --state OBSERVATION.json --phase bind",
+  "exit_codes": {
+    "0": "offline predicates passed, NOT deployment or working ADB",
+    "1": "blocked",
+    "2": "invalid input"
+  },
+  "offline_image_evidence": {
+    "boot": "out/z1_v83/boot.img",
+    "boot_sha256": "ad3eed1a1b7ff4b05269088571c57412077753634a654d4c6dead9373e5c69d1",
+    "system": "out/z1_v35_selftest/system_v35.img",
+    "ramdisk_adbd_service_count": 0,
+    "system_init_rc_files_read": 57,
+    "vendor_init_rc_files_read": 17,
+    "checker_exit": 1,
+    "runtime_observations_collected": false
+  }
+}

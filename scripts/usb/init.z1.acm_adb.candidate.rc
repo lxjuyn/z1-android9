@@ -1,0 +1,56 @@
+# NOT_DEPLOYED: opt-in candidate only; NOT imported or copied by device.mk.
+# Requires an independently audited, disabled service adbd with its auth socket,
+# ro.secure=1, ro.adb.secure=1, and an enforcing z1_usb_candidate SELinux domain.
+# Current v35/v83 have no service adbd and must fail preflight.
+# A separate future image must give this candidate exclusive UDC ownership.
+# Never import alongside an enabled z1_acm_log/generic USB gadget owner.
+# Do not change persist.sys.usb.config or the existing ACM implementation.
+# Sequence: create ffs.adb -> mount FunctionFS -> start adbd -> descriptor ready
+# -> recheck unique MUSB and kernel ready -> bind. No ep0 startup gate.
+
+on property:sys.z1.usb.candidate.request=acm,adb && property:ro.z1.usb.candidate=1
+    # Publish stopped for a known disabled service; missing service stays absent.
+    stop adbd
+    start z1_usb_candidate_prepare
+
+service z1_usb_candidate_prepare /system/bin/sh /system/bin/z1_usb_candidate.sh prepare
+    class late_start
+    user root
+    group root shell
+    disabled
+    oneshot
+    seclabel u:r:z1_usb_candidate:s0
+
+on property:sys.z1.usb.candidate.prepared=1 && property:sys.z1.usb.candidate.request=acm,adb && property:ro.z1.usb.candidate=1 && property:ro.adb.secure=1 && property:ro.secure=1
+    start adbd
+
+on property:sys.usb.ffs.ready=1 && property:init.svc.adbd=running && property:sys.z1.usb.candidate.prepared=1 && property:sys.z1.usb.candidate.request=acm,adb && property:ro.z1.usb.candidate=1
+    start z1_usb_candidate_bind
+
+service z1_usb_candidate_bind /system/bin/sh /system/bin/z1_usb_candidate.sh bind
+    class late_start
+    user root
+    group root shell
+    disabled
+    oneshot
+    seclabel u:r:z1_usb_candidate:s0
+
+on property:sys.z1.usb.candidate.request=none && property:ro.z1.usb.candidate=1
+    start z1_usb_candidate_stop
+
+on property:init.svc.adbd=stopped && property:sys.z1.usb.candidate.bound=1 && property:ro.z1.usb.candidate=1
+    start z1_usb_candidate_stop
+
+on property:init.svc.adbd=restarting && property:sys.z1.usb.candidate.bound=1 && property:ro.z1.usb.candidate=1
+    start z1_usb_candidate_stop
+
+on property:sys.usb.ffs.ready=0 && property:sys.z1.usb.candidate.bound=1 && property:ro.z1.usb.candidate=1
+    start z1_usb_candidate_stop
+
+service z1_usb_candidate_stop /system/bin/sh /system/bin/z1_usb_candidate.sh stop
+    class late_start
+    user root
+    group root shell
+    disabled
+    oneshot
+    seclabel u:r:z1_usb_candidate:s0
