@@ -1,0 +1,3 @@
+# Local generated artifacts only; never commit donor or patched vendor blobs.
+*
+!.gitignore
