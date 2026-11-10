@@ -29,7 +29,8 @@ LOCAL_SRC_FILES := 	\
 	mapper.cpp
 
 ifeq ($(Z1_KERNEL_VARIANT),mainline)
-LOCAL_SRC_FILES += lima_allocator.cpp
+# Keep the heap backend linked: gralloc.cpp references it weakly.
+LOCAL_SRC_FILES += lima_allocator.cpp z1_heap.cpp
 LOCAL_CFLAGS += -DZ1_USE_LIMA=1
 LOCAL_C_INCLUDES += $(TOP)/external/libdrm/include
 endif
