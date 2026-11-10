@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "board": "Z1",
+  "facts": {
+    "tf_slot": {
+      "status": "reported",
+      "board": "Z1",
+      "value": "User confirms a TF slot exists; there is no indicator light. Attach a saved source and hash before marking verified.",
+      "evidence": []
+    },
+    "host_mapping": {
+      "status": "unknown",
+      "board": "Z1",
+      "value": "",
+      "evidence": []
+    },
+    "pinmux": {
+      "status": "unknown",
+      "board": "Z1",
+      "value": "",
+      "evidence": []
+    },
+    "card_detect": {
+      "status": "unknown",
+      "board": "Z1",
+      "value": "",
+      "evidence": []
+    },
+    "vmmc": {
+      "status": "unknown",
+      "board": "Z1",
+      "value": "",
+      "evidence": []
+    },
+    "vqmmc": {
+      "status": "unknown",
+      "board": "Z1",
+      "value": "",
+      "evidence": []
+    },
+    "kernel_support": {
+      "status": "unknown",
+      "board": "Z1",
+      "value": "",
+      "evidence": []
+    },
+    "dts": {
+      "status": "unknown",
+      "board": "Z1",
+      "value": "Current project context reports only eMMC; a Z1 TF host description is not yet evidenced.",
+      "evidence": []
+    },
+    "fstab": {
+      "status": "unknown",
+      "board": "Z1",
+      "value": "",
+      "evidence": []
+    },
+    "vold": {
+      "status": "unknown",
+      "board": "Z1",
+      "value": "",
+      "evidence": []
+    }
+  }
+}
