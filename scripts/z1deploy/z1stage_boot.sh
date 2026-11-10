@@ -129,52 +129,6 @@ seed() {
     fi
 }
 
-# --- 3. apply the active set ----------------------------------------------
-# apply <file-name> <vendor target>
-apply() {
-    _name=$1
-    _dst=$2
-    _active="$STAGE/active/$_name"
-    _tmp="$_dst.z1tmp"
-    _prop="z1stage.${_name%%.*}"
-
-    if [ -f "$_active" ]; then
-        if ! $CP "$_active" "$_tmp" 2>/dev/null; then
-            ERRORS=$((ERRORS + 1))
-            log "ERROR active/${_name}: cannot write ${_tmp} (/vendor ro?) -- leaving ${_dst} untouched"
-            return 0
-        fi
-        $CHMOD 0644 "$_tmp" 2>/dev/null
-        $CHOWN 0:0 "$_tmp" 2>/dev/null
-        if $MV -f "$_tmp" "$_dst" 2>/dev/null; then
-            [ -x "$RESTORECON" ] && "$RESTORECON" "$_dst" >/dev/null 2>&1
-            APPLIED=$((APPLIED + 1))
-            log "active ${_name} -> ${_dst} ($(file_size "$_dst") B, mode 0644, sha256 $(sha_of "$_dst"))"
-            set_prop "$_prop" active
-        else
-            ERRORS=$((ERRORS + 1))
-            $RM -f "$_tmp" 2>/dev/null
-            log "ERROR active/${_name}: rename ${_tmp} -> ${_dst} failed -- leaving old ${_dst}"
-        fi
-        return 0
-    fi
-
-    if [ -e "$_dst" ]; then
-        if $RM -f "$_dst" 2>/dev/null; then
-            REMOVED=$((REMOVED + 1))
-            log "no active/${_name} -> removed ${_dst} (stock /system/lib/hw/${_name} takes over)"
-            set_prop "$_prop" system
-        else
-            ERRORS=$((ERRORS + 1))
-            log "ERROR no active/${_name}: cannot remove ${_dst} (/vendor ro?)"
-        fi
-    else
-        log "no active/${_name} -> ${_dst} already absent (stock /system/lib/hw/${_name} in use)"
-        set_prop "$_prop" system
-    fi
-    return 0
-}
-
 log "begin @${T0}s (stage ${STAGE})"
 
 seed hwcomposer.z1.so 0644
@@ -182,55 +136,65 @@ seed gralloc.z1.so 0644
 seed z1kmstest 0755
 seed z1rootd.sh 0755
 
-# --- 2b. one-shot auto-install of the ramdisk candidates --------------------
-# The first boot after a flash tests the modules that were baked into the
-# ramdisk, so one physical flash yields both the root channel AND the first
-# real OVL result.  That has to cover BOTH modules: the HWC2 compositor is what
-# programs the OVL planes, and the gralloc is what makes the layer buffers
-# physically contiguous so those planes can scan them out.  With the stock
-# (lima) gralloc every layer is non-contiguous and every frame falls back to
-# client composition, i.e. nothing of the OVL path gets exercised.
+# --- 2b. install the candidates baked into the ramdisk ----------------------
+# Semantics (simple and predictable, because a wedged console must never be
+# required to recover the display):
 #
-# IMPORTANT: the auto-installed copy must NOT stay in active/, otherwise a
-# broken module would be re-installed forever (and the legacy pre-v83 rc line
-# 42 that copies /hwcomposer.z1.so into /vendor on every boot would keep it
-# alive even without active/).  So: apply it for this boot only, then delete
-# the active copy.  On the next boot active/ is empty again, the "apply" step
-# below removes whatever the legacy line installed, and libhardware falls back
-# to the stock module in /system/lib/hw.  An explicit install via
-# z1_install_hal.sh writes active/ itself and therefore persists.
-# One marker per module so a half-broken pair can be rolled back separately.
-AUTO_ONCE_HWC=0
-AUTO_ONCE_GRALLOC=0
-auto_once() {   # auto_once <file> <marker-suffix> <once-var-name>
+#   $STAGE/active/<name>  wins if the operator put one there   -> install it
+#   else /<name> (ramdisk) is installed every boot             -> the image wins
+#   else the /vendor override is REMOVED                       -> stock module
+#
+# A kill switch exists for a broken HAL/gralloc: create the file
+# $STAGE/.disable_<module> (hwcomposer / gralloc) and reboot (or run the same
+# logic live from the root channel) -- the /vendor override is then removed and
+# libhardware falls back to /system/lib/hw, which is the stock module.
+#
+# The install is cp-to-tmp + rename, so a live re-run can never rewrite a
+# mmap'ed .so in place (that would SIGBUS the running composer).
+install_one() {   # install_one <file-name> <disable-token>
     _name=$1
-    _mark="$STAGE/.${2}_auto_installed"
-    _cand="$STAGE/$_name"
+    _tok=$2
+    _active="$STAGE/active/$_name"
+    _kill="$STAGE/.disable_$_tok"
+    _dst="$VENDOR_HW/$_name"
+    _tmp="$_dst.z1tmp"
 
-    if [ -f "$_mark" ]; then
-        log "auto-install ${_name}: already done once (${_mark}), skipped"
+    if [ -f "$_kill" ]; then
+        log "install ${_name}: kill switch ${_kill} present -> /vendor override removed"
+        $RM -f "$_dst" 2>/dev/null
         return 0
     fi
-    if [ ! -f "$_cand" ]; then
-        log "auto-install ${_name}: no candidate at ${_cand}, skipped"
+
+    if [ -f "$_active" ]; then
+        _src="$_active"
+    elif [ -f "/$_name" ]; then
+        _src="/$_name"
+    else
+        if [ -e "$_dst" ]; then
+            $RM -f "$_dst" 2>/dev/null && log "install ${_name}: no candidate -> removed ${_dst} (stock module takes over)"
+        fi
         return 0
     fi
-    if $CP "$_cand" "$STAGE/active/$_name" 2>/dev/null; then
-        $CHMOD 0644 "$STAGE/active/$_name" 2>/dev/null
-        $CHOWN "$SHELL_UID:$SHELL_GID" "$STAGE/active/$_name" 2>/dev/null
-        printf 'auto-installed %s at %ss\n' "$(sha_of "$_cand")" "$(uptime_s)" \
-            > "$_mark" 2>/dev/null
-        $CHMOD 0666 "$_mark" 2>/dev/null
-        log "auto-install ${_name}: applying for this boot only (sha256 $(sha_of "$_cand")), marker ${_mark} written"
-        eval "${3}=1"
+
+    if $CP "$_src" "$_tmp" 2>/dev/null; then
+        $CHMOD 0644 "$_tmp" 2>/dev/null
+        $CHOWN 0:0 "$_tmp" 2>/dev/null
+        if $MV -f "$_tmp" "$_dst" 2>/dev/null; then
+            APPLIED=$((APPLIED + 1))
+            log "install ${_name}: ${_src} -> ${_dst} (sha256 $(sha_of "$_dst"))"
+        else
+            ERRORS=$((ERRORS + 1))
+            $RM -f "$_tmp" 2>/dev/null
+            log "ERROR install ${_name}: rename ${_tmp} -> ${_dst} failed"
+        fi
     else
         ERRORS=$((ERRORS + 1))
-        log "ERROR auto-install ${_name}: cannot create active/${_name}"
+        log "ERROR install ${_name}: cannot write ${_tmp} (/vendor ro?)"
     fi
 }
 
-auto_once hwcomposer.z1.so hwc AUTO_ONCE_HWC
-auto_once gralloc.z1.so gralloc AUTO_ONCE_GRALLOC
+install_one hwcomposer.z1.so hwcomposer
+install_one gralloc.z1.so gralloc
 
 # --- 2b2. dma-heap device node (needed for contiguous scanout buffers) ------
 # The kernel registers the CMA heap as /sys/class/dma_heap/default_cma_region
@@ -318,22 +282,7 @@ if [ ! -e /sys/kernel/debug/sync/sw_sync ]; then
     fi
 fi
 
-if [ -d "$VENDOR_HW" ]; then
-    apply hwcomposer.z1.so "$VENDOR_HW/hwcomposer.z1.so"
-    apply gralloc.z1.so "$VENDOR_HW/gralloc.z1.so"
-else
-    ERRORS=$((ERRORS + 1))
-    log "ERROR ${VENDOR_HW} missing; active/ set NOT applied"
-fi
 
-if [ "${AUTO_ONCE_HWC:-0}" = 1 ]; then
-    $RM -f "$STAGE/active/hwcomposer.z1.so" 2>/dev/null
-    log "auto-install: removed the one-shot HWC copy -> next boot falls back to the stock HWC1 unless an operator installs one"
-fi
-if [ "${AUTO_ONCE_GRALLOC:-0}" = 1 ]; then
-    $RM -f "$STAGE/active/gralloc.z1.so" 2>/dev/null
-    log "auto-install: removed the one-shot gralloc copy -> next boot falls back to the stock gralloc unless an operator installs one"
-fi
 
 # --- 3b. identity properties ------------------------------------------------
 # Which binary is actually in effect must be visible on the board, because there

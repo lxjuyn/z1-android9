@@ -55,6 +55,7 @@ die() { printf 'z1flash: %s\n' "$*" >&2; exit 5; }
 [ -n "$IMG" ] || die "usage: $0 <image> [--offset 0x...] [--minutes N]"
 [ -f "$IMG" ] || die "no such file: $IMG"
 [ -x "$MTK_PY" ] || die "mtkclient python not found: $MTK_PY"
+[ -f "$MTK_DIR/mtk.py" ] || die "mtk.py not found in $MTK_DIR"
 [ -d "$MTK_DIR" ] || die "mtkclient dir not found: $MTK_DIR"
 
 SIZE=$(stat -c%s "$IMG")
@@ -80,12 +81,12 @@ trap 'rm -f "$READBACK"' EXIT
 TRIES=$((MINUTES * 12))          # one attempt every 5 s
 for t in $(seq 1 "$TRIES"); do
     WRITE_LOG=/tmp/z1flash_write_$$.log
-    echo "$SUDO_PW" | sudo -S timeout 60 "$MTK_PY" mtk.py wo "$OFFSET" "$SIZE_HEX" "$IMG" \
+    echo "$SUDO_PW" | sudo -S timeout 60 "$MTK_PY" "$MTK_DIR/mtk.py" wo "$OFFSET" "$SIZE_HEX" "$IMG" \
         > "$WRITE_LOG" 2>&1
     if grep -q "Wrote .* to offset .* with length" "$WRITE_LOG"; then
         echo "z1flash: write acknowledged on attempt $t"
         rm -f "$READBACK"
-        echo "$SUDO_PW" | sudo -S timeout 180 "$MTK_PY" mtk.py ro "$OFFSET" "$SIZE_HEX" "$READBACK" \
+        echo "$SUDO_PW" | sudo -S timeout 180 "$MTK_PY" "$MTK_DIR/mtk.py" ro "$OFFSET" "$SIZE_HEX" "$READBACK" \
             > /tmp/z1flash_read_$$.log 2>&1
         RSIZE=$(stat -c%s "$READBACK" 2>/dev/null || echo 0)
         if [ "$RSIZE" != "$SIZE" ]; then

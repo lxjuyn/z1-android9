@@ -108,7 +108,7 @@ extern "C" int __android_log_write(int prio, const char *tag, const char *text);
 #define LOG_TAG "z1hwc2"
 #include <log/log.h>
 
-#define Z1_HWC_VERSION "2026-11-10-r12"
+#define Z1_HWC_VERSION "2026-11-10-r16"
 
 /* ------------------------------------------------------------ constants --- */
 
@@ -448,6 +448,7 @@ struct z1_hwc2 : public hwc2_device_t {
 	bool validated;
 	bool client_expected;	/* SurfaceFlinger will supply a client target */
 	bool color_transform;	/* a non-identity colour matrix is in effect */
+	const char *client_how_last;
 
 	/* deferred framebuffer release: an fb that was replaced this frame may
 	 * still be referenced by the state the display is scanning, so it is
@@ -460,8 +461,19 @@ struct z1_hwc2 : public hwc2_device_t {
 	int timeline_fd;
 	uint32_t timeline_val;	/* last signalled timeline value */
 	int modeset_tries;
+	/* vsync reporting + present fence (see the vsync thread below) */
+	int present_tl;		/* sw_sync timeline for present fences */
+	uint32_t present_val;	/* last signalled value on present_tl */
+	bool present_pending;	/* a present fence is waiting for the next vblank */
+	volatile bool vsync_on;	/* SurfaceFlinger asked for vsync reports */
+	bool vsync_err_logged;	/* one-shot error report */
+	bool vsync_reported;	/* first delivered vsync logged */
+	volatile int vsync_stop;
+	pthread_t vsync_thread;
+	bool vsync_started;
 	bool fences_pending;	/* fences at timeline_val+1 are outstanding */
 	uint64_t last_present_ms;
+	uint64_t last_vblank_ms;	/* last vblank timestamp seen (monotonic ms) */
 	pthread_mutex_t fence_lock;
 	volatile int wd_stop;
 	pthread_t wd_thread;
@@ -549,12 +561,83 @@ static void *fence_watchdog(void *arg)
 	return nullptr;
 }
 
+/*
+ * Vsync reporting.
+ *
+ * Without it SurfaceFlinger falls back to its software model ("Timed out
+ * waiting for hw vsync; faking it"), which shows up as jittery animation and
+ * a scheduler that never locks phase.  DRM_IOCTL_WAIT_VBLANK (flags 0, no
+ * DRM_MASTER needed) blocks until the next vblank and hands back the kernel's
+ * own CLOCK_MONOTONIC timestamp, which is exactly what HWC2 wants.
+ *
+ * The same wake-up also signals the present (retire) fence of every frame that
+ * was committed since the previous vblank: a frame "starts to appear" at the
+ * next vblank, so that is the correct moment, not the return of the commit
+ * ioctl.
+ */
+static void *vsync_thread_fn(void *arg)
+{
+	z1_hwc2 *h = static_cast<z1_hwc2 *>(arg);
+
+	while (!h->vsync_stop) {
+		drmVBlank vbl;
+
+		if (!h->vsync_on) {
+			usleep(5 * 1000);
+			continue;
+		}
+		memset(&vbl, 0, sizeof(vbl));
+		vbl.request.type = DRM_VBLANK_RELATIVE;
+		/*
+		 * sequence must be 1, not 0: the kernel treats
+		 * (RELATIVE, sequence 0) as a *query* -- req_seq == seq, so it
+		 * returns the cached count immediately instead of waiting, and
+		 * this loop would spin instead of following the vblank.
+		 */
+		vbl.request.sequence = 1;
+		if (ioctl(h->drm_fd, DRM_IOCTL_WAIT_VBLANK, &vbl) != 0) {
+			if (!h->vsync_err_logged) {
+				h->vsync_err_logged = true;
+				klogf(1, "z1hwc2: WAIT_VBLANK failed: %s\n",
+				      strerror(errno));
+			}
+			usleep(5 * 1000);
+			continue;
+		}
+		h->last_vblank_ms = now_ms();
+		if (h->present_tl >= 0) {
+			pthread_mutex_lock(&h->fence_lock);
+			if (h->present_pending) {
+				if (sw_timeline_inc(h->present_tl, 1) == 0)
+					h->present_val++;
+				h->present_pending = false;
+			}
+			pthread_mutex_unlock(&h->fence_lock);
+		}
+		if (h->cb_vsync) {
+			typedef void (*vsync_fn)(hwc2_callback_data_t,
+						 hwc2_display_t, int64_t);
+			int64_t ts = (int64_t)vbl.reply.tval_sec * 1000000000LL +
+				     (int64_t)vbl.reply.tval_usec * 1000LL;
+
+			if (!h->vsync_reported) {
+				h->vsync_reported = true;
+				klogf(1, "z1hwc2: first vsync ts=%lld\n",
+				      (long long)ts);
+			}
+			((vsync_fn)h->cb_vsync)(h->cb_data, 0, ts);
+		}
+	}
+	return nullptr;
+}
+
 static void fences_init(z1_hwc2 *h)
 {
 	pthread_mutex_init(&h->fence_lock, nullptr);
 	h->timeline_fd = -1;
+	h->present_tl = -1;
 	h->last_present_ms = now_ms();
-	if (prop_int("debug.z1.hwc.fences", 0) == 0) {
+	if (prop_int("debug.z1.hwc.fences", 1) == 0) {
 		klogf(1, "z1hwc2: fences disabled (debug.z1.hwc.fences=0)\n");
 		return;
 	}
@@ -567,11 +650,19 @@ static void fences_init(z1_hwc2 *h)
 		      strerror(errno));
 		return;
 	}
+	h->present_tl = open("/sys/kernel/debug/sync/sw_sync",
+			     O_RDWR | O_CLOEXEC);
 	h->fences_on = true;
 	if (pthread_create(&h->wd_thread, nullptr, fence_watchdog, h) == 0)
 		h->wd_started = true;
-	klogf(1, "z1hwc2: sw_sync fences enabled (timeline fd=%d)\n",
-	      h->timeline_fd);
+	if (prop_int("debug.z1.hwc.vsync", 1) != 0) {
+		if (pthread_create(&h->vsync_thread, nullptr, vsync_thread_fn,
+				   h) == 0)
+			h->vsync_started = true;
+	}
+	klogf(1, "z1hwc2: fences enabled (release fd=%d present fd=%d) "
+	     "vsync=%d\n", h->timeline_fd, h->present_tl,
+	      h->vsync_started ? 1 : 0);
 }
 
 /* ---------------------------------------------------------------- helpers --- */
@@ -1931,12 +2022,12 @@ static int32_t z1_set_vsync_enabled(hwc2_device_t *d, hwc2_display_t display,
 {
 	z1_hwc2 *h = H(d);
 
-	(void)display;
-	(void)enabled;
-	/* Swallowed for now; stored so a future vsync thread can honour it. */
-	(void)h;
-	/* No vsync reporting yet: SurfaceFlinger falls back to its software
-	 * vsync model ("Timed out waiting for hw vsync; faking it"). */
+	if (display != 0)
+		return HWC2_ERROR_BAD_DISPLAY;
+	h->vsync_on = (enabled == HWC2_VSYNC_ENABLE);
+	if (g_verbose >= 1)
+		klogf(1, "z1hwc2: setVsyncEnabled(%d) -> %s\n", enabled,
+		      h->vsync_on ? "on" : "off");
 	return HWC2_ERROR_NONE;
 }
 
@@ -2402,6 +2493,15 @@ static int32_t z1_present_display(hwc2_device_t *d, hwc2_display_t display,
 	} else if (client_target_fb(h, &client_fb, &client_w, &client_h,
 				    &client_how) != 0) {
 		client_fb = 0;
+		client_how = "FAILED";
+	}
+	/* The client target path decides whether a client-composed frame can be
+	 * shown at all, so make a change of path visible without verbose=3. */
+	if (h->client_how_last != client_how && g_verbose >= 1) {
+		h->client_how_last = client_how;
+		klogf(1, "z1hwc2: client target path: %s (fb=%u %ux%u expected=%d)\n",
+		      client_how, client_fb, client_w, client_h,
+		      h->client_expected ? 1 : 0);
 	}
 
 	/* Collect device layers bottom-to-top. */
@@ -2461,20 +2561,10 @@ static int32_t z1_present_display(hwc2_device_t *d, hwc2_display_t display,
 			   slot < h->plane_count; i++) {
 		z1_layer *l = device_layers[i];
 
-		if (!l->fb.fb_id || l->fb.handle != l->handle ||
-		    (l->handle &&
-		     l->fb.src_fd != ((struct z1_handle *)l->handle)->fd)) {
-			if (l->fb.fb_id)
-				fb_forget(h, &l->fb);
-			if (!l->handle || fb_import(h, l->handle, &l->fb) != 0) {
-				l->lost_fb = true;
-				klogf(0, "z1hwc2: layer %" PRIu64 " lost its "
-				     "framebuffer at present; it will be "
-				     "reported as CLIENT next frame\n",
-				      (uint64_t)l->id);
-				continue;
-			}
-		}
+		/* Small layers are presented through a padded copy: never try to
+		 * import them (their framebuffer is below the kernel's 64x64
+		 * minimum, so AddFB2 always fails and used to set lost_fb,
+		 * which then demoted the layer again on the next frame). */
 		if (l->use_small) {
 			struct z1_handle *gh = (struct z1_handle *)l->handle;
 			hwc_frect_t crop;
@@ -2499,6 +2589,21 @@ static int32_t z1_present_display(hwc2_device_t *d, hwc2_display_t display,
 			scanned.push_back(l);
 			slot++;
 			continue;
+		}
+
+		if (!l->fb.fb_id || l->fb.handle != l->handle ||
+		    (l->handle &&
+		     l->fb.src_fd != ((struct z1_handle *)l->handle)->fd)) {
+			if (l->fb.fb_id)
+				fb_forget(h, &l->fb);
+			if (!l->handle || fb_import(h, l->handle, &l->fb) != 0) {
+				l->lost_fb = true;
+				klogf(0, "z1hwc2: layer %" PRIu64 " lost its "
+				     "framebuffer at present; it will be "
+				     "reported as CLIENT next frame\n",
+				      (uint64_t)l->id);
+				continue;
+			}
 		}
 		program_plane(h, req, slot, l->fb.fb_id,
 			      l->frame.left, l->frame.top,
@@ -2652,6 +2757,30 @@ static int32_t z1_present_display(hwc2_device_t *d, hwc2_display_t display,
 				sw_fence_create(h->timeline_fd, "z1rel", next);
 		}
 		h->fences_pending = true;
+
+		/*
+		 * Present (retire) fence: must be signalled when this frame
+		 * starts to appear, i.e. at the next vblank.  The vsync thread
+		 * does that; if vsync reporting is off, fall back to an
+		 * already-signalled fence so nobody waits forever.
+		 */
+		if (h->present_tl >= 0) {
+			uint32_t v;
+
+			if (h->vsync_started && h->vsync_on) {
+				v = h->present_val + 1;
+				*out_retire_fence =
+					sw_fence_create(h->present_tl,
+							"z1present", v);
+				if (*out_retire_fence >= 0)
+					h->present_pending = true;
+			} else {
+				*out_retire_fence =
+					sw_fence_create(h->present_tl,
+							"z1present",
+							h->present_val);
+			}
+		}
 		pthread_mutex_unlock(&h->fence_lock);
 	}
 	h->last_present_ms = now_ms();
@@ -2842,10 +2971,20 @@ static int z1_close(hw_device_t *dev)
 
 	klogf(1, "z1hwc2: close (frames=%" PRIu64 " commit_fail=%" PRIu64 ")\n",
 	      h->frames, h->commit_fail);
+	h->vsync_on = false;	/* let a blocked WAIT_VBLANK wake up first */
+	h->vsync_stop = 1;
+	if (h->vsync_started) {
+		pthread_join(h->vsync_thread, nullptr);
+		h->vsync_started = false;
+	}
 	h->wd_stop = 1;
 	if (h->wd_started) {
 		pthread_join(h->wd_thread, nullptr);
 		h->wd_started = false;
+	}
+	if (h->present_tl >= 0) {
+		close(h->present_tl);
+		h->present_tl = -1;
 	}
 	if (h->fences_on) {
 		pthread_mutex_lock(&h->fence_lock);
