@@ -1,0 +1,122 @@
+{
+  "schema": 1,
+  "status": "planning_only_no_microphone_recording",
+  "production_files_modified": false,
+  "usage": {
+    "host_tests": "PYTHONDONTWRITEBYTECODE=1 python3 -B /home/lxj/claude/6572/z1a9_gpt/scripts/audio_capture_check/tests/test_capture.py",
+    "host_source_audit": "python3 -B /home/lxj/claude/6572/z1a9_gpt/scripts/audio_capture_check/check_capture.py --source-root /home/lxj/claude/6572 --policy /home/lxj/claude/6572/z1a9_gpt/scripts/audio_capture_check/v44_vendor_etc_primary_audio_policy_configuration.xml",
+    "snapshot_analysis": "python3 -B /home/lxj/claude/6572/z1a9_gpt/scripts/audio_capture_check/check_capture.py --snapshot /absolute/path/to/metadata.txt",
+    "collector_later_on_target": "sh /path/to/collect_prerequisites.sh --live",
+    "collector_on_host_fixture": "sh /home/lxj/claude/6572/z1a9_gpt/scripts/audio_capture_check/collect_prerequisites.sh --root /absolute/path/to/fixture",
+    "collector_scope": "Only proc PCM registration/status, stat/access tests and executable presence; no tinymix/tinycap execution, no PCM/control opens/ioctls, no debugfs reads or writes, no full logs/PIDs/device identifiers. --live not executed this session.",
+    "exit_codes": {
+      "collector": {
+        "0": "metadata collected; readiness NOT established",
+        "2": "usage or rejected hierarchy",
+        "3": "PCM metadata unavailable or AWB absent"
+      },
+      "analyzer": {
+        "0": "incomplete evidence with no detected definite blocker; NEVER readiness approval",
+        "2": "malformed/unreadable evidence",
+        "3": "at least one source/policy/snapshot blocker"
+      }
+    },
+    "limitations": "Collector requires trusted stable fixture tree/PATH; checks reject direct symlinks but are not a hostile concurrent-filesystem sandbox. POSIX sh tested on host; Android shell not run. Shell identity access does not establish audioserver DAC/SELinux. Absent tinycap is a diagnostic-tool issue, not a HAL prerequisite. Snapshot carries no authenticated module/build identity."
+  },
+  "repositories": {
+    "kernel_head": "e6489564bb4809a2d97bf652e39f4a67181008b5",
+    "audio_project_head": "abbed5c7a45449c2943d2af73bc79147ada04d01"
+  },
+  "pcm_contract": {
+    "proven_source": "fork_linux/sound/soc/mediatek/mt6572/mt6572-afe-pcm.c:230-235,259-315,383-428,470-498",
+    "capture_device": "AWB link; DL1 link is first and AWB second in machine source, often C0D1c. Runtime /proc/asound/pcm must decide; never copy playback C0D0p number.",
+    "format": "S16_LE interleaved",
+    "mic_rates_hz": [
+      8000,
+      16000,
+      32000,
+      48000
+    ],
+    "channels": [
+      1,
+      2
+    ],
+    "first_profile": {
+      "rate_hz": 16000,
+      "channels": 1,
+      "period_frames": 1024,
+      "period_count": 4,
+      "period_bytes": 2048,
+      "ring_bytes": 8192,
+      "period_ms": 64,
+      "ring_ms": 256
+    },
+    "latency_limit": "Conservative functional profile only, unsuitable as a low-latency hearing-aid design. Do not reduce period below kernel 1024-byte minimum.",
+    "period_bytes_min": 1024,
+    "period_bytes_max": 32768,
+    "period_alignment_bytes": 8,
+    "periods_min": 2,
+    "periods_max": 32,
+    "ring_bytes_max": 131072,
+    "rate_warning": "Generic ALSA DAI/hw constraints advertise broader 8k..48k; MIC-specific prepare rejects 11025/12000/22050/24000/44100. Restrict policy/negotiation; do not assume broad hw refine means MIC supports each rate.",
+    "route_controls": {
+      "AWB Source": "MIC",
+      "MIC Route Switch": "On, after graph repair",
+      "MIC Input Mux": "MIC1 or MIC2 only after board wiring verified; current default MIC1 is not wiring evidence"
+    },
+    "no_gain_programming": "Existing codec event hardcodes PGA configuration; this task neither verifies nor changes gain/register values."
+  },
+  "kernel_prerequisites": [
+    {
+      "status": "confirmed_source_defect",
+      "evidence": "mt6323.c:528-545 + local soc-dapm.c:1518-1522,1737-1745; official v7.0-rc7 independently has same supply exclusion/power rule",
+      "missing": "MIC Input -> MIC Route has no signal route to AIF1 Capture. A supply dependency alone cannot carry the input endpoint. Candidate graph repair is AIF1 Capture <- MIC Route while retaining valid supply dependencies; must be reviewed/applied by kernel owner."
+    },
+    {
+      "status": "confirmed_missing_dependency_hardware_effect_unverified",
+      "evidence": "mt6323.c:145-162,528-545",
+      "missing": "AUDCLK supply feeds DAC only, no capture dependency. MIC-only power-up needs verified clock dependency and teardown refcount so stopping playback cannot gate a recording stream. Do not blindly attach downlink NEWIF event: it changes DL controls."
+    },
+    {
+      "status": "unknown",
+      "evidence": "mt6323.c:338-341,660",
+      "missing": "Physical MIC1/MIC2 mapping remains explicitly unknown in source. Requires board evidence; no assumed headset microphone."
+    },
+    {
+      "status": "unknown",
+      "missing": "Confirm runtime AWB PCM, loaded codec/AFE/machine module identities and audited DAPM graph. Candidate image and working source are not proof of loaded state."
+    },
+    {
+      "status": "unknown",
+      "missing": "AWB mux is shared with another capture source; source can be changed without active-stream guard (AFE:723-734). Serialize ownership and route changes; reject competing active capture rather than stealing its mux."
+    }
+  ],
+  "minimal_hal_implementation": [
+    "Do not turn open_input_stream into success until kernel graph/clock and physical mic mapping prerequisites are closed. Allocate a per-input state whose first member is audio_stream_in, with mutex, pcm handle, standby state, verified card/device, format/rate/channel mask, source/device, frame/loss counters and device-owned mute state.",
+    "Validate input devices/sources/flags; start with builtin mic and MIC/DEFAULT source, PCM16 mono16k. Reject unimplemented headset, call, hotword, fast and mmap capture routes honestly; do not advertise them. Negotiate explicitly: write a supported config and return -EINVAL for retry rather than silently changing rate under a successful open.",
+    "Initialize *stream_in=NULL on failure, clean up partial allocations/PCM/mixer state. Use capture-specific card/device discovery, not existing output constants. Retain ownership of capture route and reject second competing input until multi-stream support exists.",
+    "get_input_buffer_size and common.get_buffer_size must agree in bytes; unsupported rate/format/channel masks return zero from get_input_buffer_size. Existing current getter only popcounts channels and ignores rate/format, so it can fabricate support. Populate common get/set sample_rate, format, channel_mask, buffer_size, standby, dump, device, parameters and effect callbacks; return supported errors instead of leaving direct-call callbacks NULL.",
+    "Use pcm_open(card, AWB_device, PCM_IN, cfg) only in the implemented input path after prerequisites, validate pcm_is_ready; close on every failure. Mixer changes limited to verified existing route controls, ordered/serialized and restored only by their owner. No raw register/gain writes.",
+    "read returns BYTES, not tinyalsa status: AOSP tinyalsa pcm_read returns 0 on successful full operation, while audio_stream_in.read returns the number of delivered bytes. Adapter must avoid returning zero repeatedly to the HIDL reader; reject misaligned requests and prevent overflow. Review actual installed tinyalsa read semantics/partial transfer behavior, not just header signature. On error propagate negative status and do not fabricate successful zero-filled recording; account for XRUN recovery explicitly.",
+    "Implement microphone mute as real synchronized state; zero delivered PCM while muted and report mute accurately. Unmute resumes verified path, with no stale audio leakage. Avoid success stubs that discard set_mic_mute.",
+    "Provide non-NULL set_gain and get_input_frames_lost: r61 wrapper calls both directly. Gain may explicitly return -ENOSYS without hardware writes. Frames-lost is a reset-on-read frame counter; avoid fabricated exact loss if installed tinyalsa exposes only an overrun count. get_capture_position is optional (wrapper checks NULL); either implement verified frame counter + CLOCK_MONOTONIC nanoseconds or return -ENOSYS, never synthetic timestamps.",
+    "standby/close must release PCM and capture-owned routes; next read can reopen. Coordinate blocking read vs close and shared clocks; test close during read, repeated standby, errors, mute and concurrent playback. Do not hold a teardown lock forever around an uninterruptible read.",
+    "Only then narrow primary input policy to supported PCM16 rates and mono/stereo capabilities actually validated. AudioRecord needs RECORD_AUDIO runtime permission and applicable AppOps; binder/HIDL registration, audioserver device access and SELinux are separate from tinycap/kernel success. Keep HAL module/HIDL ABI versions matched to image."
+  ],
+  "tinycap_findings": {
+    "aosp_cli": "r61 -n is period_count; -T is duration; default 44100/stereo is not a valid MIC profile. Never run tinycap --help: this version treats argv[1] as a filename before parsing and opens it wb.",
+    "exit_code_warning": "AOSP tinycap main returns 0 after capture_sample returns 0 on pcm_open/malloc failures; process exit0 alone is NOT recording success. A valid later test must check PCM/frame/sample evidence, but no recordings here.",
+    "existing_diagnostic": "scripts/diag/z1_diag_audio.sh:152 specifies -d0 -r44100 -n3. Device0 is not proven capture device, 44100 rejected for MIC, -n3 is not three seconds. Existing script left untouched.",
+    "broken_staging_source": "out/z1_audio_stage/src/tinyalsa/utils/tinycap.c is only 2 bytes; no valid C source evidence. Official r61 copy fetched with provenance.",
+    "image": "Read-only debugfs of out/z1_v44/sys/system_v44.img found regular /bin/tinycap and /bin/tinymix. Image filesystem root differs from mounted /system prefix. Source and policy paths checked separately; no execution/dependency/ABI success inferred.",
+    "policy": "v44 vendor primary XML exposes 11025,12000,22050,24000 unsupported by MIC; 48000 appears twice. Stock XML also contains unsupported44100. Resampler capability must not be presumed in this stub HAL."
+  },
+  "future_acceptance_not_executed": [
+    "Offline callback harness: config negotiation, bytes/frame arithmetic, error cleanup, read returns, mute, mandatory callbacks, concurrent read/close, standby, unsupported flags.",
+    "Reviewed kernel build and module/boot identity checks; standalone capture-only and capture+playback clocks/route lifetimes, period IRQ2 and pointer progress.",
+    "Only in a separately authorized actual recording run: verify physical mic with consent, non-empty frame count, signal response/no stale buffer, correct duration/rate/channel order, XRUN recovery; protect and dispose of sample data as directed.",
+    "Separate Android AudioRecord round trip under runtime recording permission; tinycap pass is not HAL pass. Validate mute/standby, app capture stop and no background mic left enabled."
+  ],
+  "official_sources": "sources/provenance.json contains successful exact URLs/revisions/SHA256 and failed URL attempts. AOSP wrapper canonical paths were discovered from directory listing, not assumed.",
+  "boundary": "No production source/HAL/DTS/init changes, no board/serial/USB operation, no services/process changes, no recording, no image writes, no git index/commit/push by this task."
+}

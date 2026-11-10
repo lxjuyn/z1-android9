@@ -1,0 +1,79 @@
+[
+  {
+    "path": "/home/lxj/claude/6572/z1a9_gpt/scripts/r5g_audio/audio_primary_z1_poc.c",
+    "symbol": "static int adev_set_mic_mute",
+    "lines": [
+      319
+    ]
+  },
+  {
+    "path": "/home/lxj/claude/6572/z1a9_gpt/scripts/r5g_audio/audio_primary_z1_poc.c",
+    "symbol": "static size_t adev_get_input_buffer_size",
+    "lines": [
+      327
+    ]
+  },
+  {
+    "path": "/home/lxj/claude/6572/z1a9_gpt/scripts/r5g_audio/audio_primary_z1_poc.c",
+    "symbol": "static int adev_open_input_stream",
+    "lines": [
+      394
+    ]
+  },
+  {
+    "path": "/home/lxj/claude/6572/fork_linux/sound/soc/mediatek/mt6572/mt6572-afe-pcm.c",
+    "symbol": "static int mt6572_afe_ul_voice_mode",
+    "lines": [
+      227
+    ]
+  },
+  {
+    "path": "/home/lxj/claude/6572/fork_linux/sound/soc/mediatek/mt6572/mt6572-afe-pcm.c",
+    "symbol": "static const struct snd_pcm_hardware mt6572_afe_awb_hardware",
+    "lines": [
+      290
+    ]
+  },
+  {
+    "path": "/home/lxj/claude/6572/fork_linux/sound/soc/mediatek/mt6572/mt6572-afe-pcm.c",
+    "symbol": "static int mt6572_afe_awb_prepare",
+    "lines": [
+      373
+    ]
+  },
+  {
+    "path": "/home/lxj/claude/6572/fork_linux/sound/soc/mediatek/mt6572/mt6572-afe-pcm.c",
+    "symbol": "static int mt6572_awb_src_put",
+    "lines": [
+      722
+    ]
+  },
+  {
+    "path": "/home/lxj/claude/6572/fork_linux/sound/soc/codecs/mt6323.c",
+    "symbol": "static int mt6323_clk_event",
+    "lines": [
+      145
+    ]
+  },
+  {
+    "path": "/home/lxj/claude/6572/fork_linux/sound/soc/codecs/mt6323.c",
+    "symbol": "static void mt6323_mic_mux_apply",
+    "lines": [
+      320
+    ]
+  },
+  {
+    "path": "/home/lxj/claude/6572/fork_linux/sound/soc/codecs/mt6323.c",
+    "symbol": "static const struct snd_soc_dapm_route mt6323_dapm_routes",
+    "lines": [
+      528
+    ]
+  },
+  {
+    "path": "/home/lxj/claude/6572/fork_linux/sound/soc/codecs/mt6323.c",
+    "symbol": "{ \"AIF1 Capture\", NULL, \"MIC UL\" }",
+    "lines": [
+      545
+    ]
+  }
+]

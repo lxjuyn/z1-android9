@@ -1,0 +1,76 @@
+[
+  {
+    "file": "audio.h",
+    "url": "https://android.googlesource.com/platform/hardware/libhardware/+/android-9.0.0_r61/include/hardware/audio.h?format=TEXT",
+    "revision": "android-9.0.0_r61",
+    "sha256": "dbbbd3a18502fb3f286e46107f6bf182dd889b07ce71336060e2a412a18300c0",
+    "bytes": 33308
+  },
+  {
+    "file": "StreamIn.cpp",
+    "url": "https://android.googlesource.com/platform/hardware/interfaces/+/android-9.0.0_r61/audio/2.0/default/StreamIn.cpp?format=TEXT",
+    "error": "HTTP Error 404: Not Found"
+  },
+  {
+    "file": "Device.cpp",
+    "url": "https://android.googlesource.com/platform/hardware/interfaces/+/android-9.0.0_r61/audio/2.0/default/Device.cpp?format=TEXT",
+    "error": "HTTP Error 404: Not Found"
+  },
+  {
+    "file": "tinycap.c",
+    "url": "https://android.googlesource.com/platform/external/tinyalsa/+/android-9.0.0_r61/tinycap.c?format=TEXT",
+    "revision": "android-9.0.0_r61",
+    "sha256": "a45d3ab3117e7e279905c8a91d9816baf48b3b9da967e069776ed96c37935cee",
+    "bytes": 8174
+  },
+  {
+    "file": "pcm.c",
+    "url": "https://android.googlesource.com/platform/external/tinyalsa/+/android-9.0.0_r61/pcm.c?format=TEXT",
+    "revision": "android-9.0.0_r61",
+    "sha256": "4df1614ce03cfe0273555dd96aad2758c9c1dc770573fa6a23399e60f171e727",
+    "bytes": 38603
+  },
+  {
+    "file": "tinymix.c",
+    "url": "https://android.googlesource.com/platform/external/tinyalsa/+/android-9.0.0_r61/tinymix.c?format=TEXT",
+    "revision": "android-9.0.0_r61",
+    "sha256": "29eacc25060531b063f30e9bd25e5e3cb640d62e6a89a13eddd09e35f4c7f28b",
+    "bytes": 12274
+  },
+  {
+    "file": "StreamIn.cpp",
+    "url": "https://android.googlesource.com/platform/hardware/interfaces/+/android-9.0.0_r61/audio/core/all-versions/default/StreamIn.cpp?format=TEXT",
+    "error": "HTTP Error 404: Not Found"
+  },
+  {
+    "file": "Device.cpp",
+    "url": "https://android.googlesource.com/platform/hardware/interfaces/+/android-9.0.0_r61/audio/core/all-versions/default/Device.cpp?format=TEXT",
+    "error": "HTTP Error 404: Not Found"
+  },
+  {
+    "file": "soc-dapm.c",
+    "url": "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/plain/sound/soc/soc-dapm.c?h=v7.0-rc7",
+    "error": "HTTP Error 403: Forbidden"
+  },
+  {
+    "file": "StreamIn.impl.h",
+    "url": "https://android.googlesource.com/platform/hardware/interfaces/+/android-9.0.0_r61/audio/core/all-versions/default/include/core/all-versions/default/StreamIn.impl.h?format=TEXT",
+    "revision": "android-9.0.0_r61",
+    "sha256": "6ea353768f25f901fa255961d17c48184b5a8eeafcfb84aa230178eec406406d",
+    "bytes": 17094
+  },
+  {
+    "file": "Device.impl.h",
+    "url": "https://android.googlesource.com/platform/hardware/interfaces/+/android-9.0.0_r61/audio/core/all-versions/default/include/core/all-versions/default/Device.impl.h?format=TEXT",
+    "revision": "android-9.0.0_r61",
+    "sha256": "15e7113d010747d08189b0801c4dc1cdb9b2940cf73a2d2df8d361d566e682ad",
+    "bytes": 13207
+  },
+  {
+    "file": "linux-v7.0-rc7-soc-dapm.c",
+    "url": "https://raw.githubusercontent.com/torvalds/linux/v7.0-rc7/sound/soc/soc-dapm.c",
+    "revision": "v7.0-rc7",
+    "sha256": "af9b3e4dcb3843c88fe153141217291dac8d71cbaf209b9a14e816aedd8e7a7c",
+    "bytes": 128460
+  }
+]
