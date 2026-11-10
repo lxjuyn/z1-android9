@@ -149,11 +149,12 @@ PRODUCT_COPY_FILES += \
     $(DEVICE_PATH)/keylayout/mtk-kpd.kl:$(TARGET_COPY_OUT_SYSTEM)/usr/keylayout/mtk-kpd.kl \
     $(DEVICE_PATH)/keylayout/mtk-tpd.kl:$(TARGET_COPY_OUT_SYSTEM)/usr/keylayout/mtk-tpd.kl
 
-# Linux 7's Z1 KPD input device is named "mt6779-keypad". Keep its keylayout
-# specific to the mainline profile; its current DTS exposes only volume keys.
+# Linux 7 registers "mt6779-keypad" and "z1_cst836u" input devices.
+# Install their canonical keylayouts only for the mainline profile.
 ifneq ($(Z1_KERNEL_VARIANT),stock)
 PRODUCT_COPY_FILES += \
-    $(DEVICE_PATH)/keylayout/mt6779-keypad.kl:$(TARGET_COPY_OUT_SYSTEM)/usr/keylayout/mt6779-keypad.kl
+    $(DEVICE_PATH)/keylayout/mt6779-keypad.kl:$(TARGET_COPY_OUT_SYSTEM)/usr/keylayout/mt6779-keypad.kl \
+    $(DEVICE_PATH)/keylayout/z1_cst836u.kl:$(TARGET_COPY_OUT_SYSTEM)/usr/keylayout/z1_cst836u.kl
 endif
 
 PRODUCT_CHARACTERISTICS := nosdcard

@@ -31,7 +31,7 @@ rewrite() { # path srcfile mode
 
 echo "A3: /usr/keylayout/mt6779-keypad.kl"
 debugfs -w -R "rm /usr/keylayout/mt6779-keypad.kl" "$OUT" >/dev/null 2>&1 || true
-debugfs -w -R "write $D/mt6779-keypad.kl /usr/keylayout/mt6779-keypad.kl" "$OUT" >/dev/null 2>&1
+debugfs -w -R "write $D/../../keylayout/mt6779-keypad.kl /usr/keylayout/mt6779-keypad.kl" "$OUT" >/dev/null 2>&1
 setmode /usr/keylayout/mt6779-keypad.kl 0100644
 
 echo "A7: /etc/permissions/z1-mainline-features.xml"
