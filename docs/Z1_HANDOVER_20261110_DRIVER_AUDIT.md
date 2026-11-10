@@ -252,13 +252,32 @@ timeout 10 getevent -t /dev/input/eventX   # 每键单独按放两遍
 
 ---
 
-## 9. TF 卡 / USB / 存储（调查中）
+## 9. TF 卡 / USB / 存储（已完成只读调查）
 
-- 用户确认**机器有 TF 卡槽**；**没有指示灯**（不列缺陷）。
-- 待核：第二 MSDC 控制器、card-detect 引脚、vold fstab、Android 可移动存储配置；
-  USB 侧 ADB/MTP/ACM/OTG 是否实际可用。
-- 验收：识别 → 挂载 → 只读已有卡 → 专用测试文件读写校验 → 安全卸载 → 插拔恢复。
-  **不要格式化用户现有的卡。**
+用户确认：**机器有 TF(microSD) 卡槽**；**没有指示灯**（不列缺陷）。
+
+| 功能 | 状态 | 依据 |
+|---|---|---|
+| ACM 串口 | 已验证（仅 gadget 绑定） | `z1_boot_v83.log:2175-2186` 有 `ACM bound` + `/dev/ttyGS0`；MUSB PERIPHERAL，UDC `musb-hdrc.4.auto`。主机侧收发未验 |
+| **ADB** | **未实现** | 镜像内无 `service adbd`（`lineage-adb.rc` 只有属性动作）；v83 boot ramdisk 85 项无 `init.usb*.rc`、无 `z1_usb_setup.sh`；`rootdir/init.z1.rc:19-21` 置 `sys.usb.config none`，`:41-53` 只启 ACM；`device.mk:75-98` 未打包该脚本 |
+| **MTP/文件传输** | **未实现** | `/bin/mtpd` 是旧 PPP 守护；无 MtpService 激活、无 `ffs.mtp`；`persist.sys.usb.config=none`；原厂 `build.prop:88,109` 曾有 `mtp,mass_storage` |
+| USB OTG 主机 | 不支持 | DTS `mt6572-z1.dts:477` `dr_mode="peripheral"`；XHCI/EHCI/OHCI 全关、`USB_MUSB_HOST` 未设 |
+| **TF/外置 SD** | **未实现** | `mt6572.dtsi:530-550` mmc1 默认 disabled；`mt6572-z1.dts:667-679` 只启用 mmc0 且 `no-sd/non-removable`；**无 `&mmc1`、无 MC1 pinctrl、无 vmmc/vqmmc、无 CD**；`fstab.z1` 无 removable 条目；原厂 `fstab:9-11` 有 `voldmanaged=sdcard1:auto` |
+| TF 检测脚 | 硬件未确认 | MC1_INS 可能为 GPIO24/53/67/73/77/86/88，Z1 实际走哪根未知 |
+| 内部存储 FUSE | 实现待验证 | `ro.vold.z1_fuse=true`、`ro.sys.sdcardfs=false`、`/bin/sdcard` 存在；仅主机侧 3 个挂载/75 断言通过，**板端挂载时序/卸载未验** |
+| fsck/持久化 | 部分已验证 | boot 内 fstab `/data wait,check`，`z1_boot_v83.log:2207,2232` 实测 p5/p6 跑 e2fsck |
+
+**TF 卡最小实现路径**（无人有权改 DTS，需主会话授权）：
+照同族样板 `mt6572-jty-d101.dts:169-186,248-265` 加 `&mmc1`
+（`bus-width=4`、`cap-sd-highspeed`、`vmmc=mt6323_vmch_reg`、`vqmmc=mt6323_vmc_reg`、
+引脚 91-96，先 `broken-cd` 轮询）；`fstab.z1` 加 `voldmanaged=sdcard1:auto` 并去掉
+`ro.build.characteristics=nosdcard`；编后看 `mmc1/mmcblk1`。
+验收：只读挂载现有卡 → 读文件 → 专用文件写读校验 → umount → 拔插重识别。
+**不要格式化用户现有的卡**；若卡是 exFAT，`.config:6655` 未开，需先加或换 FAT 卡。
+
+**ADB 最小实现路径**：把 `z1_usb_setup.sh` + configfs 初始化打进 ramdisk，
+或在 `init.z1.rc` 增 `service adbd` + `ffs.adb` 挂载，验证与 ttyGS0 共存。
+MTP 与 OTG 主机当前应明确标注"不支持"，单独立项。
 
 ---
 
