@@ -1,0 +1,9 @@
+# Local downloaded sources and audit snapshots; required test fixture is tracked.
+/delivery_manifest.json
+/test_results/
+/sources/*.c
+/sources/*.cpp
+/sources/*.kl
+/sources/*.rst
+/sources/packed_init.rc
+/sources/packed_z1_pm_guard.sh

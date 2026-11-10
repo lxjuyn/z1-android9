@@ -1,0 +1,10 @@
+# Locally archived audit output; source provenance is tracked.
+/baseline.json
+/image_metadata.json
+/source_audit.json
+/v44_source_audit.json
+/v44_vendor_etc_primary_audio_policy_configuration.xml
+/verification_manifest.json
+/sources/*.c
+/sources/*.h
+/tests/*.log

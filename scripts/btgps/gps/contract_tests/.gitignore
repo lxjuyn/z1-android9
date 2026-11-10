@@ -1,0 +1,2 @@
+# Pre-fix local backup, retained in workspace; never publish backups.
+*.bak

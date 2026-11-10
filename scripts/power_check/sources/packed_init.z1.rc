@@ -1,0 +1,142 @@
+# Imported by Pie init when DT bootargs sets androidboot.hardware=z1.
+# No vendor services are started until their HALs and kernel interfaces pass.
+
+import /init.z1.network.rc
+
+on fs
+    mount_all /fstab.z1
+
+# The LK leaves MT6572's hardware watchdog enabled. Start feeding it as soon
+# as ueventd can create /dev/watchdog, before the full boot class starts.
+on init
+    start watchdogd
+
+# Persistent properties are loaded after the early boot actions. Replace any
+# prior ADB default before Android's USB framework observes the disabled
+# generic USB mode. The final ramdisk injector also removes generic USB gadget
+# rc imports; the independent diagnostic helper owns ACM directly through
+# configfs.
+on property:ro.persistent_properties.ready=true
+    setprop persist.sys.usb.config none
+    setprop sys.usb.config none
+
+# R3e (A8-6): 10s timeout / 30s margin for bring-up; tighten back to
+# 5 10 for productization once suspend and the radio chain are settled.
+service watchdogd /sbin/watchdogd 10 30
+    class core
+    user root
+    group root
+    seclabel u:r:watchdogd:s0
+
+# Pie fs_mgr configures zram0 and invokes the built-in mkswap/swapon tools.
+on post-fs-data
+    swapon_all /fstab.z1
+
+# Diagnostic only: runs without /system, before post-fs-data swap.
+    restorecon_recursive /system/etc
+on post-fs
+    exec_background u:r:init:s0 root root -- /z1_bootdiag
+
+# Independent diagnostic transport; helper handles configfs and late USB attach.
+on init
+    start z1_acm_log
+
+service z1_acm_log /z1_bootdiag --acm
+    class core
+    user root
+    group root
+    disabled
+    seclabel u:r:init:s0
+
+# Forward Android logs directly over diagnostic ACM, bypassing printk rate limits.
+on post-fs-data
+    start z1_logcat_relay
+
+service z1_logcat_relay /z1_bootdiag --logcat
+    class core
+    user root
+    group log
+    disabled
+    seclabel u:r:init:s0
+
+# Display takeover after Android is fully up; avoids racing /system mount.
+on property:sys.boot_completed=1
+    exec u:r:init:s0 root root -- /system/bin/sh /z1_display_takeover.sh
+    exec_background u:r:init:s0 root root -- /system/bin/sh /z1_pm_guard.sh
+    # 2026-11-04: without this the HOME intent stays on
+    # com.android.settings/.FallbackHome (a blank activity) because
+    # device_provisioned is 0, so the panel shows nothing even though the
+    # display path is correct. The helper sets the two provisioning flags
+    # and nudges HOME.
+    exec_background u:r:init:s0 root root -- /system/bin/sh /z1_provision.sh
+
+# R3: never suspend (no wakeup source on this DT; suspend kills USB ACM and
+# freezes userspace behind the MCU panel's static GRAM frame).
+# R3d: display takeover also runs early (idempotent, background) so the fbcon
+# '_' cursor is gone within seconds of /system mounting instead of surviving
+# until boot_completed minutes later; the boot_completed exec remains as the
+# second, verifying pass.
+on post-fs
+    write /sys/power/wake_lock z1diag
+    start z1_heartbeat
+    start z1_logpersist
+    # 调试用：把 Android logcat 送到串口 + 落盘（本机 ACM gadget 从未枚举成功，
+    # CH340 串口是唯一验证可用通道；SF 的 abort message 只能从 logcat 看到）
+    start z1_klog_relay
+    start z1_sf_dump
+    # 2026-11-03: these five were mistakenly placed inside the
+    # "service z1_sf_dump" block, where init rejects exec_background
+    # with "Invalid keyword" -- none of them ever ran, which is why
+    # /z1_touch_load.sh (GPIO145 reset pulse + CST836U) never executed
+    # and touch stayed dead. They belong in an action, as in the
+    # 2026-10-31 build where all five ran at ~15.5s.
+    exec_background u:r:init:s0 root root -- /system/bin/sh /z1_display_takeover.sh
+    exec_background u:r:init:s0 root root -- /system/bin/sh /system/bin/z1_linux7_radio_init.sh
+    exec_background u:r:init:s0 root root -- /system/bin/sh /z1_radio_finish.sh
+    exec_background u:r:init:s0 root root -- /system/bin/sh /z1_wifi_probe.sh
+    exec_background u:r:init:s0 root root -- /system/bin/sh /z1_touch_load.sh
+
+service z1_klog_relay /system/bin/sh /z1_klog_relay.sh
+    class core
+    user root
+    group root log
+    disabled
+    seclabel u:r:init:s0
+
+service z1_sf_dump /system/bin/sh /z1_sf_dump.sh
+    class core
+    user root
+    group root log
+    disabled
+    seclabel u:r:init:s0
+    oneshot
+
+service z1_heartbeat /system/bin/sh /z1_heartbeat.sh
+    class core
+    user root
+    group root
+    disabled
+    seclabel u:r:init:s0
+
+service z1_logpersist /system/bin/sh /z1_logpersist.sh
+    class core
+    user root
+    group root system sdcard_rw
+    disabled
+    seclabel u:r:init:s0
+
+# R3e (A1-1/A1-2/A2-3): the WMT transport (modules, /dev/stpwmt, /dev/stpbt)
+# has been up since R3c, but nothing ever started the firmware loader, so the
+# WMT patch was never downloaded and WLAN could not function. Fire the
+# SOC-flow launcher the moment z1_radio_finish publishes modules_ready=1.
+# wmt_loader is NOT started: it belongs to the old combo flow and the SoC
+# solution does not walk it. No oneshot: the launcher must stay resident to
+# serve WMT control traffic.
+on property:sys.z1.radio.modules_ready=1
+    start z1_6620
+
+service z1_6620 /system/bin/6620_launcher -m 3 -p /system/etc/firmware/
+    class core
+    user root
+    group root wifi inet
+    seclabel u:r:init:s0
