@@ -16,11 +16,12 @@
  * required. R3d note: the probe must NOT use I2C_SMBUS_QUICK — 0-length
  * messages never reach the bus on i2c-mt65xx (see comment in cst836u_scan).
  *
- * R3f: the touch panel physically extends below the 240x320 display over
- * the three capacitive navigation buttons (Back / Home / Recents). Touches
- * with a raw y above the display area are reported as key events instead
- * of coordinates; the split points are module parameters so they can be
- * recalibrated without reflashing. NOTE: the key strip assumes flip_y=0
+ * R3f added a coordinate-to-key strip (Back / Home / Menu), but its
+ * default geometry has not been verified against labelled physical-key
+ * captures on this board. Do not infer a separate key register or real key
+ * coordinates from that software policy. log_frames captures the existing
+ * report window without filtering no-touch frames for that investigation.
+ * NOTE: the key strip assumes flip_y=0
  * (the calibrated default); with flip_y set the strip mirrors above y=0
  * and the keys stop working.
  *
@@ -58,6 +59,8 @@ static unsigned int poll_ms = 40;
 static bool flip_x, flip_y, swap_xy;
 static unsigned int max_x = 240, max_y = 320;
 static unsigned int log_raw = 64;
+/* Opt-in, bounded capture of the existing read window; no extra I2C reads. */
+static unsigned int log_frames;
 /* Capacitive key strip: raw y at/above key_y_min is a nav key press.
  * The two x splits divide the strip into Back / Home / Recents. */
 static unsigned int key_y_min = 300;
@@ -70,6 +73,7 @@ module_param(swap_xy, bool, 0644);
 module_param(max_x, uint, 0444);
 module_param(max_y, uint, 0444);
 module_param(log_raw, uint, 0644);
+module_param(log_frames, uint, 0644);
 module_param(key_y_min, uint, 0644);
 module_param(key_x_split1, uint, 0644);
 module_param(key_x_split2, uint, 0644);
@@ -80,6 +84,7 @@ MODULE_PARM_DESC(swap_xy, "exchange X and Y axes");
 MODULE_PARM_DESC(max_x, "clamped maximum X coordinate");
 MODULE_PARM_DESC(max_y, "clamped maximum Y coordinate");
 MODULE_PARM_DESC(log_raw, "number of raw samples logged for calibration");
+MODULE_PARM_DESC(log_frames, "remaining complete 0x02..0x0e frames to log, including idle/release (0 disables)");
 MODULE_PARM_DESC(key_y_min, "raw Y at/above this is the capacitive key strip");
 MODULE_PARM_DESC(key_x_split1, "X below this splits Back from Home");
 MODULE_PARM_DESC(key_x_split2, "X below this splits Home from Recents");
@@ -143,12 +148,12 @@ static void cst836u_report(struct cst836u *ts, bool touch, unsigned int x, unsig
             }
         }
     } else {
-        /* Display area: release any held nav key, then report the gesture. */
-        cst836u_release_key(ts);
+        /* BTN_TOUCH must precede other events in this synchronization frame. */
         if (!ts->touching) {
             input_report_key(ts->input, BTN_TOUCH, 1);
             ts->touching = true;
         }
+        cst836u_release_key(ts);
         input_report_abs(ts->input, ABS_X, min(x, max_x - 1));
         input_report_abs(ts->input, ABS_Y, min(y, max_y - 1));
     }
@@ -161,16 +166,27 @@ static void cst836u_poll(struct work_struct *work)
     u8 buf[CST836U_READ_LEN];
     unsigned int count, xh, xl, yh, yl, x, y;
     bool touch;
+    unsigned int remaining;
 
     if (cst836u_read_block(ts->client, CST836U_REG_COUNT, buf, sizeof(buf))) {
         if (++ts->bus_errors == 50) {
             dev_err(&ts->client->dev, "50 consecutive I2C read failures; check power/clock\n");
-            cst836u_release_key(ts);
-            input_sync(ts->input);
+            cst836u_report(ts, false, 0, 0);
         }
         goto resched;
     }
     ts->bus_errors = 0;
+
+    /* Keep every byte, even when count/event would suppress input reporting.
+     * Users can re-arm this bounded capture through the module parameter.
+     * The register range and I2C transaction are unchanged.
+     */
+    remaining = READ_ONCE(log_frames);
+    if (remaining) {
+        WRITE_ONCE(log_frames, remaining - 1);
+        dev_info(&ts->client->dev, "report 0x02..0x0e: %*ph touching=%d key=%d\n",
+                 (int)sizeof(buf), buf, ts->touching, ts->last_key);
+    }
 
     count = buf[0] & 0x0f;
     xh = buf[CST836U_P1_OFF];
@@ -198,7 +214,7 @@ static void cst836u_poll(struct work_struct *work)
         x = y = 0;
     }
 
-    if (ts->raw_logged < log_raw && (touch || ts->touching)) {
+    if (ts->raw_logged < log_raw && (touch || ts->touching || ts->last_key)) {
         dev_info(&ts->client->dev,
                  "raw sample %u: count=%u xh=%02x xl=%02x yh=%02x yl=%02x -> x=%u y=%u key=%d\n",
                  ts->raw_logged++, count, xh, xl, yh, yl, x, y, ts->last_key);
@@ -247,11 +263,9 @@ static int cst836u_probe(struct i2c_client *client)
     input_set_abs_params(ts->input, ABS_X, 0, max_x - 1, 0, 0);
     input_set_abs_params(ts->input, ABS_Y, 0, max_y - 1, 0, 0);
     /*
-     * Android 9's InputReader only classifies a device as a touchscreen when
-     * INPUT_PROP_DIRECT is set; without it the device is treated as a generic
-     * pointer even if an IDC says touchScreen (on-board /proc/bus/input/devices
-     * showed "B: PROP=0" for z1_cst836u).  Set the property in the driver so
-     * the classification does not depend on /system/usr/idc being present.
+     * Mark direct screen input as specified by Linux input/event-codes.rst.
+     * This describes coordinate semantics; it neither supplies nav-key data
+     * nor proves which module or Android key layout is active at runtime.
      */
     __set_bit(INPUT_PROP_DIRECT, ts->input->propbit);
 
