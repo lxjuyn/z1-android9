@@ -1,0 +1,67 @@
+[
+  {
+    "name": "vendor_gps_ioctl",
+    "url": "https://android.googlesource.com/kernel/mediatek/+/3be93a68c209393cfe24a842e2d5896a17ea37dc/drivers/misc/mediatek/conn_soc/common/linux/pub/stp_chrdev_gps.c",
+    "sha256_full_source": "c5054740965132f2e6326ac9ae114ea22e02435bf9b67a97de5f1f8576cf6ef8",
+    "excerpts": [
+      {
+        "start_line": 38,
+        "end_line": 40,
+        "text": "#define COMBO_IOC_GPS_HWVER          6\n#define COMBO_IOC_RTC_FLAG\t\t\t 7\n#define COMBO_IOC_CO_CLOCK_FLAG\t\t 8"
+      },
+      {
+        "start_line": 259,
+        "end_line": 280,
+        "text": "        case COMBO_IOC_GPS_HWVER:             \n            /*get combo hw version*/            \n            hw_ver_sym = mtk_wcn_wmt_hwver_get();\n\n            GPS_INFO_FUNC(KERN_INFO \"GPS_ioctl(): get hw version = %d, sizeof(hw_ver_sym) = %d\\n\", hw_ver_sym, sizeof(hw_ver_sym));\n            if(copy_to_user((int __user *)arg, &hw_ver_sym, sizeof(hw_ver_sym))){\n               retval = -EFAULT;\n            }\n            break;\n\t\t\t\n\t\tcase COMBO_IOC_RTC_FLAG:\n\t\t\t\n\t\t\tretval = rtc_GPS_low_power_detected();\n\t\t\t\n\t\t\tGPS_INFO_FUNC(KERN_INFO \"GPS_ioctl(): low power flag (%d)\\n\", retval);\n\t\tbreak;\n\t\tcase COMBO_IOC_CO_CLOCK_FLAG:\n\t\t\tretval = mtk_wcn_wmt_co_clock_flag_get();\n\t\t\tGPS_INFO_FUNC(KERN_INFO \"GPS_ioctl(): GPS co_clock_flag (%d)\\n\", retval);\n\t\tbreak;\n        default:\n            retval = -EFAULT;"
+      }
+    ]
+  },
+  {
+    "name": "vendor_rtc",
+    "url": "https://android.googlesource.com/kernel/mediatek/+/3be93a68c209393cfe24a842e2d5896a17ea37dc/drivers/misc/mediatek/rtc/mtk_rtc_common.c",
+    "sha256_full_source": "c03dac176b8dfffad85cab1840e37a866127e925db3abd1c5400d218c67a710a",
+    "excerpts": [
+      {
+        "start_line": 217,
+        "end_line": 237,
+        "text": "/*\n* Only for GPS to check the status.\n* Others do not use this API\n* This low power detected API is read clear.\n*/\nbool rtc_low_power_detected(void)\n{\n\tunsigned long flags;\n\tu16 ret;\n\t\n\tspin_lock_irqsave(&rtc_lock, flags);\n\tret = hal_rtc_get_register_status(\"LPD\");\n\tspin_unlock_irqrestore(&rtc_lock, flags);\n\t\n\tif (ret)\n\t\treturn true;\n\telse\n\t\treturn false;\n}\n\nEXPORT_SYMBOL(rtc_low_power_detected);"
+      }
+    ]
+  },
+  {
+    "name": "vendor_rtc_hal",
+    "url": "https://android.googlesource.com/kernel/mediatek/+/3be93a68c209393cfe24a842e2d5896a17ea37dc/drivers/misc/mediatek/rtc/mt6582/mtk_rtc_hal.c",
+    "sha256_full_source": "72ef431c53e976585e665e52c07cb67b7b24797697492ff249497f378d8670a5",
+    "excerpts": [
+      {
+        "start_line": 153,
+        "end_line": 158,
+        "text": "\t} else if (!strcmp(cmd, \"LPD\")) {\n\t\tspar0 = rtc_read(RTC_SPAR0);\n\t\tif(spar0 & RTC_SPAR0_LP_DET)\n\t\t\treturn 1;\n\t\telse\n\t\t\treturn 0;"
+      }
+    ]
+  },
+  {
+    "name": "aosp_hidl_callbacks",
+    "url": "https://android.googlesource.com/platform/hardware/interfaces/+/android-9.0.0_r61/gnss/1.0/default/Gnss.cpp",
+    "sha256_full_source": "92959086a5f0be0f3c448b9ca4fb44df627340eee51f4eb3614b8b912210ec6c",
+    "excerpts": [
+      {
+        "start_line": 34,
+        "end_line": 47,
+        "text": "GpsCallbacks Gnss::sGnssCb = {\n    .size = sizeof(GpsCallbacks),\n    .location_cb = locationCb,\n    .status_cb = statusCb,\n    .sv_status_cb = gpsSvStatusCb,\n    .nmea_cb = nmeaCb,\n    .set_capabilities_cb = setCapabilitiesCb,\n    .acquire_wakelock_cb = acquireWakelockCb,\n    .release_wakelock_cb = releaseWakelockCb,\n    .create_thread_cb = createThreadCb,\n    .request_utc_time_cb = requestUtcTimeCb,\n    .set_system_info_cb = setSystemInfoCb,\n    .gnss_sv_status_cb = gnssSvStatusCb,\n};"
+      }
+    ]
+  },
+  {
+    "name": "aosp_44_callbacks",
+    "url": "https://android.googlesource.com/platform/hardware/libhardware/+/android-4.4.2_r1/include/hardware/gps.h",
+    "sha256_full_source": "216137c37ff434f68898be3950f2d762abf8a068a4a1f34df6fcb5a0436b110f",
+    "excerpts": [
+      {
+        "start_line": 375,
+        "end_line": 388,
+        "text": "/** GPS callback structure. */\ntypedef struct {\n    /** set to sizeof(GpsCallbacks) */\n    size_t      size;\n    gps_location_callback location_cb;\n    gps_status_callback status_cb;\n    gps_sv_status_callback sv_status_cb;\n    gps_nmea_callback nmea_cb;\n    gps_set_capabilities set_capabilities_cb;\n    gps_acquire_wakelock acquire_wakelock_cb;\n    gps_release_wakelock release_wakelock_cb;\n    gps_create_thread create_thread_cb;\n    gps_request_utc_time request_utc_time_cb;\n} GpsCallbacks;"
+      }
+    ]
+  }
+]
