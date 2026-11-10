@@ -1,76 +1,68 @@
 #!/system/bin/sh
-# z1_bt_enable.sh - headless Bluetooth enable for the Z1 Android 9 image.
-#
-# MUST run as root (init service user root, or a root shell).  The serial
-# console runs as 'shell' (uid 2000) which does NOT hold BLUETOOTH_ADMIN, so
-# BluetoothManagerService.enable() rejects it; uid 0 passes
-# ActivityManager.checkComponentPermission() unconditionally.
-#
-# What it does:
-#   1. reads Settings.Global.bluetooth_on (the value BluetoothManagerService
-#      uses at construction time to decide whether to auto-enable at boot);
-#   2. persists it as 1;
-#   3. waits for the bluetooth_manager binder (published at boot phase 500);
-#   4. calls the public API via "svc bluetooth enable" (app_process as root),
-#      falling back to the raw IBluetoothManager.enable(String) transaction
-#      (code 6) if that fails;
-#   5. dumps the resulting state.
-log() { printf '<6>[z1bten] %s\n' "$*" > /dev/kmsg 2>/dev/null || true; }
+# Enable the Bluetooth framework on Z1 and report whether the adapter reached ON.
+# Exit: 0 = adapter state ON, 1 = enable attempted but not ON, 2 = boot incomplete.
+# This validates the framework/stack only; it does not prove controller, scan,
+# pairing or A2DP operation.
 
-case "$(/system/bin/id -u 2>/dev/null)" in
-  0) ;;
-  *) log "ERROR: must run as root (uid=$(/system/bin/id -u 2>/dev/null)); console shell cannot pass BLUETOOTH_ADMIN"; exit 1 ;;
-esac
+[ "$(id -u)" = "0" ] || { echo "must run as root"; exit 1; }
 
-i=0
-while [ "$(/system/bin/getprop sys.boot_completed)" != "1" ] && [ $i -lt 600 ]; do
-    sleep 2; i=$((i + 2))
+waited=0
+while [ "$(getprop sys.boot_completed)" != "1" ]; do
+  waited=$((waited + 2))
+  if [ "$waited" -ge 600 ]; then
+    echo "boot_completed not reached after ${waited}s; not enabling"
+    exit 2
+  fi
+  sleep 2
 done
-log "boot_completed after ${i}s"
 
-cur=$(/system/bin/settings get global bluetooth_on 2>/dev/null)
-log "bluetooth_on before = ${cur:-<unset>}"
-case "$cur" in
-  1) ;;
-  *) /system/bin/settings put global bluetooth_on 1 && log "bluetooth_on set to 1 (takes effect at next boot too)" ;;
-esac
+settings put global bluetooth_on 1
 
-i=0
-while [ $i -lt 120 ]; do
-    if /system/bin/service check bluetooth_manager 2>/dev/null | grep -q "Service bluetooth_manager: found"; then
-        break
-    fi
-    sleep 1; i=$((i + 1))
+waited=0
+while ! service check bluetooth_manager 2>/dev/null | grep -q "bluetooth_manager: found"; do
+  waited=$((waited + 2))
+  if [ "$waited" -ge 120 ]; then
+    echo "bluetooth_manager service not registered after ${waited}s"
+    exit 1
+  fi
+  sleep 2
 done
-log "$(/system/bin/service check bluetooth_manager 2>&1)"
 
-log "--- attempt 1: svc bluetooth enable ---"
-if [ -x /system/bin/svc ]; then
-    /system/bin/svc bluetooth enable 2>&1 | while IFS= read -r l; do log "svc $l"; done
-else
-    log "svc not present"
-fi
-
+svc bluetooth enable
 sleep 3
-if /system/bin/dumpsys bluetooth_manager 2>/dev/null | grep -qE 'enabled: true|state: ON'; then
-    log "svc path succeeded"
-else
-    log "--- attempt 2: raw IBluetoothManager.enable(String), tx code 6 ---"
-    /system/bin/service call bluetooth_manager 6 s16 com.android.shell 2>&1 \
-      | while IFS= read -r l; do log "call $l"; done
-    sleep 3
-fi
 
-log "--- final state ---"
-/system/bin/dumpsys bluetooth_manager 2>/dev/null \
-  | grep -aE 'enabled:|state:|address:|name:|Bluetooth Status' \
-  | while IFS= read -r l; do log "state $l"; done
-log "/dev/stpbt: $(ls -l /dev/stpbt 2>&1)"
-if /system/bin/dumpsys bluetooth_manager 2>/dev/null | grep -qE 'enabled: true'; then
-    log "RESULT: Bluetooth is ON"
-else
-    log "RESULT: still OFF. bluetooth_on is now persisted as 1; reboot and"
-    log "        BluetoothManagerService.handleOnBootPhase() (boot phase 550)"
-    log "        will auto-enable it as system_server (uid 1000)."
-fi
-log "=== done ==="
+# The service call fallback uses IBluetoothManager transaction 6
+# (enable(String)) from android-9.0.0_r61 AIDL.
+case "$(dumpsys bluetooth_manager 2>/dev/null)" in
+  *"state: ON"*) ;;
+  *)
+    service call bluetooth_manager 6 s16 com.android.shell >/dev/null 2>&1
+    ;;
+esac
+
+waited=0
+state=""
+while [ "$waited" -lt 60 ]; do
+  dump="$(dumpsys bluetooth_manager 2>/dev/null)"
+  state="$(printf '%s\n' "$dump" | grep -m1 -E '^[[:space:]]*state: ' | sed 's/^[[:space:]]*//')"
+  enabled="$(printf '%s\n' "$dump" | grep -m1 -E '^[[:space:]]*enabled: ' | sed 's/^[[:space:]]*//')"
+  case "$state" in
+    "state: ON") break ;;
+  esac
+  waited=$((waited + 2))
+  [ "$waited" -lt 60 ] && sleep 2
+done
+
+echo "adapter ${enabled:-enabled: <unknown>} / ${state:-state: <unknown>} after ${waited}s"
+
+case "$state" in
+  "state: ON")
+    echo "RESULT: Bluetooth adapter is ON (framework only; controller/scan not verified)"
+    exit 0
+    ;;
+  *)
+    echo "RESULT: Bluetooth adapter did not reach ON"
+    printf '%s\n' "$dump" | grep -E 'state:|enabled:|Bluetooth' | head -20
+    exit 1
+    ;;
+esac

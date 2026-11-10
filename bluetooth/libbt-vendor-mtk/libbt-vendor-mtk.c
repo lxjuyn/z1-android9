@@ -25,7 +25,8 @@
 #include <log/log.h>
 #include <bt_vendor_lib.h>
 
-typedef int (*mtk_bt_enable_fn)(int flag, void *callback);
+/* Z1 factory libbluetoothdrv.so mtk_bt_enable (0x778) takes no inputs. */
+typedef int (*mtk_bt_enable_fn)(void);
 typedef int (*mtk_bt_disable_fn)(int bt_fd);
 
 static void *driver_handle;
@@ -98,19 +99,21 @@ static int z1_bt_userial_open(void *param) {
   int fd;
   int channel;
 
-  if (fd_array == NULL || mtk_bt_enable == NULL || hci_fd >= 0) {
+  if (fd_array == NULL) return 0;
+  for (channel = 0; channel < CH_MAX; ++channel) fd_array[channel] = -1;
+  if (mtk_bt_enable == NULL || hci_fd >= 0) {
     ALOGE("invalid Bluetooth USERIAL_OPEN state");
     return 0;
   }
-  for (channel = 0; channel < CH_MAX; ++channel) fd_array[channel] = -1;
 
-  /* The MTK library starts WMT/BT firmware and opens the shared HCI fd. */
-  fd = mtk_bt_enable(0, NULL);
+  /* mtk() opens stpbt (WMT func-on), then runs NVRAM/GORM HCI init. */
+  fd = mtk_bt_enable();
   if (fd < 0) {
     ALOGE("factory Bluetooth driver failed to open HCI (fd=%d)", fd);
     return 0;
   }
 
+  ALOGI("factory Bluetooth HCI initialization completed");
   hci_fd = fd;
   for (channel = 0; channel < CH_MAX; ++channel) fd_array[channel] = fd;
   return 1;
@@ -129,34 +132,43 @@ static int z1_bt_userial_close(void) {
 static int z1_bt_op(bt_vendor_opcode_t opcode, void *param) {
   switch (opcode) {
     case BT_VND_OP_POWER_CTRL:
-      /* Power is sequenced inside mtk_bt_enable()/mtk_bt_disable(). */
-      return 0;
+      if (param == NULL) return -EINVAL;
+      /* Opening stpbt powers on BT; closing it powers BT off. */
+      if (*(int *)param == BT_VND_PWR_OFF) return z1_bt_userial_close();
+      if (*(int *)param == BT_VND_PWR_ON) return 0;
+      return -EINVAL;
     case BT_VND_OP_USERIAL_OPEN:
       return z1_bt_userial_open(param);
     case BT_VND_OP_USERIAL_CLOSE:
       return z1_bt_userial_close();
     case BT_VND_OP_FW_CFG:
-      /* The factory library downloads firmware while opening the HCI fd. */
+      /* Only a successful synchronous factory init may complete FW_CFG. */
       if (vendor_callbacks != NULL && vendor_callbacks->fwcfg_cb != NULL) {
-        vendor_callbacks->fwcfg_cb(BT_VND_OP_RESULT_SUCCESS);
-        return 0;
+        vendor_callbacks->fwcfg_cb(hci_fd >= 0 ? BT_VND_OP_RESULT_SUCCESS
+                                             : BT_VND_OP_RESULT_FAIL);
+        return hci_fd >= 0 ? 0 : -ENODEV;
       }
       return -EINVAL;
     case BT_VND_OP_SCO_CFG:
+      /* No verified MTK SCO/PCM configuration path is implemented here. */
       if (vendor_callbacks != NULL && vendor_callbacks->scocfg_cb != NULL)
-        vendor_callbacks->scocfg_cb(BT_VND_OP_RESULT_SUCCESS);
-      return 0;
+        vendor_callbacks->scocfg_cb(BT_VND_OP_RESULT_FAIL);
+      return -EOPNOTSUPP;
     case BT_VND_OP_GET_LPM_IDLE_TIMEOUT:
       if (param == NULL) return -EINVAL;
       *(uint32_t *)param = 200;
       return 0;
     case BT_VND_OP_LPM_SET_MODE:
+      /* STP/WMT owns transport sleep/wake; there is no UART GPIO here. */
       if (vendor_callbacks != NULL && vendor_callbacks->lpm_cb != NULL)
         vendor_callbacks->lpm_cb(BT_VND_OP_RESULT_SUCCESS);
       return 0;
     case BT_VND_OP_LPM_WAKE_SET_STATE:
-    case BT_VND_OP_SET_AUDIO_STATE:
       return 0;
+    case BT_VND_OP_SET_AUDIO_STATE:
+      if (vendor_callbacks != NULL && vendor_callbacks->audio_state_cb != NULL)
+        vendor_callbacks->audio_state_cb(BT_VND_OP_RESULT_FAIL);
+      return -EOPNOTSUPP;
     case BT_VND_OP_EPILOG:
       if (vendor_callbacks != NULL && vendor_callbacks->epilog_cb != NULL)
         vendor_callbacks->epilog_cb(BT_VND_OP_RESULT_SUCCESS);
