@@ -1,0 +1,177 @@
+{
+  "date": "2026-11-10",
+  "timezone": "+08:00",
+  "deadline": "23:00",
+  "status": "HOST_ONLY_NOT_DEPLOYED",
+  "hardware_actions": false,
+  "flash_executed": false,
+  "android_branch": "work/driver-recovery-20261110-215207",
+  "android_source_head_before_release_docs": "7c23d66e78d31318d623b49ee0e70217b1676846",
+  "kernel_head": "e6489564bb4809a2d97bf652e39f4a67181008b5",
+  "commits": [
+    "7c23d66 test: retain required offline power fixture and archive research outputs locally",
+    "c1119e6 audio: assess capture prerequisites without opening PCM",
+    "df1685a power: add offline wake and suspend evidence assessment",
+    "5467c78 display: retain passive backlight evidence inspector",
+    "b72851b usb: stage opt-in ACM ADB candidate with readiness and auth gates",
+    "be89a06 storage: add passive TF detection and Z1 wiring prerequisites",
+    "8928a86 gps: guard offline init rename and retain binary contract evidence",
+    "4427f64 release: verify offline ext4 replacement and failure-safe publication",
+    "fc04e04 test: add Android GLES2 probe with reference pixel checks",
+    "5d72aca hwc2: stop failed producer waits and missing client targets before submission",
+    "20aaf89 bluetooth: retain failed-close ownership and reproducible host and ARM checks",
+    "abbed5c gps: reject invalid startup prerequisites and retire false-success patching",
+    "22e47a6 test: retain current PMIC handler fault regression",
+    "a834cc7 diag: retain bounded passive battery sampling and discontinuity analysis",
+    "1e3f4e0 gralloc: link heap backend in mainline Android build",
+    "87ff42a input: package canonical mainline touch layout and remove stale installer source",
+    "3c78abe audio: retry unavailable PCM and report unsupported hardware volume",
+    "a4d82ee wifi: guard MTK STA firmware-path repair with exact ELF and ARM regression tests",
+    "c7e25dc docs(gpu): 注明 v35 已含 Mesa 26.1.1 双库，缺少的是像素/同步验证而非版本",
+    "0e6b50f hwc2/deploy: 收存 r16 vsync/present-fence 源码与 stage 安装逻辑（上一轮遗留未提交）",
+    "1767d58 docs: 补充 TF/USB/存储功能缺口调查结论（ADB/MTP/TF 均未实现，附最小实现路径）",
+    "d020ef5 bluetooth: 按厂商真实 ABI 修正 vendor 适配层，停止谎报 SCO/音频状态",
+    "1769fea docs: 3D GPU 加速完整计划 + 驱动/功能调查交接文档",
+    "5a877d0 health: 容量校验与上报使用同一份采样",
+    "8b2c6c1 input: z1_cst836u: 总线连续失败时释放 BTN_TOUCH，并补完整帧采样",
+    "910eb43 keylayout: 去掉 Android 9 拒绝的 WAKE/WAKE_DROPPED，底部三键恢复导航语义"
+  ],
+  "peripheral_candidate": {
+    "status": "HOST_VERIFIED_NOT_DEVICE_TESTED",
+    "image": "/home/lxj/claude/6572/out/z1_driver_candidates_20261110/system_peripherals_v1.img",
+    "sha256": "833a65f23ceada548339d9f48db4765931136698755d00c9b67f2f4de12cc8dd",
+    "archive": "/home/lxj/claude/6572/bridge_backups/products/products_peripherals_candidate_20261110_223218/system_peripherals_v1.img",
+    "bytes": 943718400,
+    "e2fsck_rc": 0,
+    "base_unchanged": true,
+    "files": [
+      {
+        "path": "/vendor/lib/libwifi-hal.so",
+        "sha256": "bc7e05250c6849e883d66856470e185e5cb61e71cd56675c01fd441cd9493088",
+        "readback_bytes_equal": true,
+        "selinux_hex": "753a6f626a6563745f723a76656e646f725f66696c653a7330"
+      },
+      {
+        "path": "/vendor/lib/libbt-vendor.so",
+        "sha256": "4394419927598342982a0960f3d3cf954a991e167866155ec4a86fc6c4cd4665",
+        "readback_bytes_equal": true,
+        "selinux_hex": "753a6f626a6563745f723a76656e646f725f66696c653a733000"
+      },
+      {
+        "path": "/vendor/lib/hw/audio.primary.mt6572.so",
+        "sha256": "d037d76ca6ab8231169647fcf39cb46c76ffb098f0059efa7f226a392603813a",
+        "readback_bytes_equal": true,
+        "selinux_hex": "753a6f626a6563745f723a76656e646f725f66696c653a733000"
+      },
+      {
+        "path": "/lib/modules/z1_cst836u.ko",
+        "sha256": "255b08bbf6a654b6561c5a9b5ebbc67b1b42ff902f77bd84f2f412de4937b926",
+        "readback_bytes_equal": true,
+        "selinux_hex": "753a6f626a6563745f723a73797374656d5f66696c653a7330"
+      },
+      {
+        "path": "/usr/keylayout/mt6779-keypad.kl",
+        "sha256": "ccbd0e9c95bca15d64b702667b5c4426b35bdf47b9927f916393ddd4d1256f46",
+        "readback_bytes_equal": true,
+        "selinux_hex": "753a6f626a6563745f723a73797374656d5f66696c653a7330"
+      },
+      {
+        "path": "/usr/keylayout/z1_cst836u.kl",
+        "sha256": "621e1de42d08bb8d9bf9e649d243d1b66c79070741ad07eb334c252ee9347484",
+        "readback_bytes_equal": true,
+        "selinux_hex": "753a6f626a6563745f723a73797374656d5f66696c653a7330"
+      }
+    ],
+    "not_included": [
+      "HWC/Mesa/gralloc replacement",
+      "health executable",
+      "GPS backend or service rename",
+      "kernel boot changes",
+      "TF enablement",
+      "ADB integration"
+    ],
+    "deployment": "NOT_RUN"
+  },
+  "graphics_components": {
+    "status": "HOST_BUILT_GRAPHICS_COMPONENTS_NOT_DEPLOYABLE_AS_COMPLETE_3D",
+    "hardware_tested": false,
+    "files": [
+      {
+        "name": "hwcomposer.z1.so",
+        "source": "/home/lxj/claude/6572/bridge_backups/products/products_hwc_fence_20261110_214932/cross/hwcomposer.z1.so",
+        "sha256": "fb7240ed1febce56c6cbb5ebe5607e14b3641757e7999ed2d4fbdff1a3d45ba7",
+        "bytes": 149496,
+        "rebuilt_this_session": true
+      },
+      {
+        "name": "gralloc.z1.so",
+        "source": "/home/lxj/claude/6572/bridge_backups/products/products_gralloc_build_sources_20261110_214824_352735/gralloc.mainline.so",
+        "sha256": "728b18de63172b4cece8cfc2825b60051076906dafd4c847aab6842fdcc49590",
+        "bytes": 27512,
+        "rebuilt_this_session": true
+      },
+      {
+        "name": "gles2probe_android28_armv7",
+        "source": "/home/lxj/claude/6572/bridge_backups/products/products_gles2test_20261110_215026_833126664/gles2probe_android28_armv7",
+        "sha256": "6697ca88a14c2c66359f1d74d69b919297ec87566ceb0d05e1d30c55bc7e25a0",
+        "bytes": 65956,
+        "rebuilt_this_session": true
+      },
+      {
+        "name": "libGLES_mesa.so",
+        "source": "/home/lxj/claude/6572/out/z1_v35_selftest/system_v35.img:/vendor/lib/egl/libGLES_mesa.so",
+        "sha256": "bb0ac77c03e79648db5dc8a480ec478be566b78c6105e9f781fd22100b46f445",
+        "bytes": 324832,
+        "rebuilt_this_session": false
+      },
+      {
+        "name": "libgallium_dri.so",
+        "source": "/home/lxj/claude/6572/out/z1_v35_selftest/system_v35.img:/vendor/lib/libgallium_dri.so",
+        "sha256": "492f0b5e871868f55023351722a609da6b65e186fbf31366a28d7faf981232b9",
+        "bytes": 17428828,
+        "rebuilt_this_session": false
+      }
+    ],
+    "blocked_by": [
+      "release/scanout buffer lifecycle still unverified; 250ms watchdog remains",
+      "present timeline tied to vsync thread not independently proven per commit",
+      "actual Android library maps/import/pixel output on Mali not tested",
+      "boot/persistent active overrides can replace HAL; full rollback state not frozen"
+    ],
+    "limitations": [
+      "Mesa pair copied unchanged from v35, not claimed new build",
+      "host llvmpipe pixel validation is not Mali validation",
+      "no automatic install or service restart script provided",
+      "do not replace system graphics globally before synchronization gates pass"
+    ]
+  },
+  "manual": {
+    "path": "docs/Z1_FEATURE_OPERATIONS_20261110.md",
+    "sha256": "08234c6d391337584f98cf1581b6e425701bfcbb4d812cdf755c789663e40e51",
+    "bytes": 82539,
+    "lines": 682
+  },
+  "final_tests": "bridge_backups/products/final_regressions_20261110_223256/results.json",
+  "corrections_after_final_tests": {
+    "brightness": "37 tests dash and BusyBox pass; backup brightness_test_finish_20261110_223345",
+    "capture": "39 tests pass after O_PATH reader repair; backup capture_reader_review_20261110_222845"
+  },
+  "remaining_hardware": [
+    "Mali rendering and GPU to OVL release synchronization",
+    "WiFi association DHCP DNS data",
+    "Bluetooth HCI discovery pairing A2DP",
+    "physical repeat/follow/play key mapping",
+    "bottom navigation geometry",
+    "headphone audio and insertion routing",
+    "battery terminal voltage and real SOC",
+    "GNSS ABI adapter and actual positioning",
+    "TF wiring power and host enablement",
+    "ADB authentication and runtime integration",
+    "recording HAL and microphone route",
+    "FM control firmware ABI and audio",
+    "sleep RTC wake and display restore"
+  ],
+  "final_python_ast_count": 13,
+  "freeze_time": "2026-11-10T22:55:52.525299+08:00",
+  "official_verification": "bridge_backups/products/official_final_20261110_225427/verification.json"
+}

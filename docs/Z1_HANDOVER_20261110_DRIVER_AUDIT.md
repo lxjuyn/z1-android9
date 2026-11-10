@@ -1,5 +1,8 @@
 # Z1 驱动/功能调查交接文档（2026-11-10）
 
+> **2026-11-10 收尾说明：下文保留调查阶段的历史快照。最终改动、测试、产物、未完成项及验证顺序，以 `docs/Z1_FEATURE_OPERATIONS_20261110.md` 第22节和 `docs/Z1_RELEASE_STATE_20261110.json` 为准。本轮未上板、未刷写；boot单件不是完整回滚。**
+
+
 > 目的：把本轮所有**已完成、可复核**的调查结论、已落补丁、仍缺的证据一次交代清楚，
 > 供其他 agent 无上下文接手。
 >
@@ -19,7 +22,7 @@
 | boot 分区上限 | 6 MiB = 6,291,456 B | r14 余 391,168 B；v79 余 483,328 B |
 | **文档里的哈希不可信** | `out/Z1_STATUS_OVL_20261110.md` 记的 v83 `b8d04db5…` ≠ 实际 `ad3eed1a…` | 一律以 `sha256sum` + 反解为准 |
 
-### 0.1 已知可用产物（本轮不动，作回滚）
+### 0.1 已核验字节的历史候选（非完整回滚包）
 
 | 角色 | 文件 | 大小 | sha256 |
 |---|---|---|---|
@@ -95,25 +98,17 @@
 
 ### 2.4 矩阵键盘"复读无用 / 跟读变返回"的最强线索（新）
 
-**驱动无 bug，缺口在 DTS 键表。**
+**已核实键表一致，物理键故障原因仍需采样。**
 
-- 原厂内核 `0x713348` 的 72×u16 键表，12 个非零项与现行 DTS **逐项相同**（u32 变体 0 命中）；
-  反汇编 `0xc0507688` 的 `ldrh/strh` 0x90=144 字节复制循环，指针字面量正好指向 `0xc071348`，地址吻合。
-- 原厂扫描函数读 `0xf0002000+4/8/0xc/0x10/0x14` 五个半字，去抖写 `+0x18`，
-  与现行驱动 mem 起始 0x04、5 寄存器、debounce 0x18 一致。
-- 板上实测 LK 只接 **5 行（GPIO110/111/112/142/143）× 3 列（107/108/109）= 15 键**
-  （`mainline_recon/z1_boot_mainline_20261108_193550.log:55-58`）。
-- 现行 DTS `mt6572-z1.dts:785-807` 只映射了 **12 个**，缺 **槽 11（row1,col2）、槽 27（row3,col0）、
-  槽 29（row3,col2）**。这三处按下时驱动会发 `MSC_SCAN`（0x12/0x30/0x32），但 `keycode=0=KEY_RESERVED`
-  被输入核心丢弃 ⇒ **Android 侧完全无事件**，`.kl` 无法补救。
-  ⇒ "复读无用"极可能是这三处之一，**需要改 DTS 键表**（本轮无人有权改 DTS）。
-- "跟读变返回"：现行映射里只有 **槽 36（row4,col0）→ MSC 0x40 → keycode 158=BACK**。
-  若 getevent 确认跟读出 0x40/158，就是 `.kl` 的 `key 158 BACK` 造成的，
-  改 `.kl` 即可（不是驱动问题）。注意触摸屏 `z1_cst836u` 也可能出 158，**必须按 event 节点区分**。
-- 250/251/252/254 在官方 `input-event-codes.h` 里**没有定义**，是厂商私有码，仅作占位。
+原厂 Image 偏移 `0x713348` 的72×u16键表含12个非零项，与当前DTS逐项相同；
+反汇编复制指针为 `0xc071b348`，不是旧文档笔误 `0xc071348`。
+LK日志的5行×3列只说明配置了15个交叉点，不证明安装15个按钮。
+其中槽11/27/29无映射；若实测复读键产生相应MSC_SCAN而无EV_KEY，才支持补对应DTS项。
+未映射位置仍可能出现MSC_SCAN，不能说完全无输入事件。不能直接补三行占位。
 
-**下一步**：先 `getevent -t` 逐键采样确认"复读/跟读"分别是哪个 MSC_SCAN；
-若落在 0x12/0x30/0x32，补 DTS 三行（需主会话授权改 DTS 并重编 dtb+boot）。
+跟读若在矩阵设备实际产生158/BACK，且物理标注/释放事件均确认，才将该设备的158改为VOLUME_UP；
+底部触摸条也可产生158，二者不得混淆。播放/复读/跟读最终分别为DPAD_CENTER/VOLUME_DOWN/VOLUME_UP；
+方向键不改。`regmap_bulk_read`返回值未检查是源码事实，但本机可达性与症状关系未证实，不能称驱动绝对无bug。
 
 ### 2.5 仍缺的证据（决定物理映射）
 
@@ -223,7 +218,7 @@ timeout 10 getevent -t /dev/input/eventX   # 每键单独按放两遍
 
 - 现行：`bluetooth/libbt-vendor-mtk/libbt-vendor-mtk.c`（A9 passthrough HIDL + 原厂 `libbluetoothdrv.so`）。
 - 已改（源码，未完成验证）：按原厂 `libbluetoothdrv.so` `mtk_bt_enable` 实际**无参**签名修正
-  （`0x778`），`BT_VND_OP_POWER_CTRL` 真正开/关、`FW_CFG` 按真实 `hci_fd` 结果回调、
+  （`0x778`）；POWER_CTRL(ON)仅确认参数，实际启用在USERIAL_OPEN，OFF尝试关闭；`FW_CFG` 按真实 `hci_fd` 结果回调、
   `SCO_CFG`/`SET_AUDIO_STATE` 不再假装成功。未上板。
 - 仍需：`/dev/stpbt` 存在性、WMT func-on、控制器扫描/配对/A2DP 实测。
 
@@ -267,13 +262,10 @@ timeout 10 getevent -t /dev/input/eventX   # 每键单独按放两遍
 | 内部存储 FUSE | 实现待验证 | `ro.vold.z1_fuse=true`、`ro.sys.sdcardfs=false`、`/bin/sdcard` 存在；仅主机侧 3 个挂载/75 断言通过，**板端挂载时序/卸载未验** |
 | fsck/持久化 | 部分已验证 | boot 内 fstab `/data wait,check`，`z1_boot_v83.log:2207,2232` 实测 p5/p6 跑 e2fsck |
 
-**TF 卡最小实现路径**（无人有权改 DTS，需主会话授权）：
-照同族样板 `mt6572-jty-d101.dts:169-186,248-265` 加 `&mmc1`
-（`bus-width=4`、`cap-sd-highspeed`、`vmmc=mt6323_vmch_reg`、`vqmmc=mt6323_vmc_reg`、
-引脚 91-96，先 `broken-cd` 轮询）；`fstab.z1` 加 `voldmanaged=sdcard1:auto` 并去掉
-`ro.build.characteristics=nosdcard`；编后看 `mmc1/mmcblk1`。
-验收：只读挂载现有卡 → 读文件 → 专用文件写读校验 → umount → 拔插重识别。
-**不要格式化用户现有的卡**；若卡是 exFAT，`.config:6655` 未开，需先加或换 FAT 卡。
+**TF 实施门禁**：用户已确认卡槽存在，但Z1实际MC1 pinmux、供电轨/电压、检测脚仍缺板级证据。
+同族 `mt6572-jty-d101.dts` 的GPIO91–96和VMCH/VMC只能作研究线索，不可照抄启用。
+先通过原厂板级配置/反汇编和接线证据验证，再提出隔离DTS候选与vold配置；`broken-cd`只解决轮询，不证明接线正确。
+现卡先只读，写入只用专用测试文件，不格式化。eMMC配置不得连带更改。
 
 **ADB 最小实现路径**：把 `z1_usb_setup.sh` + configfs 初始化打进 ramdisk，
 或在 `init.z1.rc` 增 `service adbd` + `ffs.adb` 挂载，验证与 ttyGS0 共存。
@@ -283,8 +275,7 @@ MTP 与 OTG 主机当前应明确标注"不支持"，单独立项。
 
 ## 10. 刷写与回滚（血泪教训，务必遵守）
 
-- 刷写失败常见根因是**线缆/供电**：历史上 DA stage2 卡在 4096 字节并报 `USBError(5)`，
-  换线换口后一次通过。遇到同一位置失败先换线换口。
+- 历史DA stage2/USBError失败与换线后成功只提供相关性，不能据此排除软件或证明供电唯一根因。ADC值与Discharging也不能代替端电压/电流实测；保留日志并逐项验证。
 - `z1flash_image.sh:84-114` 发出写请求后，超时/部分写/日志不匹配时最终仍可能打印
   "nothing written"，**不能据此断言 boot 未变**；必须完整读回比对。
 - `.disable_hwcomposer` 只删 `/vendor/lib/hw/hwcomposer.z1.so` 一个文件
@@ -315,6 +306,6 @@ MTP 与 OTG 主机当前应明确标注"不支持"，单独立项。
 
 1. **上板只读取证**（不改任何东西）：`getevent` 逐键采样 + `/proc/interrupts` + `dumpsys input`
    + `dumpsys battery` + `cat /sys/class/power_supply/battery/*`。这一批能同时解开按键、电源、电量三个疑点。
-2. 按 `Z1_GPU3D_PLAN_20261110.md` 的 P0→P1 开始 3D，**先不碰 HWC fence**。
+2. 按GPU计划冻结完整配套；同步离屏测试可先做，HWC acquire/失败帧/释放正确性必须先于异步共享buffer接入。
 3. Wi-Fi/BT/GPS 的修复都需要重新出 system 镜像；先确认现行板上 system 版本与哈希。
-4. 任何刷写前：确认电源/线缆、备份、读回校验、保留三级回滚镜像。
+4. 任何刷写前：确认电源/线缆、备份、读回校验、验证完整boot/system/库/持久覆盖的回滚组合。
