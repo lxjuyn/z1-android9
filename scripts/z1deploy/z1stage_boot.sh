@@ -131,6 +131,31 @@ seed() {
 
 log "begin @${T0}s (stage ${STAGE})"
 
+# --- 1b. /data integrity ---------------------------------------------------
+# The board is power-cycled with the power key, so ext4 corruption is chronic:
+# a hard cut leaves the journal dirty, the kernel's journal replay then clears
+# the "needs check" flag, fs_mgr consequently never runs e2fsck on /data, and
+# the kernel later trips over the residual inconsistency:
+#   EXT4-fs error (device mmcblk0p6): ext4_mb_release_inode_pa:5464
+#   EXT4-fs (mmcblk0p6): Remounting filesystem read-only
+# After that every /data writer gets EROFS (dropbox, dalvik-cache) and zygote
+# SIGABRTs every ~5 s -> the boot-animation loop.  Run one forced check here,
+# at post-fs-data, before the framework holds /data open.
+if [ -x /system/bin/e2fsck ]; then
+    if /system/bin/umount /data 2>/dev/null; then
+        _out=$(/system/bin/e2fsck -f -y /dev/block/mmcblk0p6 2>&1)
+        _frc=$?
+        _tail=$(printf '%s' "$_out" | tail -2 | tr '\n' '|')
+        /system/bin/mount -o rw,seclabel,nosuid,nodev,noatime /dev/block/mmcblk0p6 /data
+        _mrc=$?
+        log "data fsck: rc=${_frc} remount_rc=${_mrc} tail=${_tail}"
+    else
+        log "data fsck: /data busy -> skipped (fs_mgr owns the mount)"
+    fi
+else
+    log "data fsck: /system/bin/e2fsck absent -> skipped"
+fi
+
 seed hwcomposer.z1.so 0644
 seed gralloc.z1.so 0644
 seed z1kmstest 0755
@@ -195,6 +220,38 @@ install_one() {   # install_one <file-name> <disable-token>
 
 install_one hwcomposer.z1.so hwcomposer
 install_one gralloc.z1.so gralloc
+
+# --- 2b1. system files staged in the ramdisk (reliable replacement for the
+# lossy serial push) -------------------------------------------------------
+# A file baked into the ramdisk as /<src> is installed to <dst> when it is
+# present.  When the source is absent the destination is LEFT ALONE -- unlike
+# install_one() there is no "remove on absence", because these files live in
+# /system and a ramdisk without them must never regress the system image.
+install_sys_file() {   # install_sys_file <src-in-ramdisk> <dst>
+    _src="/$1"
+    _dst="$2"
+    _tmp="${_dst}.z1tmp"
+    [ -f "$_src" ] || return 0
+    if $CP "$_src" "$_tmp" 2>/dev/null; then
+        $CHMOD 0644 "$_tmp" 2>/dev/null
+        $CHOWN 0:0 "$_tmp" 2>/dev/null
+        if $MV -f "$_tmp" "$_dst" 2>/dev/null; then
+            APPLIED=$((APPLIED + 1))
+            log "install ${1}: -> ${_dst} (sha256 $(sha_of "$_dst"))"
+        else
+            ERRORS=$((ERRORS + 1)); $RM -f "$_tmp" 2>/dev/null
+            log "ERROR install ${1}: rename to ${_dst} failed"
+        fi
+    else
+        ERRORS=$((ERRORS + 1))
+        log "ERROR install ${1}: cannot write ${_tmp}"
+    fi
+}
+
+install_sys_file z1_libwifi-hal.so          /system/vendor/lib/libwifi-hal.so
+install_sys_file z1_libbt-vendor.so         /system/vendor/lib/libbt-vendor.so
+install_sys_file z1_audio.primary.mt6572.so /system/vendor/lib/hw/audio.primary.mt6572.so
+
 
 # --- 2b2. dma-heap device node (needed for contiguous scanout buffers) ------
 # The kernel registers the CMA heap as /sys/class/dma_heap/default_cma_region
