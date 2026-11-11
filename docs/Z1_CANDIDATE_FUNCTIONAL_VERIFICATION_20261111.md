@@ -230,3 +230,52 @@ Caused by: java.lang.NullPointerException
 | 候选镜像导致系统崩溃 | ❌ **不成立** | 崩溃真因是 `/data` ext4 损坏（硬断电）与 GPS APK 残留损坏 |
 | 蓝牙可工作 | ❌ 不成立 | `initializationComplete(ERR)` → HAL abort 循环 |
 | 驱动 X 分区默认值 | ⚠️ 原值有 bug | 80 使最左键报 HOME，已改 90/160 |
+
+---
+
+## 九、新增功能：检测硬断电并自动修复 /data、/cache
+
+### 9.1 需求与设计
+
+板子用电源键硬断电是常态，而硬断电会留下 ext4 元数据残留（journal 回放修不掉，
+fs_mgr 又因为"已回放干净"而不跑 e2fsck），随后内核在运行中踩到：
+`ext4_lookup: deleted inode referenced` / `ext4_mb_generate_buddy` →
+`Remounting filesystem read-only` → 所有 /data 写入者 EROFS → zygote 每 5 秒 SIGABRT。
+
+**实现（`z1stage_boot.sh`，post-fs-data，root）**：按需修复，两个信号 ——
+
+1. **内核日志回放**（权威）：`dmesg` 里出现 `EXT4-fs (<dev>): recovery complete`
+   说明内核回放了 journal，即**上次没有正常卸载**。
+2. **`EXT4_ERROR_FS`**：读原始超级块 `s_state`（分区内 1024+58），bit1 置位
+   说明内核在该文件系统上记录过错误。
+
+命中任一信号 → `umount` → `e2fsck -f -y` → 重新挂载；都未命中 → **什么都不做**。
+
+> ⚠️ **踩过的坑（已用实验推翻）**：最初想用 `s_state` 的 bit0（`EXT4_VALID_FS`）
+> 判断，但那是**非日志文件系统**才维护的字段。实测 64 MiB ext4：mkfs / 挂载 rw /
+> 干净卸载三个状态下读到的都还是 `0x0001`，**挂载并不会清 bit0**。
+> 所以对带日志的 ext4 只能靠"内核是否回放过 journal"判断。
+
+### 9.2 上板验证（两个方向都验了）
+
+| 场景 | 日志 | 结果 |
+|---|---|---|
+| 刷完 boot 后首次开机（刷写=硬复位） | `mmcblk0p6: journal was replayed (previous shutdown killed) -> REPAIR`<br>`repair /data: e2fsck rc=0 remount_rc=0` | ✅ 自动修复 |
+| 上一轮把 fs 打成只读后再开机 | 同上（p6 与 p5 各一次） | ✅ 自动修复 |
+| **正常 `reboot` 之后再开机** | `mmcblk0p6: no journal replay, s_state=0x0001 -> clean, skip`<br>`mmcblk0p5: no journal replay, s_state=0x0001 -> clean, skip` | ✅ **跳过，零开销** |
+
+镜像：`out/boot_autorepair_20261111.img`（5,959,680 B，sha `4070dd59…`）。
+
+### 9.3 顺带修正：存储层没有静默写坏
+
+第一版测试用 `cmp` 比对，但读的是**页缓存**，根本没验证落盘数据 —— 无效。
+重做：写入 2 MiB → `sync` → `echo 3 > /proc/sys/vm/drop_caches` → 再读回比对。
+
+```
+/data/local/tmp iter=1..6  OK(媒体读回一致)
+/cache           iter=1..6  OK(媒体读回一致)
+DONE iters=12 mismatch=0
+```
+
+⇒ **eMMC 不会静默写坏**。运行期损坏另有来源，目前最可疑的是 fs_mgr 在
+13.8 s 那次「挂载 → 10 毫秒后卸载 → 2.6 秒后重挂」的抖动，尚未定位。

@@ -131,29 +131,70 @@ seed() {
 
 log "begin @${T0}s (stage ${STAGE})"
 
-# --- 1b. /data integrity ---------------------------------------------------
-# The board is power-cycled with the power key, so ext4 corruption is chronic:
-# a hard cut leaves the journal dirty, the kernel's journal replay then clears
-# the "needs check" flag, fs_mgr consequently never runs e2fsck on /data, and
-# the kernel later trips over the residual inconsistency:
-#   EXT4-fs error (device mmcblk0p6): ext4_mb_release_inode_pa:5464
+# --- 1b. filesystem integrity: repair ONLY after an unclean shutdown ------
+# The board is routinely power-cycled with the power key.  A hard cut leaves
+# the ext4 journal dirty; the kernel then *replays* it (fixing the journal but
+# not the metadata residue), after which fs_mgr considers the fs clean and
+# never runs e2fsck.  The kernel later trips over the residue:
+#   EXT4-fs error (device mmcblk0p6): ext4_mb_generate_buddy:1314: group 16,
+#       block bitmap and bg descriptor inconsistent
 #   EXT4-fs (mmcblk0p6): Remounting filesystem read-only
-# After that every /data writer gets EROFS (dropbox, dalvik-cache) and zygote
-# SIGABRTs every ~5 s -> the boot-animation loop.  Run one forced check here,
-# at post-fs-data, before the framework holds /data open.
-if [ -x /system/bin/e2fsck ]; then
-    if /system/bin/umount /data 2>/dev/null; then
-        _out=$(/system/bin/e2fsck -f -y /dev/block/mmcblk0p6 2>&1)
-        _frc=$?
-        _tail=$(printf '%s' "$_out" | tail -2 | tr '\n' '|')
-        /system/bin/mount -o rw,seclabel,nosuid,nodev,noatime /dev/block/mmcblk0p6 /data
-        _mrc=$?
-        log "data fsck: rc=${_frc} remount_rc=${_mrc} tail=${_tail}"
-    else
-        log "data fsck: /data busy -> skipped (fs_mgr owns the mount)"
+# and then every /data writer gets EROFS (dropbox, dalvik-cache), so zygote
+# SIGABRTs every ~5 s and the boot animation never ends.
+#
+# Signals (both cheap, neither needs a healthy filesystem):
+#   1. dmesg contains "EXT4-fs (<dev>): recovery complete" -- the kernel only
+#      prints that when it had to replay a journal, i.e. the previous session
+#      did not unmount.  This is the authoritative "hard power cut" flag.
+#   2. s_state bit1 (EXT4_ERROR_FS, superblock offset 1024+58) -- the kernel
+#      recorded an error on this filesystem.
+#   NOTE: s_state bit0 (EXT4_VALID_FS) is NOT usable here: it is only
+#   maintained for non-journaled filesystems, and empirically stays 1 across a
+#   mount of a journaled ext4 (verified 2026-11-11 on a 64 MiB test image:
+#   mkfs/mounted-rw/clean-unmount all read 0x0001).
+#
+# Clean boots therefore pay nothing; a hard cut is repaired before the
+# framework starts.
+sb_state() {   # <blockdev> -> "<magic> <state>"
+    dd if="$1" bs=1 skip=1080 count=4 2>/dev/null | od -An -tu2 2>/dev/null | tr -s ' '
+}
+
+fs_needs_repair() {   # <blockdev>; return 0 when a repair is warranted
+    _dev=$1
+    _name=${1##*/}
+    if dmesg 2>/dev/null | grep -q "EXT4-fs ($_name): recovery complete"; then
+        log "$_name: journal was replayed (previous shutdown killed) -> REPAIR"
+        return 0
     fi
+    _pair=$(sb_state "$_dev")
+    set -- $_pair
+    _magic=$1
+    _state=$2
+    if [ "$_magic" = "61267" ] && [ -n "$_state" ] && [ $((_state & 2)) -ne 0 ]; then
+        log "$_name: s_state=0x$(printf '%04x' "$_state") has EXT4_ERROR_FS -> REPAIR"
+        return 0
+    fi
+    log "$_name: no journal replay, s_state=$( [ -n "$_state" ] && printf '0x%04x' "$_state" || echo unreadable) -> clean, skip"
+    return 1
+}
+
+repair_fs() {   # <mountpoint> <blockdev>
+    if /system/bin/umount "$1" 2>/dev/null; then
+        _o=$(/system/bin/e2fsck -f -y "$2" 2>&1)
+        _rc=$?
+        /system/bin/mount -o rw,seclabel,nosuid,nodev,noatime "$2" "$1"
+        _mrc=$?
+        log "repair $1: e2fsck rc=${_rc} remount_rc=${_mrc} tail=$(printf '%s' "$_o" | tail -1)"
+    else
+        log "repair $1: busy -> skipped (fs_mgr owns the mount)"
+    fi
+}
+
+if [ -x /system/bin/e2fsck ]; then
+    fs_needs_repair /dev/block/mmcblk0p6 && repair_fs /data  /dev/block/mmcblk0p6
+    fs_needs_repair /dev/block/mmcblk0p5 && repair_fs /cache /dev/block/mmcblk0p5
 else
-    log "data fsck: /system/bin/e2fsck absent -> skipped"
+    log "fs repair: /system/bin/e2fsck absent -> skipped"
 fi
 
 seed hwcomposer.z1.so 0644
