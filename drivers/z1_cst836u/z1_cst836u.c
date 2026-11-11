@@ -64,7 +64,11 @@ static unsigned int log_frames;
 /* Capacitive key strip: raw y at/above key_y_min is a nav key press.
  * The two x splits divide the strip into Back / Home / Recents. */
 static unsigned int key_y_min = 300;
-static unsigned int key_x_split1 = 80;
+/* Measured on hardware (2026-11-11): the three nav keys report raw
+ * controller X = 80 / 120 / 200.  The old 80/160 split put the leftmost key
+ * exactly on the boundary (x < 80 is false at x == 80), so BACK reported HOME.
+ * Splits are now the midpoints between the measured centres. */
+static unsigned int key_x_split1 = 90;
 static unsigned int key_x_split2 = 160;
 module_param(poll_ms, uint, 0644);
 module_param(flip_x, bool, 0644);
