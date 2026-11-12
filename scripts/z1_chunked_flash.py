@@ -34,6 +34,36 @@ FAILED = re.compile(
     r"aborted|disconnect|no device|nothing connected|no preloader|not (?:found|detected)|"
     r"couldn.t|cannot|can.t", re.I)
 ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+HANDSHAKE_RETRY = "Preloader - [LIB]: Status: Handshake failed, retrying..."
+DEVICE_DETECTED = re.compile(r"\.*Port - Device detected :\)")
+TRANSFER_STARTED = re.compile(
+    r"^Main - Handling da commands|^DaHandler - Writing offset |"
+    r"\b(?:Read|Write):|^(?:Wrote |Dumped )")
+
+
+def transfer_succeeded(output, rc, operation, offset, length, filename):
+    output = ANSI.sub("", output).replace("\r", "\n")
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    expected = (f"Wrote {filename} to offset {hex(offset)} with length {hex(length)}."
+                if operation == "wo" else
+                f"Dumped offset {hex(offset)} with length {hex(length)} as {filename}.")
+    if rc != 0 or not lines or lines[-1] != expected:
+        return False
+    started, pending_handshake = False, False
+    for line in lines:
+        if TRANSFER_STARTED.search(line):
+            if pending_handshake:
+                return False
+            started = True
+        if line == HANDSHAKE_RETRY and not started:
+            # mtk_preloader retries this exact initialization failure itself.
+            # Accept it only after a subsequent device detection, before I/O.
+            pending_handshake = True
+        elif FAILED.search(line):
+            return False
+        elif not started and DEVICE_DETECTED.fullmatch(line):
+            pending_handshake = False
+    return not pending_handshake
 
 
 def positive_int(value):
@@ -106,12 +136,8 @@ class Backend:
             except BaseException:
                 stop_process(proc)
                 raise
-        output = ANSI.sub("", logfile.read_text(errors="replace")).replace("\r", "\n")
-        lines = [line.strip() for line in output.splitlines() if line.strip()]
-        expected = (f"Wrote {filename} to offset {hex(offset)} with length {hex(length)}."
-                    if operation == "wo" else
-                    f"Dumped offset {hex(offset)} with length {hex(length)} as {filename}.")
-        ok = rc == 0 and not FAILED.search(output) and bool(lines) and lines[-1] == expected
+        ok = transfer_succeeded(logfile.read_text(errors="replace"), rc,
+                                operation, offset, length, filename)
         if not ok:
             print(f"  {operation} rejected (rc={rc}); log={logfile}", flush=True)
         return ok

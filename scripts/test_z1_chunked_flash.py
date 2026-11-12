@@ -10,6 +10,8 @@ import tempfile
 import time
 import unittest
 
+from z1_chunked_flash import transfer_succeeded
+
 HERE = Path(__file__).resolve().parent
 FAKE = r'''
 import json, os, pathlib, sys, time
@@ -29,6 +31,10 @@ with (root / 'calls.jsonl').open('a') as f:
     f.write(json.dumps({'op': op, 'offset': offset, 'length': length, 'file': name, 'action': action})+'\n')
 if action == 'sleep':
     time.sleep(5)
+if action == 'recovered_handshake':
+    print('Preloader - [LIB]: \x1b[31mStatus: Handshake failed, retrying...\x1b[0m')
+    print('........Port - Device detected :)')
+    print('Main - Handling da commands ...')
 disk = root / 'device.bin'
 if not disk.exists():
     disk.touch()
@@ -55,6 +61,68 @@ if action == 'wrong_marker': marker = marker.replace(hex(offset), hex(offset + 5
 if action != 'silent': print(marker)
 sys.exit(7 if action == 'rc' else 0)
 '''
+
+
+class TransferLogs(unittest.TestCase):
+    # These two initialization lines are from out/a9_flash_cache.log:53,83.
+    # Completion markers below follow the wo/ro source contract; this is not
+    # a claim that the historical log itself used those byte-offset commands.
+    retry = "Preloader - [LIB]: \x1b[31mStatus: Handshake failed, retrying...\x1b[0m"
+    detected = "........Port - Device detected :)"
+
+    def accepted(self, prefix, operation="wo", rc=0):
+        filename, offset, length = "/tmp/block.bin", 0x2980000, 0x200
+        end = (f"Wrote {filename} to offset {hex(offset)} with length {hex(length)}."
+               if operation == "wo" else
+               f"Dumped offset {hex(offset)} with length {hex(length)} as {filename}.")
+        return transfer_succeeded("\r\n".join(prefix + [end]), rc,
+                                  operation, offset, length, filename)
+
+    def test_exact_initial_retry_can_recover(self):
+        for operation in ("wo", "ro"):
+            for retries in (1, 3):
+                with self.subTest(operation=operation, retries=retries):
+                    self.assertTrue(self.accepted([self.retry] * retries + [
+                        self.detected, "Main - Handling da commands ..."], operation))
+
+    def test_retry_requires_detection_before_transfer(self):
+        for prefix in ([self.retry], [self.detected, self.retry],
+                       [self.retry, "Main - Handling da commands ...", self.detected],
+                       [self.retry, "Progress: Read: (0x200/0x200)", self.detected]):
+            with self.subTest(prefix=prefix):
+                self.assertFalse(self.accepted(prefix))
+
+    def test_errors_and_late_retries_still_rejected(self):
+        recovered = [self.retry, self.detected]
+        for error in ("ERROR: transfer aborted", "USBError: device lost",
+                      "Please disconnect device", "Preloader - Handshake failed",
+                      "Preloader - [LIB]: Status: Handshake failed, retrying... extra"):
+            with self.subTest(error=error):
+                self.assertFalse(self.accepted([error] + recovered))
+                self.assertFalse(self.accepted(recovered + [error]))
+        for boundary in ("Main - Handling da commands ...",
+                         "DaHandler - Writing offset 0x2980000 with length 0x200",
+                         "Progress: Write: (0x200/0x200)",
+                         "Progress: Read: (0x200/0x200)"):
+            with self.subTest(boundary=boundary):
+                self.assertFalse(self.accepted([boundary] + recovered))
+        self.assertFalse(self.accepted(recovered, rc=7))
+
+    def test_completion_identity_and_final_line_are_exact(self):
+        filename, offset, length = "/tmp/block with spaces.bin", 0x2980000, 0x200
+        for operation, good in (
+                ("wo", f"Wrote {filename} to offset {hex(offset)} with length {hex(length)}."),
+                ("ro", f"Dumped offset {hex(offset)} with length {hex(length)} as {filename}.")):
+            self.assertTrue(transfer_succeeded(good, 0, operation, offset, length, filename))
+            for bad in (good.replace(hex(offset), hex(offset + 512)),
+                        good.replace(hex(length), hex(length + 512)),
+                        good.replace(filename, filename + ".other"),
+                        good + "\nMain - exiting", good[:-1], ""):
+                with self.subTest(operation=operation, bad=bad):
+                    self.assertFalse(transfer_succeeded(bad, 0, operation, offset, length, filename))
+            other_operation = "ro" if operation == "wo" else "wo"
+            self.assertFalse(transfer_succeeded(good, 0, other_operation, offset, length, filename))
+            self.assertFalse(transfer_succeeded(good, 1, operation, offset, length, filename))
 
 
 class ChunkTransfers(unittest.TestCase):
@@ -130,6 +198,13 @@ class ChunkTransfers(unittest.TestCase):
         result = self.run_transfer(tries="2")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual([c["op"] for c in self.calls()], ["wo", "ro", "ro"])
+
+    def test_recovered_handshake_does_not_repeat_write(self):
+        self.plan({"wo": ["recovered_handshake"], "ro": ["recovered_handshake"]})
+        result = self.run_transfer(tries="2")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual([c["op"] for c in self.calls()], ["wo", "ro"])
+        self.assertTrue(self.state()["complete"])
 
     def test_retry_write_after_bad_ack(self):
         self.plan({"wo": ["rc", "ok"]})
