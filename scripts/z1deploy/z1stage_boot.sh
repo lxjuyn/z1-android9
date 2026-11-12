@@ -2,14 +2,14 @@
 # ---------------------------------------------------------------------------
 # z1stage_boot.sh -- Z1 deployment channel: boot-time stage seeder + applier.
 #
-# Runs as ROOT from Android init (see init_fragment.rc):
-#     on post-fs-data
-#         exec u:r:init:s0 root root -- /system/bin/sh /z1stage_boot.sh
-#
-# This action is synchronous (init waits for it) and must finish before
-# class_start hal starts vendor.gralloc-2-0 / vendor.hwcomposer-2-1 (~2.5 s
-# of headroom), so this script NEVER sleeps and only does a handful of small
-# file operations.
+# Runs as ROOT from Android init in two stages:
+#   on fs, immediately after mount_all:
+#     exec u:r:init:s0 root root -- /system/bin/sh /z1stage_boot.sh --storage-only
+#     wait_for_prop sys.z1.storage_ready 1
+#   on post-fs-data, replacing the old stage invocation:
+#     exec u:r:init:s0 root root -- /system/bin/sh /z1stage_boot.sh --skip-storage
+# The early invocation may run fsck.  The later invocation checks the gate,
+# installs payloads, and configures device nodes and runtime policy.
 #
 # What it does
 #   1. /data/local/tmp/z1stage  -> mode 0777, owner 2000:2000 (AID shell),
@@ -21,8 +21,9 @@
 #   3. The "active" install set is applied to /vendor/lib/hw:
 #        active/hwcomposer.z1.so -> /vendor/lib/hw/hwcomposer.z1.so  (0644)
 #        active/gralloc.z1.so    -> /vendor/lib/hw/gralloc.z1.so     (0644)
-#      Absence of an active file REMOVES the corresponding vendor override,
-#      which restores the stock module in /system/lib/hw (the original HWC1
+#      An active file wins, otherwise the ramdisk candidate is installed.
+#      With neither source (or with a kill switch), the override is removed,
+#      restoring the stock module in /system/lib/hw (the original HWC1
 #      hwcomposer.z1.so / gralloc.z1.so).  A9 libhardware resolves the module
 #      as <class>.<variant>.so with variant = ro.hardware / ro.product.board
 #      (= z1) and searches /odm/lib/hw -> /vendor/lib/hw -> /system/lib/hw,
@@ -36,8 +37,9 @@
 # All diagnostics go to /dev/kmsg with the "z1stage:" prefix: on this board
 # that is the only log channel that reliably reaches the serial console.
 #
-# The script always exits 0: a broken /data or a missing staging directory
-# must never hold the boot.
+# Filesystem and installation failures publish z1stage.status and exit nonzero.
+# init must gate downstream writers on sys.z1.storage_ready=1; an exec return code
+# alone does not stop Android init from processing later actions.
 # ---------------------------------------------------------------------------
 
 STAGE=/data/local/tmp/z1stage
@@ -57,6 +59,12 @@ RESTORECON=/system/bin/restorecon
 SHA256SUM=/system/bin/sha256sum
 GETPROP=/system/bin/getprop
 WC=/system/bin/wc
+MOUNT=/system/bin/mount
+UMOUNT=/system/bin/umount
+FSCK=/system/bin/e2fsck
+READLINK=/system/bin/readlink
+DMESG=/system/bin/dmesg
+PROC_MOUNTS=/proc/mounts
 
 log() { printf 'z1stage: %s\n' "$*" >> /dev/kmsg 2>/dev/null; }
 
@@ -75,23 +83,23 @@ sha_of() {
 
 set_prop() { [ -x "$SETPROP" ] && "$SETPROP" "$1" "$2" 2>/dev/null; return 0; }
 
+set_checked_prop() {
+    if [ -x "$SETPROP" ] && [ -x "$GETPROP" ] &&
+       "$SETPROP" "$1" "$2" 2>/dev/null &&
+       _scp_value=$("$GETPROP" "$1" 2>/dev/null) &&
+       [ "$_scp_value" = "$2" ]; then
+        return 0
+    fi
+    log "BLOCKED: property $1=$2 could not be written/read back"
+    return 1
+}
+
 T0=$(uptime_s)
 SEEDED=0
 COPIED=0
 APPLIED=0
 REMOVED=0
 ERRORS=0
-
-# --- 1. stage directory ----------------------------------------------------
-$MKDIR -p "$STAGE" 2>/dev/null
-if [ ! -d "$STAGE" ]; then
-    log "FATAL cannot create ${STAGE} (is /data mounted rw?)"
-    exit 0
-fi
-$MKDIR -p "$STAGE/active" 2>/dev/null
-$CHMOD 0777 "$STAGE" "$STAGE/active" 2>/dev/null
-$CHOWN "$SHELL_UID:$SHELL_GID" "$STAGE" "$STAGE/active" 2>/dev/null
-[ -w "$STAGE" ] || log "WARN ${STAGE} is not writable by this process"
 
 # --- 2. seed the candidates that are baked into the ramdisk ----------------
 # seed <ramdisk-name> <mode>
@@ -107,9 +115,9 @@ seed() {
         return 0
     fi
 
-    if $CP "$_src" "$_ram" 2>/dev/null; then
-        $CHMOD "$_mode" "$_ram" 2>/dev/null
-        $CHOWN "$SHELL_UID:$SHELL_GID" "$_ram" 2>/dev/null
+    if $CP "$_src" "$_ram" 2>/dev/null &&
+       $CHMOD "$_mode" "$_ram" 2>/dev/null &&
+       $CHOWN "$SHELL_UID:$SHELL_GID" "$_ram" 2>/dev/null; then
         SEEDED=$((SEEDED + 1))
         log "seeded /${_name} -> ${_name}.ramdisk ($(file_size "$_ram") B, mode ${_mode}, sha256 $(sha_of "$_ram"))"
     else
@@ -119,9 +127,9 @@ seed() {
 
     if [ -e "$_dst" ]; then
         log "working copy ${_name}: kept existing ($(file_size "$_dst") B), not overwritten"
-    elif $CP "$_src" "$_dst" 2>/dev/null; then
-        $CHMOD "$_mode" "$_dst" 2>/dev/null
-        $CHOWN "$SHELL_UID:$SHELL_GID" "$_dst" 2>/dev/null
+    elif $CP "$_src" "$_dst" 2>/dev/null &&
+         $CHMOD "$_mode" "$_dst" 2>/dev/null &&
+         $CHOWN "$SHELL_UID:$SHELL_GID" "$_dst" 2>/dev/null; then
         COPIED=$((COPIED + 1))
         log "working copy ${_name}: created ($(file_size "$_dst") B, sha256 $(sha_of "$_dst"))"
     else
@@ -132,70 +140,184 @@ seed() {
 
 log "begin @${T0}s (stage ${STAGE})"
 
-# --- 1b. filesystem integrity: repair ONLY after an unclean shutdown ------
-# The board is routinely power-cycled with the power key.  A hard cut leaves
-# the ext4 journal dirty; the kernel then *replays* it (fixing the journal but
-# not the metadata residue), after which fs_mgr considers the fs clean and
-# never runs e2fsck.  The kernel later trips over the residue:
-#   EXT4-fs error (device mmcblk0p6): ext4_mb_generate_buddy:1314: group 16,
-#       block bitmap and bg descriptor inconsistent
-#   EXT4-fs (mmcblk0p6): Remounting filesystem read-only
-# and then every /data writer gets EROFS (dropbox, dalvik-cache), so zygote
-# SIGABRTs every ~5 s and the boot animation never ends.
-#
-# Signals (both cheap, neither needs a healthy filesystem):
-#   1. dmesg contains "EXT4-fs (<dev>): recovery complete" -- the kernel only
-#      prints that when it had to replay a journal, i.e. the previous session
-#      did not unmount.  This is the authoritative "hard power cut" flag.
-#   2. s_state bit1 (EXT4_ERROR_FS, superblock offset 1024+58) -- the kernel
-#      recorded an error on this filesystem.
-#   NOTE: s_state bit0 (EXT4_VALID_FS) is NOT usable here: it is only
-#   maintained for non-journaled filesystems, and empirically stays 1 across a
-#   mount of a journaled ext4 (verified 2026-11-11 on a 64 MiB test image:
-#   mkfs/mounted-rw/clean-unmount all read 0x0001).
-#
-# Clean boots therefore pay nothing; a hard cut is repaired before the
-# framework starts.
+# --- 1. filesystem gate: run before creating or writing anything in /data ---
+# e2fsck operates only after this device has been unmounted everywhere.  Return
+# codes are a bitmask: 0/1 allow RW, 2/3 request reboot, all others fail closed.
+# A missing/foreign mount, unreadable superblock, failed dmesg read or busy
+# unmount is never reported as clean.  Diagnostics stay in /dev/kmsg.
 sb_state() {   # <blockdev> -> "<magic> <state>"
     dd if="$1" bs=1 skip=1080 count=4 2>/dev/null | od -An -tu2 2>/dev/null | tr -s ' '
 }
 
-fs_needs_repair() {   # <blockdev>; return 0 when a repair is warranted
-    _dev=$1
-    _name=${1##*/}
-    if dmesg 2>/dev/null | grep -q "EXT4-fs ($_name): recovery complete"; then
-        log "$_name: journal was replayed (previous shutdown killed) -> REPAIR"
-        return 0
-    fi
-    _pair=$(sb_state "$_dev")
-    set -- $_pair
-    _magic=$1
-    _state=$2
-    if [ "$_magic" = "61267" ] && [ -n "$_state" ] && [ $((_state & 2)) -ne 0 ]; then
-        log "$_name: s_state=0x$(printf '%04x' "$_state") has EXT4_ERROR_FS -> REPAIR"
-        return 0
-    fi
-    log "$_name: no journal replay, s_state=$( [ -n "$_state" ] && printf '0x%04x' "$_state" || echo unreadable) -> clean, skip"
-    return 1
+mount_record() {   # <mountpoint>; exactly one source + options, or absent
+    [ -r "$PROC_MOUNTS" ] || return 2
+    awk -v point="$1" '$2 == point { n++; line=$1 " " $4 }
+        END { if (n > 1) exit 2; if (n == 1) print line; else print "absent" }' "$PROC_MOUNTS"
 }
 
-repair_fs() {   # <mountpoint> <blockdev>
-    if /system/bin/umount "$1" 2>/dev/null; then
-        _o=$(/system/bin/e2fsck -f -y "$2" 2>&1)
-        _rc=$?
-        /system/bin/mount -o rw,seclabel,nosuid,nodev,noatime "$2" "$1"
-        _mrc=$?
-        log "repair $1: e2fsck rc=${_rc} remount_rc=${_mrc} tail=$(printf '%s' "$_o" | tail -1)"
-    else
-        log "repair $1: busy -> skipped (fs_mgr owns the mount)"
-    fi
-}
+device_unmounted() (   # <blockdev>; reject aliases mounted at any path
+    _du_expected=$($READLINK -f "$1" 2>/dev/null) || exit 1
+    [ -n "$_du_expected" ] && [ -r "$PROC_MOUNTS" ] || exit 1
+    while read -r _du_src _du_point _du_type _du_opts _du_rest; do
+        case "$_du_src" in /*)
+            _du_real=$($READLINK -f "$_du_src" 2>/dev/null) || exit 1
+            [ "$_du_real" != "$_du_expected" ] || exit 1 ;;
+        esac
+    done < "$PROC_MOUNTS"
+    exit 0
+)
 
-if [ -x /system/bin/e2fsck ]; then
-    fs_needs_repair /dev/block/mmcblk0p6 && repair_fs /data  /dev/block/mmcblk0p6
-    fs_needs_repair /dev/block/mmcblk0p5 && repair_fs /cache /dev/block/mmcblk0p5
-else
-    log "fs repair: /system/bin/e2fsck absent -> skipped"
+fs_needs_repair() (   # 0=repair, 1=clean, 2=unknown/unreadable
+    _fn_dev=$1
+    _fn_name=${1##*/}
+    _fn_pair=$(sb_state "$_fn_dev")
+    set -- $_fn_pair
+    [ "$#" -eq 2 ] && [ "$1" = 61267 ] || {
+        log "$_fn_name: unreadable/invalid ext4 superblock -> BLOCKED"; exit 2;
+    }
+    case "$2" in ''|*[!0-9]*) log "$_fn_name: invalid ext4 state -> BLOCKED"; exit 2 ;; esac
+    if [ $(($2 & 2)) -ne 0 ]; then
+        log "$_fn_name: EXT4_ERROR_FS -> REPAIR"
+        exit 0
+    fi
+    _fn_dmesg=$($DMESG 2>/dev/null) || {
+        log "$_fn_name: cannot check journal replay -> BLOCKED"; exit 2;
+    }
+    case "$_fn_dmesg" in
+        *"EXT4-fs ($_fn_name): recovery complete"*)
+            log "$_fn_name: journal replay -> REPAIR"
+            exit 0 ;;
+    esac
+    log "$_fn_name: readable superblock, no error flag or journal replay"
+    exit 1
+)
+
+repair_fs() (   # <mountpoint> <blockdev> <mounted|absent>
+    _rf_point=$1
+    _rf_dev=$2
+    if [ ! -x "$FSCK" ]; then
+        log "repair $_rf_point: e2fsck unavailable -> BLOCKED"; exit 1
+    fi
+    if [ "$3" = mounted ] && ! "$UMOUNT" "$_rf_point" 2>/dev/null; then
+        log "repair $_rf_point: busy/unmount failed -> BLOCKED"; exit 1
+    fi
+    if ! device_unmounted "$_rf_dev"; then
+        log "repair $_rf_point: device still mounted or mount state unknown -> BLOCKED"; exit 1
+    fi
+    _rf_output=$("$FSCK" -f -y "$_rf_dev" 2>&1)
+    _rf_rc=$?
+    log "repair $_rf_point: e2fsck rc=$_rf_rc tail=$(printf '%s' "$_rf_output" | tail -1)"
+    case "$_rf_rc" in
+        0|1) ;;
+        2|3)
+            set_prop z1stage.fsck reboot-required
+            log "repair $_rf_point: reboot required; left unmounted, no RW mount"
+            exit 2 ;;
+        *) log "repair $_rf_point: check failed; left unmounted, no RW mount"; exit 1 ;;
+    esac
+    if ! "$MOUNT" -o rw,seclabel,nosuid,nodev,noatime "$_rf_dev" "$_rf_point"; then
+        log "repair $_rf_point: RW mount failed -> BLOCKED"; exit 1
+    fi
+    _rf_record=$(mount_record "$_rf_point") || exit 1
+    set -- $_rf_record
+    [ "$#" -eq 2 ] || exit 1
+    _rf_actual=$($READLINK -f "$1" 2>/dev/null) || exit 1
+    _rf_expected=$($READLINK -f "$_rf_dev" 2>/dev/null) || exit 1
+    [ "$_rf_actual" = "$_rf_expected" ] || exit 1
+    case ",$2," in *,rw,*) log "repair $_rf_point: verified RW mount"; exit 0 ;; esac
+    log "repair $_rf_point: mount did not become RW -> BLOCKED"
+    exit 1
+)
+
+prepare_fs() (   # <mountpoint> <blockdev>
+    _pf_point=$1
+    _pf_dev=$2
+    _pf_record=$(mount_record "$_pf_point") || {
+        log "$_pf_point: mount table unreadable/ambiguous -> BLOCKED"; exit 1;
+    }
+    _pf_mounted=absent
+    _pf_opts=
+    if [ "$_pf_record" != absent ]; then
+        set -- $_pf_record
+        [ "$#" -eq 2 ] || exit 1
+        _pf_actual=$($READLINK -f "$1" 2>/dev/null) || exit 1
+        _pf_expected=$($READLINK -f "$_pf_dev" 2>/dev/null) || exit 1
+        [ -n "$_pf_expected" ] && [ "$_pf_actual" = "$_pf_expected" ] || {
+            log "$_pf_point: mounted from unexpected device -> BLOCKED"; exit 1;
+        }
+        _pf_mounted=mounted
+        _pf_opts=$2
+    fi
+    fs_needs_repair "$_pf_dev"
+    _pf_need=$?
+    case "$_pf_need" in
+        0) repair_fs "$_pf_point" "$_pf_dev" "$_pf_mounted"; exit $? ;;
+        1)
+            if [ "$_pf_mounted" = absent ]; then
+                repair_fs "$_pf_point" "$_pf_dev" absent; exit $?
+            fi
+            case ",$_pf_opts," in *,rw,*) exit 0 ;; esac
+            log "$_pf_point: unexpectedly read-only -> BLOCKED"; exit 1 ;;
+        *) log "$_pf_point: filesystem health unknown -> BLOCKED"; exit 1 ;;
+    esac
+)
+
+# --storage-only belongs immediately after mount_all in on fs.  The later
+# post-fs-data invocation uses --skip-storage so fsck never races Android writers.
+case "${1:-}" in
+    ''|--storage-only)
+        set_checked_prop sys.z1.storage_ready 0 || exit 1
+        set_prop z1stage.status checking-filesystems
+        set_prop z1stage.fsck checking
+        for _fs_pair in /data:/dev/block/mmcblk0p6 /cache:/dev/block/mmcblk0p5; do
+            prepare_fs "${_fs_pair%%:*}" "${_fs_pair#*:}"
+            _fs_rc=$?
+            if [ "$_fs_rc" -ne 0 ]; then
+                [ "$_fs_rc" -eq 2 ] || set_prop z1stage.fsck failed
+                set_prop z1stage.status blocked-filesystem
+                log "BLOCKED: filesystem gate failed ($_fs_pair, rc=$_fs_rc); no stage/system writes"
+                exit 1
+            fi
+        done
+        set_prop z1stage.fsck ready
+        set_checked_prop sys.z1.storage_ready 1 || exit 1
+        if [ "${1:-}" = --storage-only ]; then
+            set_prop z1stage.status storage-ready
+            log "storage gate ready; no stage/system writes in --storage-only"
+            exit 0
+        fi ;;
+    --skip-storage)
+        if [ "$("$GETPROP" sys.z1.storage_ready 2>/dev/null)" != 1 ]; then
+            set_prop z1stage.status blocked-filesystem
+            log "BLOCKED: --skip-storage requires successful early storage gate"
+            exit 1
+        fi
+        for _fs_pair in /data:/dev/block/mmcblk0p6 /cache:/dev/block/mmcblk0p5; do
+            _fs_record=$(mount_record "${_fs_pair%%:*}") || _fs_record=unknown
+            _fs_source=${_fs_record%% *}
+            _fs_opts=${_fs_record#* }
+            _fs_actual=$($READLINK -f "$_fs_source" 2>/dev/null)
+            _fs_expected=$($READLINK -f "${_fs_pair#*:}" 2>/dev/null)
+            case ",$_fs_opts," in *,rw,*) _fs_rw=yes ;; *) _fs_rw=no ;; esac
+            if [ -z "$_fs_actual" ] || [ "$_fs_actual" != "$_fs_expected" ] || [ "$_fs_rw" != yes ]; then
+                set_prop z1stage.status blocked-filesystem
+                log "BLOCKED: mount changed after early storage gate ($_fs_pair)"
+                exit 1
+            fi
+        done ;;
+    *) log "usage: z1stage_boot.sh [--storage-only|--skip-storage]"; exit 2 ;;
+esac
+set_prop z1stage.status installing
+
+# --- 1. stage directory ----------------------------------------------------
+if ! $MKDIR -p "$STAGE" "$STAGE/active" 2>/dev/null ||
+   ! [ -d "$STAGE" ] || ! [ -d "$STAGE/active" ] ||
+   ! $CHMOD 0777 "$STAGE" "$STAGE/active" 2>/dev/null ||
+   ! $CHOWN "$SHELL_UID:$SHELL_GID" "$STAGE" "$STAGE/active" 2>/dev/null ||
+   ! [ -w "$STAGE" ]; then
+    set_prop z1stage.status blocked-stage
+    log "BLOCKED: cannot create or configure writable stage ${STAGE}"
+    exit 1
 fi
 
 seed hwcomposer.z1.so 0644
@@ -218,91 +340,167 @@ seed z1rootd.sh 0755
 #
 # The install is cp-to-tmp + rename, so a live re-run can never rewrite a
 # mmap'ed .so in place (that would SIGBUS the running composer).
-install_one() {   # install_one <file-name> <disable-token>
-    _name=$1
-    _tok=$2
-    _active="$STAGE/active/$_name"
-    _kill="$STAGE/.disable_$_tok"
-    _dst="$VENDOR_HW/$_name"
-    _tmp="$_dst.z1tmp"
+SYSTEM_WRITE_FAILED=0
 
-    if [ -f "$_kill" ]; then
-        log "install ${_name}: kill switch ${_kill} present -> /vendor override removed"
-        $RM -f "$_dst" 2>/dev/null
-        return 0
-    fi
-
-    if [ -f "$_active" ]; then
-        _src="$_active"
-    elif [ -f "/$_name" ]; then
-        _src="/$_name"
-    else
-        if [ -e "$_dst" ]; then
-            $RM -f "$_dst" 2>/dev/null && log "install ${_name}: no candidate -> removed ${_dst} (stock module takes over)"
-        fi
-        return 0
-    fi
-
-    if $CP "$_src" "$_tmp" 2>/dev/null; then
-        $CHMOD 0644 "$_tmp" 2>/dev/null
-        $CHOWN 0:0 "$_tmp" 2>/dev/null
-        if $MV -f "$_tmp" "$_dst" 2>/dev/null; then
-            APPLIED=$((APPLIED + 1))
-            log "install ${_name}: ${_src} -> ${_dst} (sha256 $(sha_of "$_dst"))"
-        else
-            ERRORS=$((ERRORS + 1))
-            $RM -f "$_tmp" 2>/dev/null
-            log "ERROR install ${_name}: rename ${_tmp} -> ${_dst} failed"
-        fi
-    else
-        ERRORS=$((ERRORS + 1))
-        log "ERROR install ${_name}: cannot write ${_tmp} (/vendor ro?)"
-    fi
+system_is_rw() {
+    _sr_record=$(mount_record /system) || return 1
+    case "$_sr_record" in absent) return 1 ;; esac
+    _sr_opts=${_sr_record#* }
+    case ",$_sr_opts," in *,rw,*) return 0 ;; esac
+    return 1
 }
 
+ensure_system_rw() {
+    [ "$SYSTEM_WRITE_FAILED" -eq 0 ] || return 1
+    if ! system_is_rw; then
+        if ! "$MOUNT" -o remount,rw /system 2>/dev/null || ! system_is_rw; then
+            log "ERROR /system RW remount failed"
+            SYSTEM_WRITE_FAILED=1
+            ERRORS=$((ERRORS + 1))
+            return 1
+        fi
+    fi
+    return 0
+}
+
+restore_system_ro() {
+    # Even the legacy fstab initially mounts /system RW.  End installation with
+    # it RO, including when no file changed or a copy/verification failed.
+    _rr_record=$(mount_record /system) || {
+        log "ERROR cannot verify /system mount while restoring RO"; return 1;
+    }
+    [ "$_rr_record" != absent ] || { log "ERROR /system is not mounted"; return 1; }
+    if system_is_rw; then
+        "$MOUNT" -o remount,ro /system 2>/dev/null || {
+            log "ERROR /system RO remount failed"; return 1;
+        }
+    fi
+    _rr_record=$(mount_record /system) || return 1
+    _rr_opts=${_rr_record#* }
+    case ",$_rr_opts," in
+        *,ro,*) return 0 ;;
+        *) log "ERROR /system did not become RO"; return 1 ;;
+    esac
+}
+
+install_error() {
+    ERRORS=$((ERRORS + 1))
+    SYSTEM_WRITE_FAILED=1
+    log "ERROR $*"
+    restore_system_ro || log "ERROR /system remains unsafe after failed install"
+    return 1
+}
+
+atomic_install() {   # <src> <dst> <label>; cmp errors are not mismatches
+    _ai_src=$1
+    _ai_dst=$2
+    _ai_label=$3
+    _ai_tmp="${_ai_dst}.z1tmp.$$"
+    [ "$SYSTEM_WRITE_FAILED" -eq 0 ] || return 1
+    [ -x "$CMP" ] || { install_error "$_ai_label: cmp unavailable"; return 1; }
+    if [ -e "$_ai_dst" ]; then
+        "$CMP" -s "$_ai_src" "$_ai_dst" 2>/dev/null
+        _ai_cmp=$?
+        case "$_ai_cmp" in
+            0) log "install $_ai_label: identical; kept existing file"; return 0 ;;
+            1) ;;
+            *) install_error "$_ai_label: cannot compare existing file"; return 1 ;;
+        esac
+    fi
+    ensure_system_rw || { restore_system_ro; return 1; }
+    if ! "$RM" -f "$_ai_tmp" 2>/dev/null ||
+       ! "$CP" "$_ai_src" "$_ai_tmp" 2>/dev/null ||
+       ! "$CMP" -s "$_ai_src" "$_ai_tmp" 2>/dev/null ||
+       ! "$CHMOD" 0644 "$_ai_tmp" 2>/dev/null ||
+       ! "$CHOWN" 0:0 "$_ai_tmp" 2>/dev/null; then
+        "$RM" -f "$_ai_tmp" 2>/dev/null
+        install_error "$_ai_label: temporary copy/verification/metadata failed; destination kept"
+        return 1
+    fi
+    if ! "$MV" -f "$_ai_tmp" "$_ai_dst" 2>/dev/null; then
+        "$RM" -f "$_ai_tmp" 2>/dev/null
+        install_error "$_ai_label: rename failed; destination kept"
+        return 1
+    fi
+    if ! "$CMP" -s "$_ai_src" "$_ai_dst" 2>/dev/null; then
+        install_error "$_ai_label: destination readback failed after rename"
+        return 1
+    fi
+    APPLIED=$((APPLIED + 1))
+    log "install $_ai_label: $_ai_src -> $_ai_dst (sha256 $(sha_of "$_ai_dst"))"
+    return 0
+}
+
+remove_override() {   # <dst> <label>
+    [ -e "$1" ] || return 0
+    ensure_system_rw || { restore_system_ro; return 1; }
+    if "$RM" -f "$1" 2>/dev/null; then
+        REMOVED=$((REMOVED + 1))
+        log "install $2: override removed; system module takes over"
+        return 0
+    fi
+    install_error "$2: cannot remove override"
+    return 1
+}
+
+install_one() {   # <file-name> <disable-token>
+    _io_name=$1
+    _io_active="$STAGE/active/$_io_name"
+    _io_dst="$VENDOR_HW/$_io_name"
+    [ "$SYSTEM_WRITE_FAILED" -eq 0 ] || return 1
+    if [ -f "$STAGE/.disable_$2" ]; then
+        remove_override "$_io_dst" "$_io_name (kill switch)"
+        return $?
+    fi
+    if [ -f "$_io_active" ]; then
+        _io_src=$_io_active
+    elif [ -f "/$_io_name" ]; then
+        _io_src="/$_io_name"
+    else
+        remove_override "$_io_dst" "$_io_name (no candidate)"
+        return $?
+    fi
+    atomic_install "$_io_src" "$_io_dst" "$_io_name"
+}
+
+install_sys_file() {   # <src-in-ramdisk> <dst>; absence preserves system image
+    [ -f "/$1" ] || return 0
+    atomic_install "/$1" "$2" "$1"
+}
+
+publish_identity() {
+    for _id_module in hwcomposer gralloc; do
+        _id_path="$VENDOR_HW/$_id_module.z1.so"
+        if [ -f "$_id_path" ]; then
+            set_prop "z1stage.${_id_module}.sha" "$(sha_of "$_id_path")"
+        else
+            set_prop "z1stage.${_id_module}.sha" "system:$(sha_of "/system/lib/hw/$_id_module.z1.so")"
+        fi
+    done
+    log "identity: hwcomposer=$($GETPROP z1stage.hwcomposer.sha 2>/dev/null) gralloc=$($GETPROP z1stage.gralloc.sha 2>/dev/null)"
+}
+
+# Best-effort RO restoration also covers an interrupted installation.  Rename
+# avoids truncating a mapped library; it is not a power-loss durability proof.
+trap 'restore_system_ro; exit 1' HUP INT TERM
 install_one hwcomposer.z1.so hwcomposer
 install_one gralloc.z1.so gralloc
-
-# --- 2b1. system files staged in the ramdisk (reliable replacement for the
-# lossy serial push) -------------------------------------------------------
-# A file baked into the ramdisk as /<src> is installed to <dst> when it is
-# present.  When the source is absent the destination is LEFT ALONE -- unlike
-# install_one() there is no "remove on absence", because these files live in
-# /system and a ramdisk without them must never regress the system image.
-install_sys_file() {   # install_sys_file <src-in-ramdisk> <dst>
-    _src="/$1"
-    _dst="$2"
-    _tmp="${_dst}.z1tmp"
-    [ -f "$_src" ] || return 0
-    # Never rewrite an identical file.  Without this guard every boot copies ~1 MB
-    # into /system, which needs a read-write remount each time -- and a power cut
-    # in the middle of those writes can corrupt /system itself.  That is the most
-    # likely origin of the corrupted /system/lib/libutilscallstack.so found on
-    # 2026-11-12 (same size as the image, different sha256, stable across reads).
-    if [ -f "$_dst" ] && $CMP -s "$_src" "$_dst" 2>/dev/null; then
-        return 0
-    fi
-    if $CP "$_src" "$_tmp" 2>/dev/null; then
-        $CHMOD 0644 "$_tmp" 2>/dev/null
-        $CHOWN 0:0 "$_tmp" 2>/dev/null
-        if $MV -f "$_tmp" "$_dst" 2>/dev/null; then
-            APPLIED=$((APPLIED + 1))
-            log "install ${1}: -> ${_dst} (sha256 $(sha_of "$_dst"))"
-        else
-            ERRORS=$((ERRORS + 1)); $RM -f "$_tmp" 2>/dev/null
-            log "ERROR install ${1}: rename to ${_dst} failed"
-        fi
-    else
-        ERRORS=$((ERRORS + 1))
-        log "ERROR install ${1}: cannot write ${_tmp}"
-    fi
-}
-
 install_sys_file z1_libwifi-hal.so          /system/vendor/lib/libwifi-hal.so
 install_sys_file z1_libbt-vendor.so         /system/vendor/lib/libbt-vendor.so
 install_sys_file z1_audio.primary.mt6572.so /system/vendor/lib/hw/audio.primary.mt6572.so
-install_sys_file z1_mt6572-afe-pcm.ko    /system/lib/modules/mt6572-afe-pcm.ko
-install_sys_file z1_snd-soc-mt6323.ko    /system/lib/modules/snd-soc-mt6323.ko
+install_sys_file z1_mt6572-afe-pcm.ko        /system/lib/modules/mt6572-afe-pcm.ko
+install_sys_file z1_snd-soc-mt6323.ko        /system/lib/modules/snd-soc-mt6323.ko
+if ! restore_system_ro; then
+    ERRORS=$((ERRORS + 1))
+    SYSTEM_WRITE_FAILED=1
+fi
+trap - HUP INT TERM
+if [ "$SYSTEM_WRITE_FAILED" -ne 0 ]; then
+    publish_identity
+    set_prop z1stage.status blocked-install
+    log "BLOCKED: installation failed; no further stage writes"
+    exit 1
+fi
 
 # --- 2d. smoothness: remove boot-time overhead and framework stalls ---------
 # (a) /d and the debugfs wakelock file.  Android's BatteryStatsImpl calls
@@ -347,76 +545,81 @@ log "smooth: diagnostic relays stopped"
 
 
 # --- 2c. CPU / GPU frequency policy ----------------------------------------
-# CPU: cpufreq-dt now drives armpll (1001 MHz .. 1508 MHz) with VPROC scaling.
-# The shipped ceiling is 1300 MHz (spec for this 28 nm Cortex-A7).  The
-# 1404/1508 MHz overclock points are opt-in:
-#     echo oc > /data/local/tmp/z1stage/oc_level
-# Safety net: before applying an overclock we drop $OC_PENDING; the marker is
-# only removed once Android reaches sys.boot_completed.  So if the kernel ever
-# hangs or panics at the high clock, the next boot finds the marker and falls
-# back to 1300 MHz by itself -- an overclock can never brick the board.
+# Apply only the validated OPP set.  These are the current supported settings,
+# not a claim about the silicon's physical upper limit.
 CPUF=/sys/devices/system/cpu/cpu0/cpufreq
 OC_LEVEL="$STAGE/oc_level"
 OC_PENDING="$STAGE/.oc_pending"
+if [ -f "$OC_LEVEL" ]; then
+    _freq_request=$(cat "$OC_LEVEL" 2>/dev/null)
+    if [ "$_freq_request" != safe ]; then
+        log "cpufreq: unsupported oc_level=${_freq_request}; requested safe policy"
+        printf 'safe\n' > "$OC_LEVEL" 2>/dev/null || log "cpufreq: cannot clear old oc_level request"
+    fi
+fi
+$RM -f "$OC_PENDING" 2>/dev/null || log "cpufreq: cannot remove stale overclock marker"
 if [ -d "$CPUF" ]; then
-    _lvl=safe
-    [ -f "$OC_LEVEL" ] && _lvl=$(cat "$OC_LEVEL" 2>/dev/null)
-    if [ -f "$OC_PENDING" ]; then
-        _lvl=safe
-        printf 'safe\n' > "$OC_LEVEL" 2>/dev/null
-        log "cpufreq: previous OVERCLOCKED boot never completed -> reverted to safe"
-    fi
-    if [ "$_lvl" = "oc" ]; then
-        _max=1508000
-        : > "$OC_PENDING" 2>/dev/null
-        ( sleep 150; [ "$(/system/bin/getprop sys.boot_completed 2>/dev/null)" = "1" ] && \
-          $RM -f "$OC_PENDING" ) >/dev/null 2>&1 &
-    else
-        _max=1300000
-        $RM -f "$OC_PENDING" 2>/dev/null
-    fi
-    _i=0
-    while [ $_i -lt 20 ] && [ ! -w "$CPUF/scaling_max_freq" ]; do sleep 1; _i=$((_i + 1)); done
-    if [ -w "$CPUF/scaling_max_freq" ]; then
-        printf '%s\n' "$_max" > "$CPUF/scaling_max_freq" 2>/dev/null
-        # A 2-core Cortex-A7 cannot afford ondemand's polling latency: measured
-        # with an identical 15-swipe launcher workload, ondemand left 79/354
-        # frames janky (22.3%) vs 57/349 (16.3%) with schedutil.  schedutil acts
-        # in the scheduler path (no sampling loop), and an 806 MHz floor removes
-        # the climb from 598 MHz at the start of a gesture.  Still dynamic: it
-        # drops to the floor when the device is idle.
-        printf '806000\n' > "$CPUF/scaling_min_freq" 2>/dev/null
-        for _rl in /sys/devices/system/cpu/cpufreq/policy0/schedutil/rate_limit_us \
-                   /sys/devices/system/cpu/cpufreq/schedutil/rate_limit_us; do
-            [ -w "$_rl" ] && printf '2000\n' > "$_rl" 2>/dev/null && break
-        done
-        if grep -qw schedutil "$CPUF/scaling_available_governors" 2>/dev/null; then
-            printf 'schedutil\n' > "$CPUF/scaling_governor" 2>/dev/null
+    if grep -qw 806000 "$CPUF/scaling_available_frequencies" 2>/dev/null &&
+       grep -qw 1300000 "$CPUF/scaling_available_frequencies" 2>/dev/null &&
+       grep -qw schedutil "$CPUF/scaling_available_governors" 2>/dev/null; then
+        if printf '1300000\n' > "$CPUF/scaling_max_freq" 2>/dev/null &&
+           printf '806000\n' > "$CPUF/scaling_min_freq" 2>/dev/null &&
+           printf 'schedutil\n' > "$CPUF/scaling_governor" 2>/dev/null &&
+           [ "$(cat "$CPUF/scaling_max_freq" 2>/dev/null)" = 1300000 ] &&
+           [ "$(cat "$CPUF/scaling_min_freq" 2>/dev/null)" = 806000 ] &&
+           [ "$(cat "$CPUF/scaling_governor" 2>/dev/null)" = schedutil ]; then
+            set_prop z1stage.cpufreq ready
+            for _rl in /sys/devices/system/cpu/cpufreq/policy0/schedutil/rate_limit_us \
+                       /sys/devices/system/cpu/cpufreq/schedutil/rate_limit_us; do
+                if [ -w "$_rl" ]; then
+                    if printf '2000\n' > "$_rl" 2>/dev/null &&
+                       [ "$(cat "$_rl" 2>/dev/null)" = 2000 ]; then
+                        log "cpufreq: schedutil rate_limit_us=2000 verified"
+                    else
+                        log "cpufreq: rate_limit_us write/readback failed"
+                    fi
+                    break
+                fi
+            done
+        else
+            set_prop z1stage.cpufreq failed
+            log "cpufreq: policy write/readback failed; actual values follow"
         fi
-        log "cpufreq: level=${_lvl} ceiling=${_max} floor=$(cat "$CPUF/scaling_min_freq" 2>/dev/null) gov=$(cat "$CPUF/scaling_governor" 2>/dev/null) cur=$(cat "$CPUF/scaling_cur_freq" 2>/dev/null) avail=$(cat "$CPUF/scaling_available_frequencies" 2>/dev/null)"
     else
-        log "cpufreq: sysfs missing (mediatek-cpufreq did not bind)"
+        set_prop z1stage.cpufreq unsupported
+        log "cpufreq: current driver does not advertise 806000/1300000/schedutil; unchanged"
     fi
+    log "cpufreq: driver=$(cat "$CPUF/scaling_driver" 2>/dev/null) ceiling=$(cat "$CPUF/scaling_max_freq" 2>/dev/null) floor=$(cat "$CPUF/scaling_min_freq" 2>/dev/null) gov=$(cat "$CPUF/scaling_governor" 2>/dev/null) cur=$(cat "$CPUF/scaling_cur_freq" 2>/dev/null) avail=$(cat "$CPUF/scaling_available_frequencies" 2>/dev/null)"
 else
-    log "cpufreq: no cpufreq node at all"
+    set_prop z1stage.cpufreq unavailable
+    log "cpufreq: no cpufreq node"
 fi
 
-# GPU: lima_devfreq registers once the GPU node carries an OPP table.  Its two
-# points are 26 MHz and 416 MHz -- and 26 MHz is far too slow for this GPU, so
-# simple_ondemand visibly stutters: every burst starts at 26 MHz and only ramps
-# after a polling interval.  Pin the ceiling governor to "performance" (416 MHz,
-# i.e. what the board ran before devfreq existed) and keep ondemand available:
-#     echo simple_ondemand > /sys/class/devfreq/13010000.gpu/governor
+# Keep the tested GPU performance policy only when 416 MHz and that governor
+# are advertised.  A governor write alone does not prove the resulting clock.
 GPU_DEVFREQ=/sys/class/devfreq/13010000.gpu
-for _g in /sys/class/devfreq/*/; do
-    [ -d "$_g" ] || continue
-    if [ "$_g" = "$GPU_DEVFREQ/" ] && [ -w "$GPU_DEVFREQ/governor" ]; then
-        printf 'performance\n' > "$GPU_DEVFREQ/governor" 2>/dev/null
+if [ -d "$GPU_DEVFREQ" ]; then
+    if grep -qw 416000000 "$GPU_DEVFREQ/available_frequencies" 2>/dev/null &&
+       grep -qw performance "$GPU_DEVFREQ/available_governors" 2>/dev/null; then
+        if printf '416000000\n' > "$GPU_DEVFREQ/max_freq" 2>/dev/null &&
+           [ "$(cat "$GPU_DEVFREQ/max_freq" 2>/dev/null)" = 416000000 ] &&
+           printf 'performance\n' > "$GPU_DEVFREQ/governor" 2>/dev/null &&
+           [ "$(cat "$GPU_DEVFREQ/governor" 2>/dev/null)" = performance ] &&
+           [ "$(cat "$GPU_DEVFREQ/cur_freq" 2>/dev/null)" = 416000000 ]; then
+            set_prop z1stage.devfreq ready
+        else
+            set_prop z1stage.devfreq failed
+            log "devfreq: performance/416MHz write or readback failed"
+        fi
+    else
+        set_prop z1stage.devfreq unsupported
+        log "devfreq: 416MHz/performance not advertised; unchanged"
     fi
-    log "devfreq $(basename "$_g"): governor=$(cat "$_g/governor" 2>/dev/null) cur=$(cat "$_g/cur_freq" 2>/dev/null) max=$(cat "$_g/max_freq" 2>/dev/null)"
-done
-
-
+    log "devfreq: governor=$(cat "$GPU_DEVFREQ/governor" 2>/dev/null) cur=$(cat "$GPU_DEVFREQ/cur_freq" 2>/dev/null) avail=$(cat "$GPU_DEVFREQ/available_frequencies" 2>/dev/null)"
+else
+    set_prop z1stage.devfreq unavailable
+    log "devfreq: GPU node absent"
+fi
 
 # --- 2b2. dma-heap device node (needed for contiguous scanout buffers) ------
 # The kernel registers the CMA heap as /sys/class/dma_heap/default_cma_region
@@ -506,20 +709,14 @@ fi
 
 
 
-# --- 3b. identity properties ------------------------------------------------
-# Which binary is actually in effect must be visible on the board, because there
-# are three installation paths (legacy rc line 42, the one-shot above, an
-# operator's active/ set) and /vendor survives a boot.img rollback.
-for _m in hwcomposer gralloc; do
-    _p="$VENDOR_HW/$_m.z1.so"
-    if [ -f "$_p" ]; then
-        set_prop "z1stage.${_m}.sha" "$(sha_of "$_p")"
-    else
-        set_prop "z1stage.${_m}.sha" "system:$(sha_of "/system/lib/hw/$_m.z1.so")"
-    fi
-done
-log "identity: hwcomposer=$($GETPROP z1stage.hwcomposer.sha 2>/dev/null) gralloc=$($GETPROP z1stage.gralloc.sha 2>/dev/null)"
+# --- 3b. actual installed identity (including operator overrides) ------------
+publish_identity
 
 T1=$(uptime_s)
 log "done @${T1}s: seeded=${SEEDED} working_copies=${COPIED} applied=${APPLIED} removed=${REMOVED} errors=${ERRORS}"
+if [ "$ERRORS" -ne 0 ]; then
+    set_prop z1stage.status completed-with-errors
+    exit 1
+fi
+set_checked_prop z1stage.status ready || exit 1
 exit 0
