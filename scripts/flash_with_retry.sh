@@ -45,6 +45,10 @@ MAXTRIES="${4:-8}"
   exit 1
 }
 
+# All Z1 flash/readback entry points share one device-wide lock.
+exec 9>"${Z1_FLASH_LOCK:-/tmp/z1flash.lock}" || exit 1
+flock -n 9 || { echo "ERROR: another flash/readback holds the Z1 device lock" >&2; exit 1; }
+
 # 镜像路径支持相对(相对当前 cwd)和绝对,统一转绝对,避免 cd mtkclient 后失效
 abs_img=$(cd "$(dirname "$IMG_ARG")" 2>/dev/null && echo "$(pwd)/$(basename "$IMG_ARG")")
 abs_rollback=""
