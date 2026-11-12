@@ -51,6 +51,7 @@ CHOWN=/system/bin/chown
 CP=/system/bin/cp
 MV=/system/bin/mv
 RM=/system/bin/rm
+CMP=/system/bin/cmp
 SETPROP=/system/bin/setprop
 RESTORECON=/system/bin/restorecon
 SHA256SUM=/system/bin/sha256sum
@@ -273,6 +274,14 @@ install_sys_file() {   # install_sys_file <src-in-ramdisk> <dst>
     _dst="$2"
     _tmp="${_dst}.z1tmp"
     [ -f "$_src" ] || return 0
+    # Never rewrite an identical file.  Without this guard every boot copies ~1 MB
+    # into /system, which needs a read-write remount each time -- and a power cut
+    # in the middle of those writes can corrupt /system itself.  That is the most
+    # likely origin of the corrupted /system/lib/libutilscallstack.so found on
+    # 2026-11-12 (same size as the image, different sha256, stable across reads).
+    if [ -f "$_dst" ] && $CMP -s "$_src" "$_dst" 2>/dev/null; then
+        return 0
+    fi
     if $CP "$_src" "$_tmp" 2>/dev/null; then
         $CHMOD 0644 "$_tmp" 2>/dev/null
         $CHOWN 0:0 "$_tmp" 2>/dev/null
@@ -292,6 +301,121 @@ install_sys_file() {   # install_sys_file <src-in-ramdisk> <dst>
 install_sys_file z1_libwifi-hal.so          /system/vendor/lib/libwifi-hal.so
 install_sys_file z1_libbt-vendor.so         /system/vendor/lib/libbt-vendor.so
 install_sys_file z1_audio.primary.mt6572.so /system/vendor/lib/hw/audio.primary.mt6572.so
+install_sys_file z1_mt6572-afe-pcm.ko    /system/lib/modules/mt6572-afe-pcm.ko
+install_sys_file z1_snd-soc-mt6323.ko    /system/lib/modules/snd-soc-mt6323.ko
+
+# --- 2d. smoothness: remove boot-time overhead and framework stalls ---------
+# (a) /d and the debugfs wakelock file.  Android's BatteryStatsImpl calls
+#     Slog.wtf() -- which *kills* the process on userdebug builds -- when
+#     neither /proc/wakelocks nor /d/wakeup_sources resolves.  The kernel has
+#     no /proc/wakelocks, and /d is only created once init has mounted
+#     debugfs, so system_server can hit the window and die (that is what makes
+#     SystemUI ANR/restart "for no reason").  Create and open it up here.
+[ -e /d ] || ln -s /sys/kernel/debug /d 2>/dev/null
+if [ -e /sys/kernel/debug/wakeup_sources ]; then
+    chmod 0644 /sys/kernel/debug/wakeup_sources 2>/dev/null
+    log "smooth: /d/wakeup_sources ready ($(ls -l /sys/kernel/debug/wakeup_sources 2>/dev/null | cut -d' ' -f1))"
+else
+    log "smooth: /sys/kernel/debug/wakeup_sources missing"
+fi
+
+# (b) The diagnostic relays are pure overhead while the user is using the
+#     device: measured 323 logcat lines/minute relayed to the serial port, plus
+#     a dumpsys window/activity/ps/meminfo sweep every relay cycle.  They exist
+#     for bring-up; stop them here and re-enable by hand when debugging:
+#         setprop ctl.start z1_logcat_relay
+for _svc in z1_logcat_relay z1_acm_log z1_logpersist z1_heartbeat z1_sf_dump \
+            z1_klog_relay z1_diag_onboot z1selftest; do
+    /system/bin/setprop ctl.stop "$_svc" 2>/dev/null
+done
+log "smooth: diagnostic relays stopped"
+
+# (c) Halve the window/transition/animator scales.  This is the single largest
+#     *perceived* win on a 1 GB Cortex-A7: every transition costs ~half the
+#     frames.  Applied after the settings provider is up, hence the background
+#     wait; harmless if it never runs.
+( _i=0
+  while [ $_i -lt 240 ]; do
+      if /system/bin/getprop sys.boot_completed 2>/dev/null | grep -qx 1; then
+          /system/bin/settings put global window_animation_scale 0.5 2>/dev/null
+          /system/bin/settings put global transition_animation_scale 0.5 2>/dev/null
+          /system/bin/settings put global animator_duration_scale 0.5 2>/dev/null
+          break
+      fi
+      sleep 2; _i=$((_i + 1))
+  done ) >/dev/null 2>&1 &
+
+
+# --- 2c. CPU / GPU frequency policy ----------------------------------------
+# CPU: cpufreq-dt now drives armpll (1001 MHz .. 1508 MHz) with VPROC scaling.
+# The shipped ceiling is 1300 MHz (spec for this 28 nm Cortex-A7).  The
+# 1404/1508 MHz overclock points are opt-in:
+#     echo oc > /data/local/tmp/z1stage/oc_level
+# Safety net: before applying an overclock we drop $OC_PENDING; the marker is
+# only removed once Android reaches sys.boot_completed.  So if the kernel ever
+# hangs or panics at the high clock, the next boot finds the marker and falls
+# back to 1300 MHz by itself -- an overclock can never brick the board.
+CPUF=/sys/devices/system/cpu/cpu0/cpufreq
+OC_LEVEL="$STAGE/oc_level"
+OC_PENDING="$STAGE/.oc_pending"
+if [ -d "$CPUF" ]; then
+    _lvl=safe
+    [ -f "$OC_LEVEL" ] && _lvl=$(cat "$OC_LEVEL" 2>/dev/null)
+    if [ -f "$OC_PENDING" ]; then
+        _lvl=safe
+        printf 'safe\n' > "$OC_LEVEL" 2>/dev/null
+        log "cpufreq: previous OVERCLOCKED boot never completed -> reverted to safe"
+    fi
+    if [ "$_lvl" = "oc" ]; then
+        _max=1508000
+        : > "$OC_PENDING" 2>/dev/null
+        ( sleep 150; [ "$(/system/bin/getprop sys.boot_completed 2>/dev/null)" = "1" ] && \
+          $RM -f "$OC_PENDING" ) >/dev/null 2>&1 &
+    else
+        _max=1300000
+        $RM -f "$OC_PENDING" 2>/dev/null
+    fi
+    _i=0
+    while [ $_i -lt 20 ] && [ ! -w "$CPUF/scaling_max_freq" ]; do sleep 1; _i=$((_i + 1)); done
+    if [ -w "$CPUF/scaling_max_freq" ]; then
+        printf '%s\n' "$_max" > "$CPUF/scaling_max_freq" 2>/dev/null
+        # A 2-core Cortex-A7 cannot afford ondemand's polling latency: measured
+        # with an identical 15-swipe launcher workload, ondemand left 79/354
+        # frames janky (22.3%) vs 57/349 (16.3%) with schedutil.  schedutil acts
+        # in the scheduler path (no sampling loop), and an 806 MHz floor removes
+        # the climb from 598 MHz at the start of a gesture.  Still dynamic: it
+        # drops to the floor when the device is idle.
+        printf '806000\n' > "$CPUF/scaling_min_freq" 2>/dev/null
+        for _rl in /sys/devices/system/cpu/cpufreq/policy0/schedutil/rate_limit_us \
+                   /sys/devices/system/cpu/cpufreq/schedutil/rate_limit_us; do
+            [ -w "$_rl" ] && printf '2000\n' > "$_rl" 2>/dev/null && break
+        done
+        if grep -qw schedutil "$CPUF/scaling_available_governors" 2>/dev/null; then
+            printf 'schedutil\n' > "$CPUF/scaling_governor" 2>/dev/null
+        fi
+        log "cpufreq: level=${_lvl} ceiling=${_max} floor=$(cat "$CPUF/scaling_min_freq" 2>/dev/null) gov=$(cat "$CPUF/scaling_governor" 2>/dev/null) cur=$(cat "$CPUF/scaling_cur_freq" 2>/dev/null) avail=$(cat "$CPUF/scaling_available_frequencies" 2>/dev/null)"
+    else
+        log "cpufreq: sysfs missing (mediatek-cpufreq did not bind)"
+    fi
+else
+    log "cpufreq: no cpufreq node at all"
+fi
+
+# GPU: lima_devfreq registers once the GPU node carries an OPP table.  Its two
+# points are 26 MHz and 416 MHz -- and 26 MHz is far too slow for this GPU, so
+# simple_ondemand visibly stutters: every burst starts at 26 MHz and only ramps
+# after a polling interval.  Pin the ceiling governor to "performance" (416 MHz,
+# i.e. what the board ran before devfreq existed) and keep ondemand available:
+#     echo simple_ondemand > /sys/class/devfreq/13010000.gpu/governor
+GPU_DEVFREQ=/sys/class/devfreq/13010000.gpu
+for _g in /sys/class/devfreq/*/; do
+    [ -d "$_g" ] || continue
+    if [ "$_g" = "$GPU_DEVFREQ/" ] && [ -w "$GPU_DEVFREQ/governor" ]; then
+        printf 'performance\n' > "$GPU_DEVFREQ/governor" 2>/dev/null
+    fi
+    log "devfreq $(basename "$_g"): governor=$(cat "$_g/governor" 2>/dev/null) cur=$(cat "$_g/cur_freq" 2>/dev/null) max=$(cat "$_g/max_freq" 2>/dev/null)"
+done
+
 
 
 # --- 2b2. dma-heap device node (needed for contiguous scanout buffers) ------
