@@ -1,30 +1,179 @@
-# Z1 launcher / wallpaper 备料（2026-11-04）
+# Z1 Android 9 文档入口
 
-完整分析见 `../LAUNCHER_WALLPAPER_FIX_20261104.md`。这里只放可直接用的实物。
+本目录包含 80 余份 Markdown 文档，时间跨度从早期 stock-kernel 诊断到当前的
+mainline Android 9 恢复候选。先按本页状态选择文档；带日期的交接记录保留
+当时的证据和判断，不能覆盖后续更正。
 
-## 为什么需要换
-- 现镜像唯一的桌面 `com.example.android.home` 的 HOME Activity 用 `@android:style/Theme`：
-  `windowShowWallpaper=false` + 不透明 `windowBackground` → 壁纸被窗口盖死。
-- 另外现 `z1_wallpaper.png` 是**纯色 #1c2630**（全图 1 种颜色），就算能显示也像"没壁纸"。
+## 1. 先读这些
 
-## 文件
-| 文件 | 用途 |
+1. [恢复与分项验收计划](Z1_RECOVERY_PLAN_20261112.md)：现行恢复目标、产物
+   身份、刷写顺序、通过条件和剩余边界。
+2. [分块刷写工具与验证](Z1_FLASH_VERIFIED_20261112.md)：每块严格读回、断点
+   状态绑定及故障注入测试。
+3. [启动存储门禁与安装修复](Z1_BOOT_STAGE_GUARD_20261112.md)：e2fsck 返回码、
+   双等待闸、安装失败处理与调频策略。
+4. [只读恢复取证](Z1_RECOVERY_PROBE_20261112.md)：恢复前收集属性、挂载、库哈希
+   和受限 dmesg，不清 data/cache。
+5. [2026-11-12 交接文档](Z1_HANDOFF_20261112.md)：历史背景与旧恢复步骤。文件
+   顶部已有 11 月 13 日更正，执行时以恢复计划为准。
+
+## 2. 现行产物与状态
+
+| 项 | 当前记录 |
 |---|---|
-| `TrebuchetQuickStep.apk` | 首选桌面。`com.android.launcher3`，API 28，armv7，纯 Java，5.3 MB |
-| `Trebuchet_los14.apk` | 兜底 1（轻量，1.6 MB） |
-| `KISS_3.26.0.apk` | 兜底 2（F-Droid，2.2 MB） |
-| `z1_wallpaper_240x320.png` | 新壁纸（240×320 渐变，11 KB） |
-| `z1_wallpaper_current_flat.png` | 现镜像里那张纯色图（留档） |
-| `SHA256SUMS.txt` | 校验和 |
-| `z1_apply_launcher_system.py` | 部署脚本（复制镜像→写入→回读校验） |
-| `work/` | 取证中间产物（Home.apk / framework-res.apk / SystemUI.apk） |
+| 恢复 boot | SHA-256 `ef5f07e4459b6d2fcf42b64a50202349b00e80a979274f85bf9101f1052f1468`，5,982,208 B |
+| 推荐 system | SHA-256 `833a65f23ceada548339d9f48db4765931136698755d00c9b67f2f4de12cc8dd`，943,718,400 B |
+| 主机测试 | 116 项通过，1 项缺历史日志跳过 |
+| 板上状态 | 本轮未刷；存储、启动、音频和服务行为均未取得新验收 |
+| 图形基线 | cmpfix / final_perf 内实际为 r14；r16+ 源码存在不代表已进入镜像 |
 
-## 一条命令部署
-```bash
-python3 z1_apply_launcher_system.py <base_system.img> <out_dir>
-```
-默认：装 Trebuchet 到 `/priv-app/Trebuchet/`、删 `/app/Home/Home.apk`、换壁纸。
-`--keep-home` 保留旧桌面，`--wallpaper ""` 不换壁纸。
+这些路径和身份必须与
+[恢复计划](Z1_RECOVERY_PLAN_20261112.md#2-可复核恢复包)一起使用。仓库中的
+README 不复述所有局部路径。
 
-部署后验收：`cmd package resolve-activity --brief -c android.intent.category.HOME -a android.intent.action.MAIN`
-应返回 `com.android.launcher3/...LineageLauncher`。
+## 3. 当前子系统文档
+
+### 存储、刷写与启动
+
+- [Z1_FLASH_VERIFIED_20261112.md](Z1_FLASH_VERIFIED_20261112.md) — 严格读回与
+  刷写状态格式。
+- [Z1_BOOT_STAGE_GUARD_20261112.md](Z1_BOOT_STAGE_GUARD_20261112.md) — 启动门禁、
+  system 安装和可恢复错误处理。
+- [Z1_RECOVERY_PROBE_20261112.md](Z1_RECOVERY_PROBE_20261112.md) — 只读设备取证。
+- [Z1_RECOVERY_PLAN_20261112.md](Z1_RECOVERY_PLAN_20261112.md) — 恢复入口和验收顺序。
+- [Z1_PERFORMANCE_DVFS_20261112.md](Z1_PERFORMANCE_DVFS_20261112.md) — CPU/GPU
+  调频与性能证据。416 MHz 应理解为当前稳定配置，不能据此认定芯片物理上限。
+
+### 图形、显示与启动界面
+
+- [Z1_CANDIDATE_FUNCTIONAL_VERIFICATION_20261111.md](Z1_CANDIDATE_FUNCTIONAL_VERIFICATION_20261111.md)
+  — 候选功能验收记录。
+- [Z1_CANDIDATE_ONBOARD_VERIFICATION_20261111.md](Z1_CANDIDATE_ONBOARD_VERIFICATION_20261111.md)
+  — 候选上板记录。
+- [Z1_HANDOVER_VERIFIED_20261110.md](Z1_HANDOVER_VERIFIED_20261110.md) — 已核实
+  的驱动与图形交接。
+- [Z1_HANDOVER_20261110_DRIVER_AUDIT.md](Z1_HANDOVER_20261110_DRIVER_AUDIT.md) —
+  驱动状态审计。
+- [Z1_FEATURE_OPERATIONS_20261110.md](Z1_FEATURE_OPERATIONS_20261110.md) — 功能与
+  本地复现入口。
+- [gpu/Z1_GPU3D_PLAN_20261110.md](gpu/Z1_GPU3D_PLAN_20261110.md) — GPU 3D 验证
+  计划。
+- [ovl/Z1_SESSION_20261110_OVL_RESULT.md](ovl/Z1_SESSION_20261110_OVL_RESULT.md)
+  — OVL 会话结果。
+- [ovl/Z1_STATUS_OVL_20261110.md](ovl/Z1_STATUS_OVL_20261110.md) — OVL 分支状态。
+- [ovl/Z1_RUNBOOK_V83_20261110.md](ovl/Z1_RUNBOOK_V83_20261110.md) — v83 操作
+  记录；恢复轮使用恢复计划中的新 boot。
+- [ovl/Z1_V83_IMAGE_AUDIT_20261110.md](ovl/Z1_V83_IMAGE_AUDIT_20261110.md) —
+  v83 镜像反解。
+- [ovl/Z1_V83_REDTEAM_20261110.md](ovl/Z1_V83_REDTEAM_20261110.md) — v83 对抗式
+  复核。
+- [ovl/Z1_HWC2_CODE_REVIEW_20261110.md](ovl/Z1_HWC2_CODE_REVIEW_20261110.md) —
+  HWC2 代码审查。
+- [ovl/Z1_HWC2_CONTRACT_20261110.md](ovl/Z1_HWC2_CONTRACT_20261110.md) — HWC2
+  接口契约。
+- [ovl/Z1_HWC2_BUILD_HARNESS.md](ovl/Z1_HWC2_BUILD_HARNESS.md) — HWC2 构建工装。
+- [ovl/Z1_DEPLOY_CHANNEL_20261110.md](ovl/Z1_DEPLOY_CHANNEL_20261110.md) — 部署
+  通道说明。
+- [ovl/Z1_DRM_LATEBIND_PLAN_20261110.md](ovl/Z1_DRM_LATEBIND_PLAN_20261110.md) —
+  DRM late-bind 分析与计划。
+- [ovl/Z1_DISPLAY_VERIFY_PLAN_20261110.md](ovl/Z1_DISPLAY_VERIFY_PLAN_20261110.md)
+  — 显示分项验收计划。
+- [ovl/Z1_HANDOFF_20261109_HWC2.md](ovl/Z1_HANDOFF_20261109_HWC2.md) — HWC2
+  前序交接。
+- [ovl/Z1_PLAN_OVL_20261110.md](ovl/Z1_PLAN_OVL_20261110.md) — OVL 总体计划。
+
+### 音频、媒体与连接
+
+- [Z1_WIFI_SOURCE_IDENTITY_20261112.md](Z1_WIFI_SOURCE_IDENTITY_20261112.md) —
+  实际 WiFi 模块身份与缺失源码边界。
+- [Z1_AUDIO_MODULES_20261108.md](Z1_AUDIO_MODULES_20261108.md) — 音频模块构建
+  与部署记录。
+- [AUDIO_HAL_PORT.md](AUDIO_HAL_PORT.md) — Android 音频 HAL 移植状态。
+- [BT_GPS_PLAN_20261108.md](BT_GPS_PLAN_20261108.md) — 蓝牙与 GPS 计划。
+- [FM_PLAN_20261031.md](FM_PLAN_20261031.md) — FM 路线与 ABI 取证。
+- [MEDIA_DEPLOY.md](MEDIA_DEPLOY.md) — 媒体组件部署。
+- [MEDIA_STAGE_20261031.md](MEDIA_STAGE_20261031.md) — 媒体阶段记录。
+- [HIDL_HAL_DEPLOY.md](HIDL_HAL_DEPLOY.md) — HIDL HAL 与 manifest 部署。
+- [WMT_EMI_RULING.md](WMT_EMI_RULING.md) — CONNSYS EMI 地址裁决。
+- [Z1_CPUFREQ_GAP.md](Z1_CPUFREQ_GAP.md) — CPU 调频缺口。
+
+### 壁纸和 launcher 材料
+
+- [LAUNCHER_WALLPAPER_FIX_20261104.md](LAUNCHER_WALLPAPER_FIX_20261104.md) —
+  launcher 与壁纸修复分析。
+- [LAUNCHER_BUNDLE.md](LAUNCHER_BUNDLE.md) — 本目录内 launcher APK、壁纸和部署
+  脚本的实物说明。
+
+## 4. 历史交接与状态
+
+这些文档保留问题演化过程。先看日期和文首更正，再查当前恢复计划；其中的旧
+刷写命令、候选哈希或“已修”判断不能直接套到现行镜像。
+
+- [Z1_HANDOFF_20261112.md](Z1_HANDOFF_20261112.md)
+- [Z1_STATUS_20261105_NIGHT.md](Z1_STATUS_20261105_NIGHT.md)
+- [Z1_STATUS_20261105.md](Z1_STATUS_20261105.md)
+- [HANDOFF_20261104_NIGHT.md](HANDOFF_20261104_NIGHT.md)
+- [HANDOFF_20261102.md](HANDOFF_20261102.md)
+- [HANDOFF_20261101.md](HANDOFF_20261101.md)
+- [HANDOFF_20261030.md](HANDOFF_20261030.md)
+- [HANDOFF_20261029.md](HANDOFF_20261029.md)
+- [STATUS_20261031.md](STATUS_20261031.md)
+- [STATUS_20261030.md](STATUS_20261030.md)
+- [LEDGER_20261031.md](LEDGER_20261031.md)
+
+## 5. 分项修复与诊断记录
+
+- [Z1_FLASHABLE_20261104.md](Z1_FLASHABLE_20261104.md) — 早期可刷件状态。
+- [APP_CRASH_FIX_20261104.md](APP_CRASH_FIX_20261104.md) — 内置应用崩溃修复。
+- [JAVA_FATAL_FIX_20261104.md](JAVA_FATAL_FIX_20261104.md) — Java 进程 fatal 修复。
+- [NETD_HIDL_CRASH_20261105.md](NETD_HIDL_CRASH_20261105.md) — netd HIDL 崩溃。
+- [BOOT_PROGRESS_UI_20261105.md](BOOT_PROGRESS_UI_20261105.md) — 开机进度 UI。
+- [Z1_FIX3M_TOUCHKO_20261105.md](Z1_FIX3M_TOUCHKO_20261105.md) — 触摸模块身份。
+- [Z1_FEATURE_GAPS_20261105.md](Z1_FEATURE_GAPS_20261105.md) — 11 月 5 日功能缺口。
+- [Z1_FEATURE_GAP_FINAL.md](Z1_FEATURE_GAP_FINAL.md) — 功能缺口后续审计。
+- [Z1_FIX2_AND_GPU_BUILD_20261103.md](Z1_FIX2_AND_GPU_BUILD_20261103.md) —
+  早期修复与 GPU 构建。
+- [R5D_VERIFY2.md](R5D_VERIFY2.md) — R5D 复核。
+- [R5J_DEPLOY.md](R5J_DEPLOY.md) — R5J 部署。
+- [MAIN_SESSION_VERIFY_NOTES.md](MAIN_SESSION_VERIFY_NOTES.md) — 主会话验证注记。
+
+## 6. 图形历史与根因链
+
+这些页面按时间记录认识变化，结论可能已被后续镜像反解或板上结果修正。
+
+- [BLACK_SCREEN_ROOTCAUSE_FINAL.md](BLACK_SCREEN_ROOTCAUSE_FINAL.md)
+- [BLACK_SCREEN_ROOTCAUSE.md](BLACK_SCREEN_ROOTCAUSE.md)
+- [EGL_BLACK_SCREEN_FIX.md](EGL_BLACK_SCREEN_FIX.md)
+- [GPU_BLACK_SCREEN_STATUS.md](GPU_BLACK_SCREEN_STATUS.md)
+- [GPU_BOOT_BLOCKERS_20261108.md](GPU_BOOT_BLOCKERS_20261108.md)
+- [GPU_MESA24_20261105.md](GPU_MESA24_20261105.md)
+- [GPU_MESA26_LOADFIX_20261108.md](GPU_MESA26_LOADFIX_20261108.md)
+- [GPU_PATH_VERIFIED_20261105.md](GPU_PATH_VERIFIED_20261105.md)
+- [GPU_ROOTCAUSE_20261105.md](GPU_ROOTCAUSE_20261105.md)
+- [GPU_ROOTCAUSE_APPLIERS_20261108.md](GPU_ROOTCAUSE_APPLIERS_20261108.md)
+- [GPU_V28_FIXES_20261108.md](GPU_V28_FIXES_20261108.md)
+- [UI_JANK_GPU.md](UI_JANK_GPU.md)
+- [Z1_V30_BOOT_CHECKLIST_20261108.md](Z1_V30_BOOT_CHECKLIST_20261108.md)
+- [Z1_V30_HMI_FIX_20261108.md](Z1_V30_HMI_FIX_20261108.md)
+- [Z1_V31_CHARGER_BUILTIN_20261108.md](Z1_V31_CHARGER_BUILTIN_20261108.md)
+- [Z1_V33_LIMA_RESET_20261108.md](Z1_V33_LIMA_RESET_20261108.md)
+
+## 7. 计划、冻结与研究草案
+
+以下内容用于追踪工作来源，单一计划不等于完成证据。
+
+- [PLAN_FULL_20261108.md](PLAN_FULL_20261108.md)
+- [PLAN_REMAINING_20261108.md](PLAN_REMAINING_20261108.md)
+- [PLAN_DSI_20261108.md](PLAN_DSI_20261108.md)
+- [night_freeze/LIVEPROBE_DEVICE_OFFLINE_20261101.md](night_freeze/LIVEPROBE_DEVICE_OFFLINE_20261101.md)
+- [night_freeze/LIVEPROBE_WEBRECON_20261101.md](night_freeze/LIVEPROBE_WEBRECON_20261101.md)
+- [night_freeze/VERDICT_FREEZE_20261101.md](night_freeze/VERDICT_FREEZE_20261101.md)
+
+## 8. 使用规则
+
+- “主机测试通过”只说明对应软件或镜像结构通过，不等于设备功能通过。
+- “已上板”必须保留下板时间、镜像哈希和可复核日志；恢复到干净状态后还要重新
+  验收关键链路。
+- 带日期的交接文档是时间点快照。当前恢复先看本页第 1 节和第 2 节。
+- 文档中的本地绝对路径用于复现本机实验；GitHub 读者应从恢复计划和 manifest
+  获取相对路径与版本关系。

@@ -2,70 +2,74 @@
 
 [English](README.md) | **简体中文**
 
-本仓库保存佳伯听力机 **Z1 / MT6572** 的 Android 9（LineageOS 16.0）设备树、主线 Linux 适配、镜像构建与验证工具。目标是在双核 Cortex-A7、1GB 内存、240×320 屏幕的设备上逐步恢复可用系统，而不是把“能编译”当成“能使用”。
+本仓库保存佳伯听力机 **Z1 / MT6572** 的 Android 9（LineageOS 16.0）设备树、
+Linux 7.0-rc7 板级支持、构建与恢复工具，以及固定版本的 Android 清单。上游
+大型源码树、用户数据和生成镜像不进入 Git。
 
-## 当前进展
+[文档入口](docs/README.md) | [恢复与验收计划](docs/Z1_RECOVERY_PLAN_20261112.md)
 
-### 已上板验证：显示控制台接管
+## 现行恢复候选
 
-R1 显示接管 boot 配合原 R9 system 已验证：
+最新主机侧验证对象见
+[Z1 恢复与分项验收](docs/Z1_RECOVERY_PLAN_20261112.md)。这套候选**尚未刷入已
+恢复的 Z1**，下表只证明主机侧产物身份和测试结果，不能据此宣称设备已经恢复。
 
-- Android 可以正常进入系统；
-- 屏幕上的闪烁 `_` 消失，VT/fbcon 不再与 Android 显示争夺 framebuffer；
-- 内核日志确认 `KD_GRAPHICS` 生效，并切换到 dummy console；
-- SwiftShader 可以完成软件显示合成。
-
-这不代表显示问题全部解决。测试中仍观察到 SystemUI / ImageWallpaper ANR、明显卡顿、壁纸缺失和屏幕超时休眠，需继续修复。
-
-### 正在验证的候选
-
-- **轻量默认壁纸**：使用 240×320 PNG 和 Android 9 支持的 `ro.config.wallpaper`，尝试减少 1080×1080 默认壁纸在软件渲染设备上的开销。已有 `/data` 用户壁纸优先，不清除用户数据。
-- **ACM + ADB 调试接口**：诊断 ACM 与 ADB FunctionFS 共用 USB gadget；保留 ADB 安全认证，不向仓库或镜像写入密钥。
-- **触摸取证**：提供针对 I2C1 `0x15` 的窄地址只读探针，以及按 R9 配置与符号表编译的 `edt-ft5x06.ko`。不会自动探测、加载模块或启用未经验证的 GPIO/IRQ。
-
-## 驱动状态
-
-| 功能 | 状态 |
+| 部件 | 身份 |
 |---|---|
-| framebuffer / SwiftShader | 已能进入 Android；性能与稳定性仍需优化 |
-| VT/fbcon 接管 | 已上板验证 `_` 消失 |
-| SystemUI / 壁纸 | 正在修复；不能把默认壁纸配置等同于已解决 ANR |
-| 触摸 | 候选协议有依据；实体响应、IRQ、reset、供电仍待验证 |
-| 物理按键 | 当前 DTS 仅证实音量键，不能套用其他设备的按键映射 |
-| Wi-Fi / 蓝牙 | 按 MT6572 集成 CONNSYS 路线保留功能屏蔽，等待固件、wiphy/HCI 实测 |
-| 音频 | AFE/codec 寄存器与 clock 资料不足，保持既有 NO-GO |
-| 电池/充电 | ADC 电压遥测有限，capacity 未实现；没有新增充电控制 |
+| `boot.img` | 5,982,208 B；SHA-256 `ef5f07e4459b6d2fcf42b64a50202349b00e80a979274f85bf9101f1052f1468` |
+| 推荐 `system.img` | 943,718,400 B；SHA-256 `833a65f23ceada548339d9f48db4765931136698755d00c9b67f2f4de12cc8dd` |
+| 主机验证 | 116 项通过，1 项因历史日志缺失而跳过 |
+| 板上验证 | 本轮未执行 |
 
-## 镜像与发布
+boot 从已核实的 `cmpfix` 基线派生，保留 r14 图形件和原 zImage，新增存储门禁、
+带校验的文件安装与正确的首启音频模块顺序。system 使用已审计的外围候选。具体
+路径、刷前只读取证、刷写顺序和通过条件必须以恢复计划为准。
 
-已验证的候选和 SHA-256 会放在 GitHub Releases。发布包不包含：
+设备仍需完成存储与启动验收，项目才能把状态标记为“已恢复”。历史日志中的
+system 链接失败、ext4 错误和各类服务失败发生在不同时间，不能拿其中一个错误
+解释之前全部崩溃。恢复候选仍保留台架 root 命令通道，写恢复基线前必须先检查
+`/data` 中持久化的 hook。
 
-- 用户数据、NVRAM、Wi-Fi MAC 或校准数据；
-- 串口/logcat 原始日志；
-- GitHub token、ADB 私钥、API key 或其他凭据；
-- 与本次发布无关的主机路径和实验文件。
+## 当前能力边界
 
-大镜像不直接提交到设备树 Git 历史。下载后请核对 `SHA256SUMS.txt`，按 Release 说明的 boot/system 配对刷写，不要把不同实验阶段的镜像混用。
+| 项目 | 状态 |
+|---|---|
+| 显示与图形 | DRM/OVL 与 HWC 路径有既往板上证据；恢复候选保留 r14 图形件，仍需恢复后的干净启动复验。 |
+| CPU / GPU 调频 | 内核保留已验证 DVFS 配置和 416 MHz GPU performance 设置；一次 491.52 MHz 失败不能证明芯片物理上限。 |
+| 触摸、按键、电源 | 已有分项上板工作，但必须从干净存储状态重新验收。 |
+| Wi-Fi / 蓝牙 / GPS / FM | 已固定实际 `wlan_gen2.ko` 身份，出货精确源码仍未找回；注册、扫描、关联及 BT/FM 功能需分别验收。 |
+| 音频 | 首次启动已改为先安装文件再启动模块，但加载仍后台执行，扬声器、耳机和录音均未取得新一轮板上证据。 |
+| 存储与 Android 启动 | 主机测试覆盖新门禁和安装器；真实挂载、属性、journal、模块加载与 `sys.boot_completed` 仍待实机验证。 |
 
-## 构建与验证
+## 仓库结构与构建
 
-仓库中的脚本支持从原始 R9 镜像制作增量候选：
+- `mainline/patches/`、`drivers/`、`graphics/`、`network/` 等保存 Linux 7
+  板级补丁、驱动、Android 侧图形与连接工作；
+- `rootdir/`、`keylayout/`、`art_patches/`、`native_path_patches/`、`sepolicy/`
+  等保存 Android 设备组件；
+- `scripts/` 保存构建、刷写、恢复、取证和测试工具；
+- `docs/` 保存现行恢复计划、分项结论和带日期的历史记录；
+- `manifests/` 固定 `repo` 使用的上游 revision；
+- `stock_patches/` 记录同步 Android 树后应用的补丁。
 
-- 保留原始 zImage、命令行和允许列表外的 ramdisk 内容；
-- 核对 MTK ROOTFS 长度、DT `linux,initrd-end`、boot 分区容量；
-- 验证 ELF 架构、模块 vermagic、文件权限及镜像读回；
-- 主机测试通过不等于设备功能通过，每版都需单独抓日志验证。
+干净工作区以本仓库作为 Repo manifest：
 
-上传前使用 `scripts/z1_secret_scan.py --staged` 做敏感信息扫描，并人工检查暂存 diff。该工具是辅助检查，不替代发布者审核。
+```sh
+repo init -u https://github.com/lxjuyn/z1-android9.git -b main -m default.xml
+repo sync -j4
+python3 device/jiabo/z1/scripts/apply_stock_patches.py --source "$PWD"
+```
 
-## 当前测试顺序
+`manifests/lineage16-pinned.xml` 固定上游 revision；`stock_patches/manifest.json`
+记录每个补丁的 base 与结果 SHA-256。设置 `LOS_ROOT`、`HOST_TOOLS` 后执行
+`scripts/build_z1.sh systemimage`。
 
-1. R1 显示接管 boot + 原 R9 system：验证 `_` 与 Android 显示。
-2. 配套显示接管 boot + 轻量壁纸 system：验证壁纸与 SystemUI。
-3. R2 boot + R2 system：显示无回归后，手动进行触摸只读取证。
+主机侧语法、归档、哈希和故障注入测试不能替代上板。尤其不能用脚本可解析、
+镜像哈希正确或模拟挂载通过，代替真实块设备、模块加载和 Android 启动通过。
 
-详细候选说明见 [Z1_CANDIDATES_20261025.md](Z1_CANDIDATES_20261025.md)。未经上板验证的候选只标记为诊断/实验版本。
+## 发布纪律
 
-## 许可与边界
-
-设备树中基于 AOSP 的代码保留原许可说明。厂商固件、校准资料和其他设备的私有信息不纳入公开仓库。主线驱动适配仍以实际 Z1 板级证据为准，不能用其他 MT6572 设备的原理图或 GPIO 配置替代。
+boot 与 system 必须按公布哈希成对使用，不能混用不同恢复轮的产物。成品镜像
+只放 GitHub Releases，不提交进 Git。发布包不得包含用户数据、NVRAM、校准数据、
+串口/logcat 原始日志、凭据、token、SSH 私钥或个人环境文件。Z1 正常开机与
+下载模式对 USB 连接有不同要求，按对应候选的操作文档执行。
