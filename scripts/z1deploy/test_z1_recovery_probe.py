@@ -151,15 +151,17 @@ esac''')
         self.assertNotIn("PRIVATE_DETAIL", output)
         self.command("sha256sum", 'printf "PRIVATE_HASH_ERROR\\n"; exit 1')
         target = self.root / "system/lib/libutilscallstack.so"
-        output = self.run_probe()
+        output = self.run_probe("--full-system-hashes")
         self.assertIn(f"hash={target} status=READ_FAILED", output)
+        self.assertIn(f"full_hash={target} status=READ_FAILED", output)
         self.assertNotIn("PRIVATE_HASH_ERROR", output)
         for value in ("", "PRIVATE_BAD_DIGEST", "a" * 63, "a" * 65,
                       "A" * 64, "g" * 64, "0" * 63 + "!", "0" * 63 + "\t"):
             with self.subTest(digest=value):
                 self.command("sha256sum", "printf '%s\\n' " + shlex.quote(value))
-                output = self.run_probe()
+                output = self.run_probe("--full-system-hashes")
                 self.assertIn(f"hash={target} status=INVALID_OUTPUT", output)
+                self.assertIn(f"full_hash={target} status=INVALID_OUTPUT", output)
                 self.assertNotIn(f"hash={target} status=OK", output)
                 self.assertNotIn("PRIVATE_BAD_DIGEST", output)
 

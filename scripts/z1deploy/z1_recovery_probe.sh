@@ -271,7 +271,18 @@ if [ "$FULL" -eq 1 ]; then
             find "$_dir" -type f -exec /system/bin/sh -c '
                 if [ ! -r "$1" ]; then
                     printf "[probe] full_hash=%s status=PERMISSION_DENIED\n" "$1"
-                elif ! sha256sum "$1"; then
+                elif _full_result=$(sha256sum "$1" 2>/dev/null); then
+                    _full_digest=${_full_result%% *}
+                    case "$_full_digest" in
+                        ""|*[!0-9a-f]*) printf "[probe] full_hash=%s status=INVALID_OUTPUT\n" "$1" ;;
+                        *)
+                            if [ "${#_full_digest}" -eq 64 ]; then
+                                printf "%s  %s\n" "$_full_digest" "$1"
+                            else
+                                printf "[probe] full_hash=%s status=INVALID_OUTPUT\n" "$1"
+                            fi ;;
+                    esac
+                else
                     printf "[probe] full_hash=%s status=READ_FAILED\n" "$1"
                 fi
             ' sh '{}' \; || printf '[probe] full_hash_dir=%s status=TRAVERSAL_FAILED\n' "$_dir"
