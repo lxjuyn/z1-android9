@@ -70,7 +70,60 @@ read_audio_listing() {
     fi
 }
 
-printf '%s\n' '[probe] BEGIN version=2 read_only=1'
+read_stage_hook() {
+    # Never execute or print hook content. Refuse links and special files.
+    if [ -L "$1" ]; then
+        printf '[probe] hook=%s status=SYMLINK_SKIPPED\n' "$1"
+    elif [ ! -e "$1" ]; then
+        printf '[probe] hook=%s status=MISSING_OR_INACCESSIBLE\n' "$1"
+    elif [ ! -f "$1" ]; then
+        printf '[probe] hook=%s status=NOT_REGULAR\n' "$1"
+    else
+        printf '[probe] hook=%s status=REGULAR\n' "$1"
+        if ! command -v stat >/dev/null 2>&1; then
+            printf '[probe] hook_metadata=%s status=TOOL_MISSING stat\n' "$1"
+        elif _hook_meta=$(stat -c '%a:%u:%g:%s' "$1" 2>/dev/null); then
+            case "$_hook_meta" in
+                ''|*[!0-9:]*) printf '[probe] hook_metadata=%s status=INVALID_OUTPUT\n' "$1" ;;
+                *) printf '[probe] hook_metadata=%s status=OK mode_uid_gid_bytes=%s\n' "$1" "$_hook_meta" ;;
+            esac
+        else
+            printf '[probe] hook_metadata=%s status=READ_FAILED\n' "$1"
+        fi
+        if command -v sha256sum >/dev/null 2>&1; then
+            hash_file "$1"
+        else
+            printf '[probe] hash=%s status=TOOL_MISSING sha256sum\n' "$1"
+        fi
+    fi
+}
+
+read_stage_hooks() {
+    # Check every ancestor before accessing the fixed stage whitelist.
+    # Concurrent replacement is still possible; this is a diagnostic sample.
+    for _hook_dir in /data /data/local /data/local/tmp /data/local/tmp/z1stage; do
+        if [ -L "$_hook_dir" ]; then
+            printf '[probe] hook_directory=%s status=SYMLINK_SKIPPED\n' "$_hook_dir"
+            return
+        elif [ ! -d "$_hook_dir" ]; then
+            printf '[probe] hook_directory=%s status=MISSING_OR_NOT_DIRECTORY\n' "$_hook_dir"
+            return
+        fi
+    done
+    for _hook_name in install.sh cmd.sh cmd.run cmd.run.stale .disable_hwcomposer .disable_gralloc; do
+        read_stage_hook "/data/local/tmp/z1stage/$_hook_name"
+    done
+    if [ -L /data/local/tmp/z1stage/active ]; then
+        printf '%s\n' '[probe] hook_directory=/data/local/tmp/z1stage/active status=SYMLINK_SKIPPED'
+    elif [ ! -d /data/local/tmp/z1stage/active ]; then
+        printf '%s\n' '[probe] hook_directory=/data/local/tmp/z1stage/active status=MISSING_OR_NOT_DIRECTORY'
+    else
+        read_stage_hook /data/local/tmp/z1stage/active/hwcomposer.z1.so
+        read_stage_hook /data/local/tmp/z1stage/active/gralloc.z1.so
+    fi
+}
+
+printf '%s\n' '[probe] BEGIN version=3 read_only=1'
 if _date=$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null); then
     printf '[probe] utc=%s\n' "$_date"
 else
@@ -104,9 +157,7 @@ if command -v sha256sum >/dev/null 2>&1; then
         /vendor/lib/hw/hwcomposer.z1.so /vendor/lib/hw/gralloc.z1.so \
         /system/lib/hw/hwcomposer.z1.so /system/lib/hw/gralloc.z1.so \
         /system/lib/modules/z1-radio/wlan_gen2.ko \
-        /system/lib/modules/mt6572-afe-pcm.ko /system/lib/modules/snd-soc-mt6323.ko \
-        /data/local/tmp/z1stage/active/hwcomposer.z1.so \
-        /data/local/tmp/z1stage/active/gralloc.z1.so; do
+        /system/lib/modules/mt6572-afe-pcm.ko /system/lib/modules/snd-soc-mt6323.ko; do
         hash_file "$_file"
     done
     for _module in wlan_gen2 mt6572_afe_pcm snd_soc_mt6323 mt6572_mt6323; do
@@ -116,6 +167,7 @@ if command -v sha256sum >/dev/null 2>&1; then
 else
     printf '%s\n' '[probe] hashes=TOOL_MISSING sha256sum'
 fi
+read_stage_hooks
 
 # A file hash identifies an installed file, not the code already loaded.
 # Expose only these exact module names and omit kernel address columns.

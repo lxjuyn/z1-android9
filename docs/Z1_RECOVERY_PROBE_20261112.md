@@ -4,7 +4,19 @@
 
 脚本只向终端输出；不写属性或 sysfs，不控制服务、不挂载、不修复文件系统、不重启，不把日志写到 `/data`。主机沿用现有串口采集工具保存输出。可以通过现有 shell 的 `sh -s` 向标准输入传入脚本正文，避免为本次采样在设备上创建脚本文件；长脚本须沿用已验证的串口分段传输方式。若脚本已在 ramdisk 或其他既有部署位置，也可 `sh <脚本路径>` 运行。本轮没有向设备上传或执行。
 
-默认采样包含：UTC、uptime、内核、指定 init 服务与启动/存储/安装状态、图形 SHA 属性、三分区挂载状态、坏库及关键执行文件 SHA、ramdisk/安装路径/active 中两件图形库 SHA、CPU/GPU 频率与 governor、wlan0 存在状态及 operstate。只读指定属性，不执行全量 `getprop`；不读取网卡地址、NVRAM、WiFi 配置、用户文件内容。
+默认采样包含：UTC、uptime、内核、指定 init 服务与启动/存储/安装状态、图形 SHA 属性、三分区挂载状态、坏库及关键执行文件 SHA、ramdisk/安装路径/active 中两件图形库 SHA、CPU/GPU 频率与 governor、wlan0 存在状态及 operstate。只读指定属性，不执行全量 `getprop`；不读取网卡地址、NVRAM、WiFi 配置或白名单之外的用户文件，不输出 hook 正文。
+
+v3 新增持久 hook 身份采样：只检查 `/data/local/tmp/z1stage/` 中的 `install.sh`、
+`cmd.sh`、`cmd.run`、`cmd.run.stale`、`.disable_hwcomposer`、`.disable_gralloc`
+及 `active/` 的两件图形库。仅输出状态、数字权限/属主/大小和 SHA256，不输出脚本正文，
+不执行或删除 hook，也不遍历其它用户文件。普通文件会被读取以计算哈希；`stat` 或
+`sha256sum` 缺失时明确标出。采样会逐级拒绝符号链接祖先、文件链接和特殊文件，避免
+主动走到白名单之外；这不是原子快照，仍不能排除其它进程在检查后替换文件。
+
+恢复候选里的 `z1_rootd` 虽声明 `disabled`（禁止随 class 自动启动），init 仍会在
+stage ready 后显式启动它，而其 `install.sh` 可在每次 daemon 启动时重新覆盖 system。
+因此应在恢复前后保存这些 hook 的身份，结合完整串口日志判断实际安装结果；探针本身
+不会关闭 rootd 或隔离旧 hook。
 
 v2 另核对已安装 `/system/lib/modules/z1-radio/wlan_gen2.ko`、`/system/lib/modules/mt6572-afe-pcm.ko`、`/system/lib/modules/snd-soc-mt6323.ko` 的 SHA256；从 `/proc/modules` 仅列出精确名称 `wlan_gen2`、`mt6572_afe_pcm`、`snd_soc_mt6323`、`mt6572_mt6323` 的加载状态、大小、引用计数、依赖及状态，省略内核地址。每件模块还尝试哈希 `/sys/module/<名称>/notes/.note.gnu.build-id`，明确标记 `BUILD_ID_NOTE_ONLY`；不存在则标缺失。已安装文件哈希不能证明当前已加载代码的版本，build-id note 的哈希也不是完整代码哈希；需与对应构建产物的 note 比对，并结合实际加载日志及一次干净重启确认。脚本不加载或卸载模块。
 
@@ -16,7 +28,12 @@ v2 另核对已安装 `/system/lib/modules/z1-radio/wlan_gen2.ko`、`/system/lib
 
 恢复前后分别保存一次默认输出。至少比较：`sys.z1.storage_ready`、`z1stage.status`、zygote/SF 状态、三个挂载项是否满足预期、`libutilscallstack.so` 与图形库 SHA、实际频率上下限。`active/` 可以覆盖 ramdisk 的图形库，因此必须同时核对三处身份。
 
-2026-11-13 主机验收：`python3 -m unittest -v scripts/z1deploy/test_z1_recovery_probe.py` 共 16 项通过（其中包括 `bash -n` 与 `dash -n`）。测试仅在临时副本中将固定绝对路径映射到假文件系统，生产脚本没有可重定向根目录选项。覆盖正常/缺失路径、仅读白名单属性、文件内容及修改时间不变、潜在写入命令陷阱、80行限制与顺序、MAC及带空格的无线凭据隐藏、可选全量哈希、不跟随链接进入 data、工具缺失、遍历失败、dmesg 权限不足和无效/过量参数；另核对三件磁盘模块哈希与四件加载状态分开输出、拒绝相似模块名及内核地址、build-id note 单独标识、音频清单上限。没有访问真实设备，也没有将脚本部署到设备。
+2026-11-13 主机验收：`python3 -m unittest -v scripts/z1deploy/test_z1_recovery_probe.py` 共 20 项通过（其中包括 `bash -n` 与 `dash -n`）。测试仅在临时副本中将固定绝对路径映射到假文件系统，生产脚本没有可重定向根目录选项。覆盖正常/缺失路径、仅读白名单属性、文件内容及修改时间不变、潜在写入命令陷阱、80行限制与顺序、MAC及带空格的无线凭据隐藏、可选全量哈希、不跟随链接进入 data、工具缺失、遍历失败、dmesg 权限不足和无效/过量参数；另核对三件磁盘模块哈希与四件加载状态分开输出、拒绝相似模块名及内核地址、build-id note 单独标识、音频清单上限。v3 还验证 hook 不执行不输出正文、各级链接不遍历、FIFO/目录不打开、异常元数据不回显和工具失败显式报告。没有访问真实设备，也没有将脚本部署到设备。
+
+同日已用候选 system 中的实际 Android bionic/mksh 在 qemu-arm 的 user/PID namespace
+内对 v3 探针和 stage 执行 `-n` 并通过，证据为
+`out/z1_recovery_20261112_233945/android_shell_check/probe_v3_validation.json`。
+该步骤只检查语法，没有执行脚本正文，不证明板上 property、挂载或模块行为。
 
 ## 启动工具离线核对
 
