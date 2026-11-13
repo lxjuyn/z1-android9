@@ -227,6 +227,10 @@ def build(base, stage, output):
         manifest = {
             "status": "HOST_VERIFIED_NOT_FLASHED", "base_sha256": sha(raw),
             "boot_sha256": sha(image), "boot_bytes": len(image),
+            "builder": {
+                "path": "scripts/z1_prepare_recovery_boot.py",
+                "sha256": sha(Path(__file__).read_bytes()),
+            },
             "zimage_sha256": sha(zimage), "zimage_preserved": True,
             "rootfs_sha256": sha(updated), "rootfs_body_bytes": len(updated) - 512,
             "initrd_start": hex(start), "initrd_end": hex(end),
