@@ -52,6 +52,6 @@ python3 scripts/z1deploy/test_z1stage_boot.py
 
 32 项测试通过（含 fsck 10 个返回码及多种子用例）：busy、设备仍在别处挂载、错误来源、不可读超级块/日志、grep 不可用时仍正确识别回放、干净开机、journal 回放、未挂载、RW 挂载失败；相同文件零复制、短写校验、cp/chmod/chown/mv 失败保留原目标、RW/RO remount 失败、比较 I/O 错误、失败后不继续安装、active/kill switch 语义、seed 元数据失败计数；完整脚本 storage-only 不创建 stage、cache 失败不放行、门禁属性写入/回读失败不放行、skip-storage 不可绕过门禁；支持/不支持频率、CPU 写失败、GPU 回读失败。
 
-测试执行真实脚本函数；完整脚本的路径隔离用临时目录和模拟 mount/fsck/sysfs，不触碰块设备。语法验证在 dash 上完成，Android mksh 与真实挂载/驱动行为仍须上板确认。e2fsck 同步执行且未设超时：挂起时门禁保持关闭，但等待没有时长上限；未引入未经板上确认的 timeout 工具依赖。
+测试执行真实脚本函数；完整脚本的路径隔离用临时目录和模拟 mount/fsck/sysfs，不触碰块设备。除 dash 语法检查外，2026-11-13 又在 qemu-arm 加实际 Android bionic/mksh 环境对 `z1stage_boot.sh` 做了 `-n` 检查并通过；这只证明 shell 语法可解析，真实挂载、属性、模块加载、驱动和硬件行为仍须上板确认。e2fsck 同步执行且未设超时：挂起时门禁保持关闭，但等待没有时长上限；未引入未经板上确认的 timeout 工具依赖。
 
-待主线将脚本及 init 时序打入新 boot 后反解确认：两个 exec 参数、两个 wait_for_prop、旧 HWC cp 清除、stage 内容 SHA、r14 HWC/gralloc SHA、kernel 段与 cmpfix 相等。旧 cmpfix 留作证据，不将本次源码修复宣称为已进入旧镜像。
+2026-11-13 已打入新候选 `out/z1_recovery_20261112_233945/package_audio_ordered/boot.img`（SHA256 `ef5f07e4459b6d2fcf42b64a50202349b00e80a979274f85bf9101f1052f1468`）并反解确认：两个 exec 参数、两个 wait_for_prop、旧 HWC cp 清除、stage 内容 SHA、r14 HWC/gralloc SHA、zImage 与 cmpfix 相等。另将 network rc 的早期音频加载移到 stage ready 后，避免首次恢复运行旧模块；后台加载完成与功能仍需上板验收。旧 cmpfix 留作证据，不将本次源码修复宣称为已进入旧镜像。完整版本关系见 `Z1_RECOVERY_PLAN_20261112.md`。
