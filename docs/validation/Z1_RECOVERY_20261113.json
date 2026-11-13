@@ -1,6 +1,6 @@
 {
   "schema": "z1-recovery-validation-summary/v2",
-  "created_at": "2026-11-13T13:24:22.147528+08:00",
+  "created_at": "2026-11-13T13:33:45.300086+08:00",
   "scope": "host_only_recovery_validation",
   "hardware_validation": false,
   "hardware_access": false,
@@ -12,18 +12,11 @@
     "android": {
       "path": "z1a9_gpt",
       "branch": "work/driver-recovery-20261110-215207",
-      "validated_source_commit": "60828d12fd673cdcf39aaa14bc686ed479744633",
+      "validated_source_commit": "438fd8e81e4a45ee0dd3fd2c7d2648d2586a0375",
       "source_commit_note": "All listed script/test bytes match this commit. Later documentation commits may descend from it.",
-      "remote_main_at_snapshot": "60828d12fd673cdcf39aaa14bc686ed479744633",
-      "remote_main_verified_at_snapshot": true,
-      "pending_changes_at_snapshot": [
-        "M README.md",
-        " M README_zh-CN.md",
-        " M docs/README.md",
-        " M docs/Z1_PERFORMANCE_DVFS_20261112.md",
-        " M docs/Z1_RECOVERY_PLAN_20261112.md",
-        " M docs/Z1_WIFI_SOURCE_IDENTITY_20261112.md"
-      ],
+      "remote_main_at_snapshot": "147966cf401201be29468c97e750bbfa158c8e8c",
+      "remote_main_verified_at_snapshot": false,
+      "pending_changes_at_snapshot": [],
       "key_source_sha256": {
         "scripts/z1_chunked_flash.py": "99ede8c2e8de6fc02e5332a371c3fac3f27975530b7e6950a98a9ec3dc4a7076",
         "scripts/z1_flash_chunked.sh": "d2d81808171b2f2c06d4fe70939882bf4586ca3b77cfbe037c5888544d9708a6",
@@ -33,16 +26,16 @@
         "scripts/z1_ramdisk_edit.py": "eaed5818062f8ab480c0da5861bdbfc597b479af348ec68ddbaaf426e1778661",
         "scripts/z1_wifi_module_identity.py": "0dfca444eb9ba69ff82a4f2c00c397c6fa130dfb9a802b9763de23cd37b28274",
         "scripts/z1deploy/z1stage_boot.sh": "3df321e69bbed45cd3f198c2e3ce56f8751f134cac7ec38acd37353c86330503",
-        "scripts/z1deploy/z1_recovery_probe.sh": "40493a966b7050dd7595a0aa9a5b58efac5fe0adcae19977d7ddab6c697c173a",
+        "scripts/z1deploy/z1_recovery_probe.sh": "872d44d2bb819736ede46f649a20dc9151e587550015d7adda1d7b696d8a4049",
         "scripts/test_z1_chunked_flash.py": "93e7fc36068331888648d3cdc1846d18bed6f4d71c2207df183025215aac0cd2",
         "scripts/test_flash_with_retry.py": "4621ddbf6798a5a836232a64efe1b9a04f82f9c18d1b047a336315ace042e607",
         "scripts/test_z1_prepare_recovery_boot.py": "75e5a75cea75854a2d6bdfcd03aebede3a018fba6c362d2726f7029f3aa2c633",
         "scripts/test_z1_wifi_module_identity.py": "a40a3e9ede352f0b450a5252041951a725cfc5b9203d5cbf62f415088ce3fdff",
         "scripts/z1deploy/test_z1stage_boot.py": "83301229928411489f057b4c595e209d27c925ab3db566c4f1f5cc43cf9c9db3",
-        "scripts/z1deploy/test_z1_recovery_probe.py": "272c578e68f06bf557e9ce15ed4e084210ed7c6a82f81f0a0f66a0fad2c31eac"
+        "scripts/z1deploy/test_z1_recovery_probe.py": "a0a37e7deb3a499ecb9bdf63284d54661dd72c4264403786e82cb91b128fdc9f"
       },
       "key_source_path_base": "z1a9_gpt",
-      "pending_changes_snapshot_note": "Captured immediately before generating the summary; excludes newly generated summary files and is not a final publication-state assertion."
+      "pending_changes_snapshot_note": "Captured immediately before generating this summary; excludes changes made by summary generation and is not a final publication-state assertion."
     },
     "kernel": {
       "path": "fork_linux",
@@ -184,11 +177,11 @@
         "skipped": 0,
         "total": 20,
         "log": "out/z1_recovery_20261112_233945/final_validation_v3/recovery_probe.log",
-        "log_sha256": "1ce456701efbd983b333a9f6336101d5a86af492b22c213d09a86048003b381f",
-        "test_source_sha256": "272c578e68f06bf557e9ce15ed4e084210ed7c6a82f81f0a0f66a0fad2c31eac",
+        "log_sha256": "e76582ad451e2ef741cbc34f0b80200b54a3bb3b61a97b40035f41f2b10246eb",
+        "test_source_sha256": "a0a37e7deb3a499ecb9bdf63284d54661dd72c4264403786e82cb91b128fdc9f",
         "verified": true,
-        "implementation_sha256": "40493a966b7050dd7595a0aa9a5b58efac5fe0adcae19977d7ddab6c697c173a",
-        "timestamp": "2026-11-13T13:21:27.689505+08:00",
+        "implementation_sha256": "872d44d2bb819736ede46f649a20dc9151e587550015d7adda1d7b696d8a4049",
+        "timestamp": "2026-11-13T13:30:12.746900+08:00",
         "failed": 0,
         "test_source": "scripts/z1deploy/test_z1_recovery_probe.py",
         "skips": []
@@ -196,14 +189,14 @@
     ],
     "evidence": {
       "path": "out/z1_recovery_20261112_233945/final_validation_v3/test_results.json",
-      "sha256": "6b27a30b7af732b95ab0bd2898e6366865499955705067fae672c01f3be1cbba"
+      "sha256": "a9153a3e540caf512fd36a2271edda238838da905cf471b19099591ba04d90a3"
     },
     "command_working_directory": "z1a9_gpt",
     "test_source_path_base": "z1a9_gpt"
   },
   "android_mksh_syntax": {
     "passed": true,
-    "source_snapshot_commit": "60828d12fd673cdcf39aaa14bc686ed479744633",
+    "source_snapshot_commit": "438fd8e81e4a45ee0dd3fd2c7d2648d2586a0375",
     "method": "actual Android bionic/mksh -n under qemu-arm in user/pid namespace",
     "scripts": [
       {
@@ -213,7 +206,7 @@
       },
       {
         "path": "z1a9_gpt/scripts/z1deploy/z1_recovery_probe.sh",
-        "sha256": "40493a966b7050dd7595a0aa9a5b58efac5fe0adcae19977d7ddab6c697c173a",
+        "sha256": "872d44d2bb819736ede46f649a20dc9151e587550015d7adda1d7b696d8a4049",
         "returncode": 0
       }
     ],
@@ -221,7 +214,15 @@
     "board_runtime_behavior_verified": false,
     "evidence": {
       "path": "out/z1_recovery_20261112_233945/android_shell_check/probe_v3_validation.json",
-      "sha256": "122635cd653fcba2f2d73eced8496d1d5043ef9501739c8b3e6341a1bcd0cd73"
+      "sha256": "12c9ff8148215e8c8f51098ec56c3990005ff95c25305e5017f0123fd7665863"
+    },
+    "embedded_full_hash_shell": {
+      "parent_script": "z1a9_gpt/scripts/z1deploy/z1_recovery_probe.sh",
+      "parent_sha256": "872d44d2bb819736ede46f649a20dc9151e587550015d7adda1d7b696d8a4049",
+      "extracted_body_sha256": "9e2a49f5bcbafac68435fb21375af33e865c8a141d06a23c0f2a0a94de786e17",
+      "method": "Extract find -exec sh -c literal; actual Android bionic/mksh -n only",
+      "returncode": 0,
+      "script_body_executed": false
     }
   },
   "package": {
