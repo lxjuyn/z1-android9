@@ -1,0 +1,481 @@
+{
+  "schema": "z1-recovery-validation-summary/v2",
+  "created_at": "2026-11-13T13:24:22.147528+08:00",
+  "scope": "host_only_recovery_validation",
+  "hardware_validation": false,
+  "hardware_access": false,
+  "flashed": false,
+  "data_or_cache_modified": false,
+  "package_pair_board_tested": false,
+  "path_base": "Artifact/evidence paths are relative to the workspace root. Source keys, test commands and raw manifest values have the explicit bases below.",
+  "source_repositories": {
+    "android": {
+      "path": "z1a9_gpt",
+      "branch": "work/driver-recovery-20261110-215207",
+      "validated_source_commit": "60828d12fd673cdcf39aaa14bc686ed479744633",
+      "source_commit_note": "All listed script/test bytes match this commit. Later documentation commits may descend from it.",
+      "remote_main_at_snapshot": "60828d12fd673cdcf39aaa14bc686ed479744633",
+      "remote_main_verified_at_snapshot": true,
+      "pending_changes_at_snapshot": [
+        "M README.md",
+        " M README_zh-CN.md",
+        " M docs/README.md",
+        " M docs/Z1_PERFORMANCE_DVFS_20261112.md",
+        " M docs/Z1_RECOVERY_PLAN_20261112.md",
+        " M docs/Z1_WIFI_SOURCE_IDENTITY_20261112.md"
+      ],
+      "key_source_sha256": {
+        "scripts/z1_chunked_flash.py": "99ede8c2e8de6fc02e5332a371c3fac3f27975530b7e6950a98a9ec3dc4a7076",
+        "scripts/z1_flash_chunked.sh": "d2d81808171b2f2c06d4fe70939882bf4586ca3b77cfbe037c5888544d9708a6",
+        "scripts/flash_with_retry.sh": "3084ec3d47cab7d1c7a3e4034f3443f8325f51fea7457b15978d4ab1078a5770",
+        "scripts/flash_result_parser.sh": "3db2926ecb5f14a4a59c5b5313881494e38c168e8d7efb1ef4a90b6a371453af",
+        "scripts/z1_prepare_recovery_boot.py": "5da0acc70791a6007bb2855ec670187cf23b0c7dda25c584a84caf5d49a5c244",
+        "scripts/z1_ramdisk_edit.py": "eaed5818062f8ab480c0da5861bdbfc597b479af348ec68ddbaaf426e1778661",
+        "scripts/z1_wifi_module_identity.py": "0dfca444eb9ba69ff82a4f2c00c397c6fa130dfb9a802b9763de23cd37b28274",
+        "scripts/z1deploy/z1stage_boot.sh": "3df321e69bbed45cd3f198c2e3ce56f8751f134cac7ec38acd37353c86330503",
+        "scripts/z1deploy/z1_recovery_probe.sh": "40493a966b7050dd7595a0aa9a5b58efac5fe0adcae19977d7ddab6c697c173a",
+        "scripts/test_z1_chunked_flash.py": "93e7fc36068331888648d3cdc1846d18bed6f4d71c2207df183025215aac0cd2",
+        "scripts/test_flash_with_retry.py": "4621ddbf6798a5a836232a64efe1b9a04f82f9c18d1b047a336315ace042e607",
+        "scripts/test_z1_prepare_recovery_boot.py": "75e5a75cea75854a2d6bdfcd03aebede3a018fba6c362d2726f7029f3aa2c633",
+        "scripts/test_z1_wifi_module_identity.py": "a40a3e9ede352f0b450a5252041951a725cfc5b9203d5cbf62f415088ce3fdff",
+        "scripts/z1deploy/test_z1stage_boot.py": "83301229928411489f057b4c595e209d27c925ab3db566c4f1f5cc43cf9c9db3",
+        "scripts/z1deploy/test_z1_recovery_probe.py": "272c578e68f06bf557e9ce15ed4e084210ed7c6a82f81f0a0f66a0fad2c31eac"
+      },
+      "key_source_path_base": "z1a9_gpt",
+      "pending_changes_snapshot_note": "Captured immediately before generating the summary; excludes newly generated summary files and is not a final publication-state assertion."
+    },
+    "kernel": {
+      "path": "fork_linux",
+      "branch": "main",
+      "commit": "187434377e15f1f483d4f8a19ab421e0885ccd84",
+      "remote_main_at_snapshot": "187434377e15f1f483d4f8a19ab421e0885ccd84",
+      "worktree_clean_at_snapshot": true
+    },
+    "a9_worktree": {
+      "path": "a9_wt",
+      "preexisting_modifications_preserved": true,
+      "modified_file_sha256": {
+        "arch/arm/boot/dts/mediatek/mt6572-z1.dts": "54a9713f78bd24170df1cb4ca2a5289db8099dc7b0ed4c598072ae8f24b17434",
+        "tools/z1/init_v13_9_a9handoff.src": "1fff181906ea3a1ddf5f12fd375f34bafb44d1397907e0d9d115e9abbf5f5f67",
+        "tools/z1/z1_a9_handoff.sh": "a0cffcc2bad0bf848f122c3562dc7fc3c91ba53a20ce3db1141375adf950babd"
+      },
+      "touched_by_this_validation": false
+    }
+  },
+  "test_results": {
+    "scope": "host fake-backend and isolated-filesystem tests; no physical device",
+    "totals": {
+      "passed": 120,
+      "failed": 0,
+      "skipped": 1,
+      "total": 121
+    },
+    "suites": [
+      {
+        "suite": "chunked_flash",
+        "command": [
+          "python3",
+          "-B",
+          "scripts/test_z1_chunked_flash.py"
+        ],
+        "returncode": 0,
+        "passed": 19,
+        "skipped": 0,
+        "total": 19,
+        "log": "out/z1_recovery_20261112_233945/final_validation_v3/chunked_flash.log",
+        "log_sha256": "86ac3df7ef5b879e18913e664d9c961c37e96b9ed2b6306da99604358dee0753",
+        "test_source_sha256": "93e7fc36068331888648d3cdc1846d18bed6f4d71c2207df183025215aac0cd2",
+        "verified": true,
+        "failed": 0,
+        "test_source": "scripts/test_z1_chunked_flash.py",
+        "skips": []
+      },
+      {
+        "suite": "legacy_flash",
+        "command": [
+          "python3",
+          "-B",
+          "scripts/test_flash_with_retry.py"
+        ],
+        "returncode": 0,
+        "passed": 19,
+        "skipped": 1,
+        "total": 20,
+        "log": "out/z1_recovery_20261112_233945/final_validation_v3/legacy_flash.log",
+        "log_sha256": "eb7089d118a543c881fcacaa8b9328fae8258cc7985fd130a67b0a3c4375b54b",
+        "test_source_sha256": "4621ddbf6798a5a836232a64efe1b9a04f82f9c18d1b047a336315ace042e607",
+        "verified": true,
+        "failed": 0,
+        "test_source": "scripts/test_flash_with_retry.py",
+        "skips": [
+          {
+            "test": "test_observed_868_percent_failure",
+            "reason": "optional observed hardware failure log unavailable"
+          }
+        ]
+      },
+      {
+        "suite": "stage_boot",
+        "command": [
+          "python3",
+          "-B",
+          "scripts/z1deploy/test_z1stage_boot.py"
+        ],
+        "returncode": 0,
+        "passed": 32,
+        "skipped": 0,
+        "total": 32,
+        "log": "out/z1_recovery_20261112_233945/final_validation_v3/stage_boot.log",
+        "log_sha256": "5b190b56172ccd00782655fbf9dd27289231db4247bc4fdc7bc48814f8715e76",
+        "test_source_sha256": "83301229928411489f057b4c595e209d27c925ab3db566c4f1f5cc43cf9c9db3",
+        "verified": true,
+        "failed": 0,
+        "test_source": "scripts/z1deploy/test_z1stage_boot.py",
+        "skips": []
+      },
+      {
+        "suite": "recovery_builder",
+        "command": [
+          "python3",
+          "-B",
+          "scripts/test_z1_prepare_recovery_boot.py"
+        ],
+        "returncode": 0,
+        "passed": 12,
+        "skipped": 0,
+        "total": 12,
+        "log": "out/z1_recovery_20261112_233945/final_validation_v3/recovery_builder.log",
+        "log_sha256": "140d5b971b587514dbf601b31717c3a9b160e02a292c1ac62285d9873f89d0b4",
+        "test_source_sha256": "75e5a75cea75854a2d6bdfcd03aebede3a018fba6c362d2726f7029f3aa2c633",
+        "verified": true,
+        "failed": 0,
+        "test_source": "scripts/test_z1_prepare_recovery_boot.py",
+        "skips": []
+      },
+      {
+        "suite": "wifi_identity",
+        "command": [
+          "python3",
+          "-B",
+          "scripts/test_z1_wifi_module_identity.py"
+        ],
+        "returncode": 0,
+        "passed": 18,
+        "skipped": 0,
+        "total": 18,
+        "log": "out/z1_recovery_20261112_233945/final_validation_v3/wifi_identity.log",
+        "log_sha256": "23d5b70966bbba27412bc57b71f1742fe7092ad4c8c74accb0a31bca74d706f0",
+        "test_source_sha256": "a40a3e9ede352f0b450a5252041951a725cfc5b9203d5cbf62f415088ce3fdff",
+        "verified": true,
+        "failed": 0,
+        "test_source": "scripts/test_z1_wifi_module_identity.py",
+        "skips": []
+      },
+      {
+        "suite": "recovery_probe",
+        "command": [
+          "python3",
+          "-B",
+          "scripts/z1deploy/test_z1_recovery_probe.py",
+          "-v"
+        ],
+        "returncode": 0,
+        "passed": 20,
+        "skipped": 0,
+        "total": 20,
+        "log": "out/z1_recovery_20261112_233945/final_validation_v3/recovery_probe.log",
+        "log_sha256": "1ce456701efbd983b333a9f6336101d5a86af492b22c213d09a86048003b381f",
+        "test_source_sha256": "272c578e68f06bf557e9ce15ed4e084210ed7c6a82f81f0a0f66a0fad2c31eac",
+        "verified": true,
+        "implementation_sha256": "40493a966b7050dd7595a0aa9a5b58efac5fe0adcae19977d7ddab6c697c173a",
+        "timestamp": "2026-11-13T13:21:27.689505+08:00",
+        "failed": 0,
+        "test_source": "scripts/z1deploy/test_z1_recovery_probe.py",
+        "skips": []
+      }
+    ],
+    "evidence": {
+      "path": "out/z1_recovery_20261112_233945/final_validation_v3/test_results.json",
+      "sha256": "6b27a30b7af732b95ab0bd2898e6366865499955705067fae672c01f3be1cbba"
+    },
+    "command_working_directory": "z1a9_gpt",
+    "test_source_path_base": "z1a9_gpt"
+  },
+  "android_mksh_syntax": {
+    "passed": true,
+    "source_snapshot_commit": "60828d12fd673cdcf39aaa14bc686ed479744633",
+    "method": "actual Android bionic/mksh -n under qemu-arm in user/pid namespace",
+    "scripts": [
+      {
+        "path": "z1a9_gpt/scripts/z1deploy/z1stage_boot.sh",
+        "sha256": "3df321e69bbed45cd3f198c2e3ce56f8751f134cac7ec38acd37353c86330503",
+        "returncode": 0
+      },
+      {
+        "path": "z1a9_gpt/scripts/z1deploy/z1_recovery_probe.sh",
+        "sha256": "40493a966b7050dd7595a0aa9a5b58efac5fe0adcae19977d7ddab6c697c173a",
+        "returncode": 0
+      }
+    ],
+    "script_bodies_executed": false,
+    "board_runtime_behavior_verified": false,
+    "evidence": {
+      "path": "out/z1_recovery_20261112_233945/android_shell_check/probe_v3_validation.json",
+      "sha256": "122635cd653fcba2f2d73eced8496d1d5043ef9501739c8b3e6341a1bcd0cd73"
+    }
+  },
+  "package": {
+    "path": "out/z1_recovery_20261112_233945/package_audio_ordered",
+    "boot": {
+      "sha256": "ef5f07e4459b6d2fcf42b64a50202349b00e80a979274f85bf9101f1052f1468",
+      "bytes": 5982208
+    },
+    "files": {
+      "SHA256SUMS": {
+        "sha256": "cf0b112c12b8f72e8224f8ccaeff4096ff229eb5a2404c7bce007acafb400a84",
+        "bytes": 473
+      },
+      "appended.dtb": {
+        "sha256": "267b86f3675e84a64bb3b64dd142101f4127b2e1b97be58ca362c8e3ba11fa92",
+        "bytes": 20714
+      },
+      "boot.img": {
+        "sha256": "ef5f07e4459b6d2fcf42b64a50202349b00e80a979274f85bf9101f1052f1468",
+        "bytes": 5982208
+      },
+      "init.z1.network.rc": {
+        "sha256": "3d032bec6427b90459af8d1134632cb81eafc795ff33300a0d95d3ea76bd9854",
+        "bytes": 6638
+      },
+      "init.z1.rc": {
+        "sha256": "fa9b48a2fda8ae4c28baa2b5e447d905c2ba7f7e282232708145dd892f40c349",
+        "bytes": 7208
+      },
+      "manifest.json": {
+        "sha256": "1b5c109c36e7bb1acef99dccebecec7612e00edccb4cac29df154aae283b887b",
+        "bytes": 1718
+      },
+      "rootfs.bin": {
+        "sha256": "fd76a24730dab064a90d8e592e0ae81a23387a5eb7d8bcec518bc3803bf0af81",
+        "bytes": 1638499
+      }
+    },
+    "manifest_values": {
+      "status": "HOST_VERIFIED_NOT_FLASHED",
+      "base_sha256": "6388be8659e3b77c3facc233d1eb604343a2d9defe6a014540f7675e44bf0a56",
+      "boot_sha256": "ef5f07e4459b6d2fcf42b64a50202349b00e80a979274f85bf9101f1052f1468",
+      "boot_bytes": 5982208,
+      "builder": {
+        "path": "scripts/z1_prepare_recovery_boot.py",
+        "sha256": "5da0acc70791a6007bb2855ec670187cf23b0c7dda25c584a84caf5d49a5c244"
+      },
+      "zimage_sha256": "6a1cc648ac856b30c109fc5f6a8955f00fa2dc0001b7e917fec4fce6b7bcaa4c",
+      "zimage_preserved": true,
+      "rootfs_sha256": "fd76a24730dab064a90d8e592e0ae81a23387a5eb7d8bcec518bc3803bf0af81",
+      "rootfs_body_bytes": 1637987,
+      "initrd_start": "0x84100000",
+      "initrd_end": "0x8428fe63",
+      "dtb_sha256": "267b86f3675e84a64bb3b64dd142101f4127b2e1b97be58ca362c8e3ba11fa92",
+      "dtb_changed_properties": [
+        "/chosen/linux,initrd-end"
+      ],
+      "cpio_changed_records": [
+        "init.z1.network.rc",
+        "init.z1.rc",
+        "z1stage_boot.sh"
+      ],
+      "graphics": {
+        "hwcomposer.z1.so": {
+          "sha256": "03d2f200f4ea8f8fd1b4bc8d8dd06c190ef2a23f69811fad875b56296acffa95",
+          "bytes": 147360,
+          "preserved": true
+        },
+        "gralloc.z1.so": {
+          "sha256": "0ed9fb2b573bfe4bf2e533b7f709ad054a1dc95482d420aca184d6c95823b77d",
+          "bytes": 28548,
+          "preserved": true
+        }
+      },
+      "stage_script_sha256": "3df321e69bbed45cd3f198c2e3ce56f8751f134cac7ec38acd37353c86330503",
+      "audio_loading": "background loader starts only after stage.status ready; completion still needs board verification",
+      "storage_failure_behavior": "init waits before post-fs; no automatic format or reboot",
+      "needs_board_validation": [
+        "early storage guard",
+        "fsck recovery",
+        "cold boot",
+        "r14 graphics",
+        "readback"
+      ]
+    },
+    "sha256sums_verified": true,
+    "base_boot": {
+      "path": "out/boot_cmpfix.img",
+      "sha256": "6388be8659e3b77c3facc233d1eb604343a2d9defe6a014540f7675e44bf0a56",
+      "role": "pinned packaging input"
+    },
+    "committed_rebuild": {
+      "source_commit": "61fd15fdf298de0918b010bde753164b4c13a93f",
+      "method": "git show exact source commit to isolated temporary directory; no worktree source used",
+      "path": "out/z1_recovery_20261112_233945/from_committed_61fd15f_verified",
+      "all_seven_output_files_byte_identical": true,
+      "evidence": {
+        "path": "out/z1_recovery_20261112_233945/committed_rebuild_review.json",
+        "sha256": "4ef4377bc3c536cabb1b6e4b35ae6b841ff4db8c7b676c591f4affafc4d51149"
+      }
+    },
+    "independent_parser": {
+      "method": "Independent struct/gzip/newc/FDT parser; no imports from production builder",
+      "checks": 2195,
+      "status": "PASS",
+      "evidence": {
+        "path": "out/z1_recovery_20261112_233945/final_audio_package_review.json",
+        "sha256": "63a82a4624f715d3f33aa125f9d475dfc3142c1e9991fbd3b9be873c8dea57f7"
+      },
+      "script": {
+        "path": "out/z1_recovery_20261112_233945/final_audio_package_review.py",
+        "sha256": "678b4d23d73adcf28dffaff293ebd534e1faed6a21f802fd633c147197ba485f"
+      }
+    },
+    "archive": "bridge_backups/products/products_recovery_audio_ordered_20261113_002822",
+    "manifest_values_path_base": "z1a9_gpt for builder.path; manifest values are copied from package manifest.json"
+  },
+  "system_candidate": {
+    "path": "out/z1_driver_candidates_20261110/system_peripherals_v1.img",
+    "bytes": 943718400,
+    "sha256": "833a65f23ceada548339d9f48db4765931136698755d00c9b67f2f4de12cc8dd",
+    "e2fsck_command": [
+      "e2fsck",
+      "-f",
+      "-n",
+      "out/z1_driver_candidates_20261110/system_peripherals_v1.img"
+    ],
+    "e2fsck_returncode": 0,
+    "writable_mount_verified": false,
+    "board_boot_verified": false,
+    "evidence": {
+      "path": "out/z1_recovery_20261112_233945/final_validation_v3/system_validation.json",
+      "sha256": "b3dca9a12147156b39691c6e15bbc971ce74ad8fc7af4b35dd6c5e9df4c34dad"
+    }
+  },
+  "wifi": {
+    "module": "wlan_gen2.ko",
+    "deployed_artifact": {
+      "path": "out/z1_wifi_stage/modules/wlan_gen2.ko",
+      "sha256": "2cf27905d382fb8ac7e6bd8e000c6db1417c4415b5718086562be11399580e9b",
+      "bytes": 956276,
+      "matches_provenance_entry": true
+    },
+    "build_id": "571c0d025ce2f459ab4e4ea662f9c308a1737164",
+    "vermagic": "7.0.0-rc7-z1+ SMP mod_unload ARMv7 p2v8",
+    "identity_gate": {
+      "known_artifact_matches": true,
+      "old_alpine_rejected": true,
+      "evidence": {
+        "path": "out/z1_recovery_20261112_233945/wifi_final_validation.json",
+        "sha256": "a101e4a228f1a077442a52f8e8f63d984366f540b6e63fd2286c37f08e2bb847"
+      }
+    },
+    "historical_provenance": {
+      "archive": "bridge_backups/dl/r9_swiftshader.tar",
+      "member": "Linux7-20261006-r9/provenance/radio-modules.json",
+      "member_sha256": "ad0ec4987b7f6ee2089f4ec6d718f3081275f67e5f3aed7a00b3243637c8e54a",
+      "member_checksum_matches_archive_manifest": true,
+      "extracted_metadata_byte_identical": true,
+      "declared_radio_source": {
+        "repository": "https://github.com/gabin8/mt6572-connsys-modules",
+        "checkout": "temporary Git archive (absolute path omitted)",
+        "commit": "e9961becdc889266c3a8b5a488ff741159b6ad80",
+        "temporary_compatibility_edits": [
+          "osal.h/osal.c: use allocated wakeup_source pointer and register/unregister API",
+          "wmt_plat_alps.c: use allocated wakeup_source pointer and register/unregister API"
+        ]
+      },
+      "declared_kernel_source": {
+        "repository": "local Linux kernel tree (absolute path omitted)",
+        "commit": "c6501138edf2ea6458c7c4370d2fc1033d54f50a",
+        "working_tree_dirty": true,
+        "config_sha256": "8b0e88cd7a301d016a2f144710e044c9adb436a6ea8d97b33bf59dd7df9e7747",
+        "module_symvers_sha256": "9739f305d49c41c98ffaf007622b05c4e8bc1f8e1b5e4056227d0f1187435b34",
+        "dtb": "local Z1 DTB (absolute path omitted)",
+        "dtb_sha256": "cd516b427e284a10a136f9ffde56b02cec6e2c100d5d8188de6cc375537d0d10"
+      },
+      "evidence": {
+        "path": "out/z1_recovery_20261112_233945/wifi_source_provenance_review.json",
+        "sha256": "bc4d3d39f658ee9d816e38fa861b835d40af186b57d7d12aee3e7c81a945a470"
+      }
+    },
+    "exact_source_recovered": false,
+    "source_authenticity_verified": false,
+    "manifest_reproducibility_claim_independently_demonstrated": false,
+    "limits": [
+      "Archive-internal checksum consistency is not source authenticity or a reproduced build.",
+      "Temporary compatibility edits are descriptions, not a complete saved patch.",
+      "Original source checkout and original dirty kernel state have not been recovered."
+    ]
+  },
+  "runtime_overlay_limits": {
+    "graphics_in_ramdisk": "r14",
+    "active_graphics_can_override_ramdisk": true,
+    "rootd_disabled_declaration_prevents_explicit_start": false,
+    "persistent_hooks_can_execute_or_override_system": true,
+    "probe_symlink_skipped_disables_runtime_hook": false,
+    "probe_is_atomic_snapshot": false,
+    "audio_loader": "starts in background only after stage ready; completion and sound still need board validation",
+    "overlay_identity_evidence": {
+      "path": "out/z1_recovery_20261112_233945/system_boot_overlay_identity.json",
+      "sha256": "5aa61fd366769a4e0d2053a640c67588f31059d419aa446f1051c2d552b936f6"
+    },
+    "probe_hook_ok_means": "Individual tool invocation succeeded and output format passed; metadata, link checks and hashes are not bound to one atomic object."
+  },
+  "tools_copy_parity": {
+    "tools/z1_prepare_recovery_boot.py": {
+      "canonical": "z1a9_gpt/scripts/z1_prepare_recovery_boot.py",
+      "sha256": "5da0acc70791a6007bb2855ec670187cf23b0c7dda25c584a84caf5d49a5c244",
+      "byte_identical": true
+    },
+    "tools/z1_flash_chunked.sh": {
+      "canonical": "z1a9_gpt/scripts/z1_flash_chunked.sh",
+      "sha256": "d2d81808171b2f2c06d4fe70939882bf4586ca3b77cfbe037c5888544d9708a6",
+      "byte_identical": true
+    },
+    "tools/z1_chunked_flash.py": {
+      "canonical": "z1a9_gpt/scripts/z1_chunked_flash.py",
+      "sha256": "99ede8c2e8de6fc02e5332a371c3fac3f27975530b7e6950a98a9ec3dc4a7076",
+      "byte_identical": true
+    },
+    "tools/flash_with_retry.sh": {
+      "canonical": "z1a9_gpt/scripts/flash_with_retry.sh",
+      "sha256": "3084ec3d47cab7d1c7a3e4034f3443f8325f51fea7457b15978d4ab1078a5770",
+      "byte_identical": true
+    },
+    "tools/flash_result_parser.sh": {
+      "canonical": "z1a9_gpt/scripts/flash_result_parser.sh",
+      "sha256": "3db2926ecb5f14a4a59c5b5313881494e38c168e8d7efb1ef4a90b6a371453af",
+      "byte_identical": true
+    }
+  },
+  "superseded_evidence": [
+    {
+      "path": "out/z1_recovery_20261112_233945/reproducibility.json",
+      "reason": "earlier package boot; not current boot proof"
+    },
+    {
+      "path": "out/z1_recovery_20261112_233945/final_audio_builder_review.json",
+      "reason": "payload proof predates builder identity metadata; does not prove current manifest/SHA256SUMS equality"
+    },
+    {
+      "path": "out/z1_recovery_20261112_233945/android_shell_check/validation.json",
+      "reason": "earlier probe v2; replaced by probe_v3_validation.json"
+    }
+  ],
+  "known_limits": [
+    "No real MTK transfer, board boot or runtime recovery was performed in this round.",
+    "No device data/cache repair or formatting was performed.",
+    "The boot and system images are separate host-verified candidates; their pair has not been tested on board.",
+    "Storage, graphics, WiFi registration/network traffic, audio and peripherals require individual board acceptance.",
+    "The bad library is not treated as the sole cause of historical crashes.",
+    "SYMLINK_SKIPPED reports diagnostic traversal refusal; rootd/stage may still follow and use those links.",
+    "Source hashes identify a validation snapshot, not an assertion that future HEAD remains unchanged.",
+    "The untracked tools builder copy shares bytes with canonical source but is not claimed to be a standalone entry point."
+  ]
+}

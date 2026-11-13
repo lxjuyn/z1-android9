@@ -11,14 +11,14 @@ Large upstream trees and generated images remain outside Git.
 
 The latest host-verified recovery pair is documented in
 [Z1 Recovery and Acceptance Plan](docs/Z1_RECOVERY_PLAN_20261112.md). It has
-**not** been flashed to a recovered Z1, so the following is a host artifact
+**not** been flashed to the Z1 in this recovery round, so the following is a host artifact
 identity and test result, not a claim that the device is fixed.
 
 | Part | Identity |
 |---|---|
 | `boot.img` | 5,982,208 bytes; SHA-256 `ef5f07e4459b6d2fcf42b64a50202349b00e80a979274f85bf9101f1052f1468` |
 | Recommended `system.img` | 943,718,400 bytes; SHA-256 `833a65f23ceada548339d9f48db4765931136698755d00c9b67f2f4de12cc8dd` |
-| Host validation | 116 tests passed, 1 skipped because its historical log was unavailable |
+| Host validation | 120 tests passed, 1 skipped because its historical log was unavailable |
 | Device validation | Not performed in this recovery round |
 
 The boot image is derived from the known `cmpfix` baseline. It keeps the r14

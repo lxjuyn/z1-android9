@@ -26,6 +26,29 @@
 
 恢复工作必须记录源仓与固定 commit、Z1 本地补丁、实际内核配置/头文件、编译器与命令，并先解释或重现原模块的产物差异。若未修改源码的干净重编能与 v35 原模块逐字节一致，可用下述脚本作产物门槛；匹配本身仍不能证明源目录未经替换，须保存构建日志和源码清单。仅 vermagic 相等不足以判断 ABI 或来源一致。
 
+### 2026-11-13 补充：找到绑定目标哈希的历史来源清单
+
+DeepSeek 在本地 r9 发布材料中找到新的线索；主代理随后直接读取
+`bridge_backups/dl/r9_swiftshader.tar` 内的
+`Linux7-20261006-r9/provenance/radio-modules.json` 并核对归档内部清单：
+
+- 该 JSON 的 SHA256 为 `ad0ec4987b7f6ee2089f4ec6d718f3081275f67e5f3aed7a00b3243637c8e54a`，
+  与同一 tar 中 `SHA256SUMS.txt` 的记录及本机解出副本一致。
+- `radio_source.commit` 为 `e9961becdc889266c3a8b5a488ff741159b6ad80`，仓库名为
+  `gabin8/mt6572-connsys-modules`；记录了 `osal.h/osal.c`、`wmt_plat_alps.c`
+  的 wakeup-source API 临时兼容修改，但没有保存完整补丁。
+- `modules` 中的 `wlan_gen2.ko` 明确为 956276 B、SHA256 `2cf27905…80e9b`，
+  与当前 staging 的实际文件一致；同包 `verification.json` 也记录相同模块哈希。
+- 清单还记录了 kernel commit `c6501138edf2ea6458c7c4370d2fc1033d54f50a`，
+  并明确 `working_tree_dirty=true`，因此仅有该 kernel commit 仍不能还原构建环境。
+
+这是更具体的候选构建来源，仍未恢复精确出货源码。归档内部校验只能证明这些记录
+相互一致，不能证明清单的 `build_reproducible_from_source=true` 已被本轮重建验证。
+不得把 `e9961bec…` 的未补丁源码或当前 `165df1b4…` 直接当成目标模块源树。
+下一步应恢复该历史提交、完整临时补丁及当时的脏内核配置/符号表，再解释或复现
+956276 B 的目标产物；8 月日志中的 958920 B 构建和 Alpine 的 958904 B 均非此产物。
+机器可读复核在 `out/z1_recovery_20261112_233945/wifi_source_provenance_review.json`。
+
 ## 告警与故障不能混为一谈
 
 `fork_linux/net/core/dev_addr_lists.c:512-521` 的 `dev_addr_check()` 返回 void；它比较地址及 shadow 后报警，本身不返回网卡注册失败。`mainline_recon/z1_boot_r14_verify.log:2049-2061` 的一次告警来自 `ifconfig -> __dev_open`；第30590行出现 `(unregistered)` 是另一上下文。必须分别检查 `register_netdev` 返回值、`/sys/class/net/wlan0` 和扫描/连接结果。

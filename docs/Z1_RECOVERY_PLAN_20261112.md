@@ -26,12 +26,13 @@
 块长变化、设备内容变化、并发；fsck 返回码、busy、工具失败、挂载来源、
 复制/比对/rename/元数据失败、就绪属性失败；boot 截断、头长度、CPIO 保持和双闸时序。
 最终逐套结果见 `out/z1_recovery_20261112_233945/validation_summary.json`，
-不重复计入定向复测次数。六套测试共 116 项通过、1 项缺历史日志跳过；
-这包含刷写 19、旧入口 19、stage 32、打包器 12、WiFi 18、probe 16。
+仓库内保留 [脱敏验证摘要](validation/Z1_RECOVERY_20261113.json)。
+不重复计入定向复测次数。六套测试共 120 项通过、1 项缺历史日志跳过；
+这包含刷写 19、旧入口 19、stage 32、打包器 12、WiFi 18、probe 20。
 
 另外已用候选 Android bionic shell 在 qemu-arm 的低 PID namespace 中执行实际 `mksh -n`：
 `z1stage_boot.sh` 和 `z1_recovery_probe.sh` 均返回 0，证据在
-`out/z1_recovery_20261112_233945/android_shell_check/validation.json`。这一步只检查
+`out/z1_recovery_20261112_233945/android_shell_check/probe_v3_validation.json`。这一步只检查
 脚本解析，不执行脚本正文，不挂载文件系统，不改 property，不加载模块，也不替代板上行为验证。
 
 ## 2. 可复核恢复包
@@ -54,6 +55,11 @@
 
 完整字段在现行候选目录的 manifest.json。打包器从最终镜像再次反解；两路独立复核了
 90 个 CPIO 记录、MTK/Android 长度、Android ID、DTB 仅 initrd-end 变化和图形身份。
+音频时序修复已提交为 `36c9f65`，清单补充构建器身份为 `61fd15f`。主代理从后者
+提取三份已提交源码到隔离目录重建，现行包及产品归档的 7 个文件全部逐字节一致，
+证据为 `out/z1_recovery_20261112_233945/committed_rebuild_review.json`。
+先前重建报告中的旧 manifest/SHA256SUMS 属于补录构建器身份之前的版本，不能当作
+现行清单的全文件一致证明；boot 的字节内容和 SHA256 在补录前后均未变化。
 **r14 保持指 ramdisk 内二进制；`/data/local/tmp/z1stage/active/` 仍有明确优先权，
 上板必须核对最终安装哈希，不能直接假设运行时也是 r14。**
 
@@ -101,7 +107,8 @@ system 推荐恢复对象仍为已审计外围候选，避免丢失 WiFi HAL、�
    不能独凭它确定损坏来自写入、存储介质或内存。完成块严格读回才是本轮补上的证据。
 3. `dev_addr_check` 是告警，不等于注册失败。实际模块为 `wlan_gen2.ko`，
    SHA `2cf27905d382fb8ac7e6bd8e000c6db1417c4415b5718086562be11399580e9b`。
-   出货构建源码尚未找回；上游某固定提交已使用正确 API，不能把它冒认成出货源。
+   已找到绑定目标哈希的历史来源清单，指向 `e9961bec…` 及临时兼容修改；
+   完整补丁和当时的脏内核状态仍缺失，不能把该提交或当前上游直接冒认成出货源码。
 4. cmpfix/final_perf 的图形仍是 r14；当前 r16+ 源码/产物存在不代表进入了这些镜像。
 5. 原先“内核改动已提交”不符工作树实况；本轮才将 .config/DTS 留存提交并推送。
    zImage 与 cmpfix 相同、DTB 可逐字节复现；未提取到嵌入 IKCONFIG，不声称完整配置
@@ -114,12 +121,15 @@ system 推荐恢复对象仍为已审计外围候选，避免丢失 WiFi HAL、�
 
 ### A. 先留证，再刷写
 
-当前主机枚举到 CH340，未检测到 MTK preloader/BROM；本轮没有开启刷写等待进程。
+执行前重新核对主机的 USB 枚举和串口归属；本轮没有开启刷写等待进程。
 正常启动仍需拔下载线；刷写时先启动工具再由用户让设备进入下载窗口。
 
-先保留现有日志及可读取的图形 active/kill-switch 状态和关键哈希。运行只读取证脚本
+先保留现有日志及可读取的持久 hook、图形 active/kill-switch 状态和关键哈希。v3
+取证脚本只输出这些固定文件的身份和元数据，不执行、删除 hook；会拒绝符号链接
+祖先和特殊文件。`SYMLINK_SKIPPED` 仅表示探针跳过链接，rootd/stage 仍可能跟随
+该链接执行或使用其目标。运行只读取证脚本
 或按其白名单发短串口命令；不要因日志里曾经失败就再次执行 destructive repair。
-两份现有串口采集进程可能竞争同一 CH340，实际抓取前确认只保留一个预定采集者；
+多个串口采集进程可能竞争同一 CH340，实际抓取前确认只保留一个预定采集者；
 本轮没有擅自终止既有会话。
 
 需要完整原始存储取证时，先走 MTK `ro offset length filename`，严格检查命令结果、
