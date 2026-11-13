@@ -52,7 +52,16 @@ hash_file() {
     elif [ ! -r "$1" ]; then
         printf '[probe] hash=%s status=PERMISSION_DENIED\n' "$1"
     elif _hf_result=$(sha256sum "$1" 2>/dev/null); then
-        printf '[probe] hash=%s status=OK sha256=%s\n' "$1" "${_hf_result%% *}"
+        _hf_digest=${_hf_result%% *}
+        case "$_hf_digest" in
+            ''|*[!0-9a-f]*) printf '[probe] hash=%s status=INVALID_OUTPUT\n' "$1" ;;
+            *)
+                if [ "${#_hf_digest}" -eq 64 ]; then
+                    printf '[probe] hash=%s status=OK sha256=%s\n' "$1" "$_hf_digest"
+                else
+                    printf '[probe] hash=%s status=INVALID_OUTPUT\n' "$1"
+                fi ;;
+        esac
     else
         printf '[probe] hash=%s status=READ_FAILED\n' "$1"
     fi
@@ -70,6 +79,16 @@ read_audio_listing() {
     fi
 }
 
+valid_hook_metadata() (
+    # Split only validated digits/colons, without changing the caller's IFS.
+    case "$1" in
+        ''|*[!0-9:]*|:*|*:|*::*) exit 1 ;;
+    esac
+    IFS=:
+    set -- $1
+    [ "$#" -eq 4 ]
+)
+
 read_stage_hook() {
     # Never execute or print hook content. Refuse links and special files.
     if [ -L "$1" ]; then
@@ -83,10 +102,11 @@ read_stage_hook() {
         if ! command -v stat >/dev/null 2>&1; then
             printf '[probe] hook_metadata=%s status=TOOL_MISSING stat\n' "$1"
         elif _hook_meta=$(stat -c '%a:%u:%g:%s' "$1" 2>/dev/null); then
-            case "$_hook_meta" in
-                ''|*[!0-9:]*) printf '[probe] hook_metadata=%s status=INVALID_OUTPUT\n' "$1" ;;
-                *) printf '[probe] hook_metadata=%s status=OK mode_uid_gid_bytes=%s\n' "$1" "$_hook_meta" ;;
-            esac
+            if valid_hook_metadata "$_hook_meta"; then
+                printf '[probe] hook_metadata=%s status=OK mode_uid_gid_bytes=%s\n' "$1" "$_hook_meta"
+            else
+                printf '[probe] hook_metadata=%s status=INVALID_OUTPUT\n' "$1"
+            fi
         else
             printf '[probe] hook_metadata=%s status=READ_FAILED\n' "$1"
         fi

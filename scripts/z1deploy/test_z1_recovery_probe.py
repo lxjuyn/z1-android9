@@ -8,6 +8,7 @@ import hashlib
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -148,6 +149,19 @@ esac''')
         self.assertIn("property=sys.boot_completed status=READ_FAILED", output)
         self.assertIn("dmesg=READ_FAILED", output)
         self.assertNotIn("PRIVATE_DETAIL", output)
+        self.command("sha256sum", 'printf "PRIVATE_HASH_ERROR\\n"; exit 1')
+        target = self.root / "system/lib/libutilscallstack.so"
+        output = self.run_probe()
+        self.assertIn(f"hash={target} status=READ_FAILED", output)
+        self.assertNotIn("PRIVATE_HASH_ERROR", output)
+        for value in ("", "PRIVATE_BAD_DIGEST", "a" * 63, "a" * 65,
+                      "A" * 64, "g" * 64, "0" * 63 + "!", "0" * 63 + "\t"):
+            with self.subTest(digest=value):
+                self.command("sha256sum", "printf '%s\\n' " + shlex.quote(value))
+                output = self.run_probe()
+                self.assertIn(f"hash={target} status=INVALID_OUTPUT", output)
+                self.assertNotIn(f"hash={target} status=OK", output)
+                self.assertNotIn("PRIVATE_BAD_DIGEST", output)
 
     def test_full_system_hashes_are_opt_in_and_do_not_follow_links(self):
         self.write("system/usr/example.conf", "SYSTEM_CONTENT_MUST_NOT_APPEAR\n")
@@ -303,10 +317,18 @@ esac''')
         output = self.run_probe()
         self.assertIn(f"hook_metadata={target} status=TOOL_MISSING stat", output)
         self.assertIn(f"hash={target} status=TOOL_MISSING sha256sum", output)
-        self.command("stat", 'printf "PRIVATE_BAD_METADATA\\n"')
-        output = self.run_probe()
-        self.assertIn(f"hook_metadata={target} status=INVALID_OUTPUT", output)
-        self.assertNotIn("PRIVATE_BAD_METADATA", output)
+        for value in ("", "PRIVATE_BAD_METADATA", ":::", "1:2:3", "1:2:3:4:5",
+                      ":1:2:3", "1:2:3:", "1::2:3", "1:2::3", " 1:2:3:4",
+                      "1:2:3:4\nPRIVATE_BAD_METADATA"):
+            with self.subTest(metadata=value):
+                self.command("stat", "printf '%s\\n' " + shlex.quote(value))
+                output = self.run_probe()
+                self.assertIn(f"hook_metadata={target} status=INVALID_OUTPUT", output)
+                self.assertNotIn(f"hook_metadata={target} status=OK", output)
+                self.assertNotIn("PRIVATE_BAD_METADATA", output)
+        self.command("stat", "printf '755:0:0:10\\n'")
+        self.assertIn(f"hook_metadata={target} status=OK mode_uid_gid_bytes=755:0:0:10",
+                      self.run_probe())
         self.command("stat", 'exit 1')
         self.assertIn(f"hook_metadata={target} status=READ_FAILED", self.run_probe())
 
