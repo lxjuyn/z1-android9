@@ -43,6 +43,31 @@ class RecoveryBootTest(unittest.TestCase):
         self.assertIn("class core\n    disabled\n", rc[rc.index("service z1_rootd"):])
         self.assertNotIn("/system/bin/cp /hwcomposer.z1.so", rc)
 
+    def test_audio_starts_once_after_installed_modules(self):
+        rc = recovery.patch_rc(self.files["init.z1.rc"].decode())
+        network = recovery.patch_network_rc(self.files["init.z1.network.rc"].decode())
+        self.assertEqual(rc.count(recovery.AUDIO_LOAD), 1)
+        self.assertNotIn(recovery.AUDIO_LOAD, network)
+        self.assertLess(rc.index("wait_for_prop z1stage.status ready"),
+                        rc.index(recovery.AUDIO_LOAD))
+        self.assertLess(rc.index(recovery.AUDIO_LOAD), rc.index("start z1_rootd"))
+        self.assertIn("exec_background", recovery.AUDIO_LOAD)
+
+    def test_early_or_missing_audio_loader_rejected(self):
+        rc = recovery.patch_rc(self.files["init.z1.rc"].decode())
+        for changed in (rc.replace(recovery.AUDIO_LOAD, ""),
+                        recovery.AUDIO_LOAD + rc.replace(recovery.AUDIO_LOAD, "")):
+            with self.assertRaises(ValueError):
+                recovery.verify_rc(changed)
+
+    def test_unknown_or_duplicate_network_loader_rejected(self):
+        network = self.files["init.z1.network.rc"].decode()
+        for changed in (network.replace(recovery.AUDIO_LOAD, ""),
+                        network + "on post-fs\n" + recovery.AUDIO_LOAD,
+                        recovery.patch_network_rc(network)):
+            with self.assertRaises(ValueError):
+                recovery.patch_network_rc(changed)
+
     def test_missing_stage_wait_rejected(self):
         rc = recovery.patch_rc(self.files["init.z1.rc"].decode())
         with self.assertRaisesRegex(ValueError, "installation gate"):

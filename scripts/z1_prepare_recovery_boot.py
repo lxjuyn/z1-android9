@@ -3,7 +3,8 @@
 
 Preserve its zImage and r14 graphics binaries. Replace the stage script,
 put the storage guard before post-fs writers, remove the legacy HWC copy,
-and update only chosen/linux,initrd-end in the appended DTB. Never flash.
+start audio loading after installation, and update only chosen/linux,initrd-end
+in the appended DTB. Never flash.
 """
 import argparse
 import gzip
@@ -20,6 +21,7 @@ from z1_ramdisk_edit import encode, parse
 BASE_SHA = "6388be8659e3b77c3facc233d1eb604343a2d9defe6a014540f7675e44bf0a56"
 MTK = bytes.fromhex("88168858")
 LIMIT = 6 * 1024 * 1024
+AUDIO_LOAD = "    exec_background u:r:init:s0 root root -- /system/bin/sh /system/lib/modules/load_audio.sh\n"
 
 
 def require(condition, message):
@@ -96,6 +98,8 @@ def patch_rc(text):
         "    setprop z1stage.status installing\n"
         "    exec u:r:init:s0 root root -- /system/bin/sh /z1stage_boot.sh --skip-storage\n"
         "    wait_for_prop z1stage.status ready\n"
+        "    # Load the installed audio modules, including on the first boot.\n"
+        + AUDIO_LOAD +
         "    start z1_rootd\n"
         "    swapon_all /fstab.z1\n")
     # The old deployment block describes the removed duplicate installer.
@@ -113,11 +117,23 @@ def verify_rc(text):
     require(text.count("/z1stage_boot.sh --skip-storage") == 1, "installer count")
     require(text.count("wait_for_prop sys.z1.storage_ready 1") == 1, "missing storage gate")
     require(text.count("wait_for_prop z1stage.status ready") == 1, "missing installation gate")
+    require(text.count(AUDIO_LOAD) == 1, "audio loader count")
     require("/system/bin/cp /hwcomposer.z1.so" not in text, "legacy installer remains")
     require(text.index("--storage-only") < text.index("wait_for_prop sys.z1.storage_ready 1")
             < text.index("on post-fs-data"), "guard runs too late")
     require(text.index("--skip-storage") < text.index("wait_for_prop z1stage.status ready")
-            < text.index("/z1_art_seed.sh"), "ART races installer")
+            < text.index(AUDIO_LOAD) < text.index("start z1_rootd")
+            < text.index("/z1_art_seed.sh"), "audio/ART races installer")
+
+
+def patch_network_rc(text):
+    # The original loader runs in post-fs and otherwise wins the race against
+    # the post-fs-data module installer; it skips already loaded modules later.
+    text = replace_once(text, "on post-fs\n" + AUDIO_LOAD,
+                        "# Audio module loading follows the guarded installer in init.z1.rc.\n")
+    require(not any("load_audio.sh" in line and not line.lstrip().startswith("#")
+                    for line in text.splitlines()), "early audio loader remains")
+    return text
 
 
 def edit_rootfs(rootfs, replacements):
@@ -172,7 +188,9 @@ def build(base, stage, output):
     for token in (b"--storage-only", b"--skip-storage", b"sys.z1.storage_ready"):
         require(token in script, "stage script lacks required storage interface")
     rc = patch_rc(old["init.z1.rc"].decode()).encode()
-    updated = edit_rootfs(rootfs, {"init.z1.rc": rc, "z1stage_boot.sh": script})
+    network_rc = patch_network_rc(old["init.z1.network.rc"].decode()).encode()
+    updated = edit_rootfs(rootfs, {"init.z1.rc": rc, "init.z1.network.rc": network_rc,
+                                   "z1stage_boot.sh": script})
     require(not output.exists(), "output directory already exists; use a new name")
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=".z1-recovery-", dir=output.parent) as td:
@@ -199,7 +217,8 @@ def build(base, stage, output):
         new = contents(new_body, new_records)
         require(set(old) == set(new), "cpio name set changed")
         changed = sorted(n for n in old if old[n] != new[n])
-        require(changed == ["init.z1.rc", "z1stage_boot.sh"], "unexpected cpio change")
+        require(changed == ["init.z1.network.rc", "init.z1.rc", "z1stage_boot.sh"],
+                "unexpected cpio change")
         for a, b in zip(old_records, new_records):
             require(a["name"] == b["name"], "record order changed")
             if a["name"] not in changed:
@@ -216,6 +235,7 @@ def build(base, stage, output):
             "graphics": {n: {"sha256": sha(new[n]), "bytes": len(new[n]), "preserved": True}
                          for n in ("hwcomposer.z1.so", "gralloc.z1.so")},
             "stage_script_sha256": sha(script),
+            "audio_loading": "background loader starts only after stage.status ready; completion still needs board verification",
             "storage_failure_behavior": "init waits before post-fs; no automatic format or reboot",
             "needs_board_validation": ["early storage guard", "fsck recovery", "cold boot", "r14 graphics", "readback"],
         }
@@ -223,9 +243,10 @@ def build(base, stage, output):
         (work / "boot.img").write_bytes(image)
         (work / "rootfs.bin").write_bytes(updated)
         (work / "init.z1.rc").write_bytes(rc)
+        (work / "init.z1.network.rc").write_bytes(network_rc)
         (work / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
         (work / "SHA256SUMS").write_text("".join(f"{sha((work/n).read_bytes())}  {n}\n" for n in
-                                               ("boot.img", "rootfs.bin", "appended.dtb", "init.z1.rc", "manifest.json")))
+                                               ("boot.img", "rootfs.bin", "appended.dtb", "init.z1.rc", "init.z1.network.rc", "manifest.json")))
         check_dt.unlink()
         original_dt.unlink()
         os.rename(work, output)
