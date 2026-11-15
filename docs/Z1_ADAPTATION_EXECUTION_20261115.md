@@ -1,6 +1,34 @@
 # Z1 继续适配实施记录（2026-11-15）
 
-本轮目标是交付可复核代码与待测候选，按存储、启动、图形、外围顺序验证。当前没有执行刷机、格式化、板上播放或录音。离线通过与上板通过分别记录。
+本轮按存储、启动、图形、外围顺序验证。用户已于 2026-11-15 晚授权刷写；r3 boot 已完成写入和严格读回，配套 system 正在按 48 MiB 分块写入并逐块比较。未执行格式化、板上播放或录音。离线通过、设备读回和功能上板通过分别记录。
+
+## 当前执行版本：r3（2026-11-15 晚）
+
+以下成对镜像取代后文 13:59 的初始候选；不要混用旧 system 或自动启动 NVRAM daemon 的试验 system。
+
+| 文件 | 字节数 | SHA256 |
+|---|---:|---|
+| `out/adaptation_candidate_20261115_r3/boot_pkg/boot.img` | 5,982,208 | `af9f5448fbeca7fedee41f1949bc751f0d8ff7ef23fb9bec81a162482f42602e` |
+| `out/adaptation_candidate_20261115_r3/system.img` | 943,718,400 | `c2adda7709d7be0f5012ba2530bd9c55beea97b261b778652ab9763269171875` |
+
+刷前重新计算了这两件镜像及下面两件恢复镜像的 SHA256。独立反解通过：boot 内 5 个替换文件的类型/hash、MTK 头、appended DTB、initrd-end `0x8429024d`；system 内 7 个文件的类型/mode/uid/gid/SELinux/hash，以及 `e2fsck -fn` 返回 0。证据位于候选目录的 `independent_*`，已补入 `bridge_backups/products/products_adaptation_r3_20261115_181052/candidate/` 并更新归档 SHA256 清单。
+
+- boot：20:41 启动 `flash_with_retry.sh`，首次擦除命令返回 0 并显示 `Formatted`，但完整输出未通过严格日志判定，随后恢复 boot 写入并严格读回成功；第二次 r3 boot 写入及完整分区读回成功。已保存日志只有该命令末尾，不能据此确定首次被拒绝的具体错误标记。日志 `mainline_recon/flash_r3_boot_20261115_2041.log`。这证明 boot 内容已写入，不能据此宣称图形或外围可用。
+- system：`z1_flash_chunked.sh android ... 48 8`，日志 `mainline_recon/flash_r3_system_20261115_2043.log`，逐次 MTK 日志在 `mainline_recon/flash_chunks/20261115_204309_write_612mgn7o/`。全部 19 块通过前不得按配套刷写完成处理。
+- CH340 抓取已启动，按本镜像 DT bootargs 实解值使用 921600；日志 `mainline_recon/z1_boot_mainline_20261115_204133.log`。system 校验完成后拔下载线，再由用户开机；串口线保持连接。
+
+### r3 的功能边界
+
+| 功能 | 已进入候选的修复/准备 | 仍需验证或完成 |
+|---|---|---|
+| 图形/GPU | r17 HWC、CRTC 故障处理、Mesa/Lima 候选 | 本次启动的真实模块/maps、正确像素、3D 渲染及稳定性 |
+| 音频 | 播放 HAL；MT6323 MIC signal route 与 capture 共享时钟修复，codec SHA `0810cb19072b1a58473f7541ea607fbaf1a35cd456ed43b1a031f09c56036914` | 播放及物理 MIC；Android 输入 HAL 仍返回 `-ENOSYS`，policy 为 playback-only，录音未完成。旧 `z1_diag_audio.sh trigger` 的 WAV/采样率/设备/时长不正确，暂不执行 |
+| 触摸/按键 | CST836U 修正版、PMIC IRQ/错误路径修复、当前 EINT16 LEVEL_HIGH | 同一 boot 的 IRQ 增量、EV_KEY 按下/释放、触摸坐标；不凭注册日志认定可用 |
+| 蓝牙/WiFi | 保留当前 SOC transport 与现行 WiFi 模块；NVRAM 只读预检 | WMT arbitration/reset/RX timeout、BT HCI/配对/音频、实际连接；须恢复 `mtk_stp_bt_soc.ko` 对应源码，不能改错旧 common 驱动 |
+| GPS | gpsdrv/prep/installer 失败处理与持续状态核验 | `mnld` 服务名/回调 ABI 成套适配及真实定位；installer 完成不代表 GPS 完成 |
+| 充电 | r2 内核停充失败重试、remove/shutdown 收尾 | 实际充放电、热保护；battery TEMP=250 仍是固定值，真实软件温控未完成 |
+
+禁刷 `out/adaptation_candidate_20261115_nvram/system.img`（SHA `34355c3dae728d9b9195bc7eb7cc9e956b945832d8bbbe42e36338ca0944a447`），其自动 NVRAM 启动可能重置校准缓存。`out/adaptation_nvram_disabled_20261115_r3/` 也仅为 disabled 诊断分支，不作为本轮默认基线；手动启动 daemon 仍可能写缓存。
 
 ## 保留恢复基线
 
@@ -30,9 +58,9 @@
 
 原始 URL、抓取时间、字节数保存在来源清单；结论必须同时有本机代码/测试证据。联网搜索接口未返回可引用正文，因此未把空结果记为依据。
 
-## 本轮进展
+## 早前构建记录（13:59 初始候选，已被 r3 取代）
 
-已完成主机侧实现和候选装配，仍未刷机：
+以下记录是本轮早前的主机侧实现与初始候选装配状态：
 
 - 内核 `f259bce95` 已推送：MTK mutex 超时返回错误并取消请求；CRTC 进入粘性冻结，错误完成 fence，固定仍在扫描的 framebuffer。9 个故障场景、OVL 回归、ARM 对象编译和 checkpatch 通过。
 - MT6323 codec `8b816f317` 已推送：`AIF1 Capture` 经过 `MIC Route` 接到 MIC signal path；39 个 host capture 检查和 ARM 模块编译通过。Android 输入 HAL、物理 MIC 接线、真实录音仍未完成。
