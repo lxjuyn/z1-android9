@@ -27,7 +27,8 @@
 # 每次结果都打到 kmsg，便于 ACM/串口取证。
 
 BASE=/system/lib/modules
-log() { printf '<6>[Z1Audio] %s\n' "$*" > /dev/kmsg 2>/dev/null; }
+failures=0
+log() { printf '<6>[Z1Audio] %s\n' "$*" > /dev/kmsg 2>/dev/null || true; }
 
 # modname: 不带 .ko 的文件名；同时给出 /sys/module 下的名字（下划线）
 load() {
@@ -39,6 +40,7 @@ load() {
     fi
     if [ ! -f "$BASE/$ko" ]; then
         log "MISSING $BASE/$ko"
+        failures=$((failures + 1))
         return 1
     fi
     err=$(insmod "$BASE/$ko" 2>&1)
@@ -47,6 +49,7 @@ load() {
         return 0
     fi
     log "insmod FAIL $ko: $err"
+    failures=$((failures + 1))
     return 1
 }
 
@@ -71,6 +74,9 @@ load mt6323-accdet.ko  mt6323_accdet
 load mt6572-afe-pcm.ko   mt6572_afe_pcm
 load mt6572-mt6323.ko    mt6572_mt6323
 
+# The paired adaptation kernel builds CHARGER_Z1_MT6323=y. Do not insert the
+# old system z1_charger.ko a second time from this audio entrypoint.
+
 # 结果取证
 if [ -f /proc/asound/cards ]; then
     log "--- /proc/asound/cards ---"
@@ -79,10 +85,17 @@ if [ -f /proc/asound/cards ]; then
     done < /proc/asound/cards
 else
     log "/proc/asound/cards absent (snd core did not register a card)"
+    failures=$((failures + 1))
+fi
+
+if ! grep -Eq '^[[:space:]]*[0-9]+[[:space:]]+\[' /proc/asound/cards 2>/dev/null; then
+    log "no registered ALSA sound card"
+    failures=$((failures + 1))
 fi
 
 # Use ERE alternation and make an empty match count a valid zero, so the
 # diagnostic cannot hide a loaded stack behind grep's non-zero exit status.
 n=$(grep -Ec '^(mt|snd|sound)' /proc/modules 2>/dev/null || true)
-log "=== audio load done: $n audio modules in /proc/modules ==="
+log "=== audio load done: $n audio modules, $failures failures ==="
+[ "$failures" -eq 0 ] || exit 1
 exit 0
