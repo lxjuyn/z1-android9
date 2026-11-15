@@ -1,6 +1,6 @@
 # Z1 继续适配实施记录（2026-11-15）
 
-本轮按存储、启动、图形、外围顺序验证。用户已于 2026-11-15 晚授权刷写；r3 boot 已完成写入和严格读回，配套 system 正在按 48 MiB 分块写入并逐块比较。未执行格式化、板上播放或录音。离线通过、设备读回和功能上板通过分别记录。
+本轮按存储、启动、图形、外围顺序验证。用户已于 2026-11-15 晚授权刷写；r3 boot 与配套 system 均完成写入和严格读回。实机本轮 boot id 为 `3d41079d-6389-4594-a4f6-e408d06748d9`，约 204 s 到达 `boot_completed`；首轮约 77.6 s 曾复位一次，原因待定位，因此不能称无限重启或稳定性全通过。已结束的主取证日志为 `mainline_recon/z1_boot_mainline_20261115_210603.log`，当前轮日志为 `mainline_recon/z1_boot_mainline_20261115_215411.log`。
 
 ## 当前执行版本：r3（2026-11-15 晚）
 
@@ -14,8 +14,20 @@
 刷前重新计算了这两件镜像及下面两件恢复镜像的 SHA256。独立反解通过：boot 内 5 个替换文件的类型/hash、MTK 头、appended DTB、initrd-end `0x8429024d`；system 内 7 个文件的类型/mode/uid/gid/SELinux/hash，以及 `e2fsck -fn` 返回 0。证据位于候选目录的 `independent_*`，已补入 `bridge_backups/products/products_adaptation_r3_20261115_181052/candidate/` 并更新归档 SHA256 清单。
 
 - boot：20:41 启动 `flash_with_retry.sh`，首次擦除命令返回 0 并显示 `Formatted`，但完整输出未通过严格日志判定，随后恢复 boot 写入并严格读回成功；第二次 r3 boot 写入及完整分区读回成功。已保存日志只有该命令末尾，不能据此确定首次被拒绝的具体错误标记。日志 `mainline_recon/flash_r3_boot_20261115_2041.log`。这证明 boot 内容已写入，不能据此宣称图形或外围可用。
-- system：`z1_flash_chunked.sh android ... 48 8`，日志 `mainline_recon/flash_r3_system_20261115_2043.log`，逐次 MTK 日志在 `mainline_recon/flash_chunks/20261115_204309_write_612mgn7o/`。全部 19 块通过前不得按配套刷写完成处理。
+- system：`z1_flash_chunked.sh android ... 48 8` 退出 0，全部 19 块、943,718,400 字节读回逐字节一致。日志 `mainline_recon/flash_r3_system_20261115_2043.log`，逐次 MTK 日志及 `result.json` 在 `mainline_recon/flash_chunks/20261115_204309_write_612mgn7o/`。成对刷写证据 `out/adaptation_candidate_20261115_r3/flash_result_20261115.json` 已归档。
 - CH340 抓取已启动，按本镜像 DT bootargs 实解值使用 921600；日志 `mainline_recon/z1_boot_mainline_20261115_204133.log`。system 校验完成后拔下载线，再由用户开机；串口线保持连接。
+- 只读回查分区表得到 bootimg `0x2980000/0x600000`、android `0x4340000/0x38400000`，与传输范围相符。此版本 `printgpt` 在完整输出 19 项后计算总容量时因 `totalsectors=None` 抛 TypeError（退出 1），不能写成命令成功；已单独记录，传输读回证明不依赖该命令退出值。
+- 20:53 本次启动早期证据：内核 `#166`、console 921600；`/data` 与 `/cache` 的 stage e2fsck 都返回 0，随后验证 RW mount；`storage gate ready`（约 20.22s）。Lima 与 PMIC keys 注册成功。仍需等待 Android 完整启动并实测各功能，注册不等于功能通过。
+
+### r3 已完成的板上取证（边界仍按下表执行）
+
+- 启动：上述 boot id 在约 204 s 到达 `boot_completed`；约 77.6 s 的首轮复位仍未定位，不能把本轮写成稳定性全通过。
+- 音频：OpenSL 3 次 callback 成功，PCM 为 `RUNNING` 且 `hw_ptr` 推进；root `tinyplay` 可正确播放 2 s、48 kHz、2 ch、`amp4000` WAV，speaker-only/HP0 及全部 DAPM On 组合仍由用户确认无声，播放物理结果为 **FAIL**。录音 HAL 仍返回 `ENOSYS`。已确定 48 kHz 与 PMIC 固定 44.1 kHz 不一致；rate 修复仍是候选、未部署，物理根因待 A/B。
+- 图形/GPU：`bridge_backups/products/products_gpu_r3_board_20261115_2130/analysis.json` 记录 20 files、445450 pixels、0 mismatch，像素校验 PASS；`hardware_status=UNPROVEN`，UI jank 仍约 72--85%，尚未解决。
+- 触摸/导航：live `key_y_min` 从 300 调至 320，用户确认现在正常；source/module 与 system rc 的修复已由 commit `d2654d1` 记录。新的 `system/etc/init/z1_touch_navigation.rc` 已通过 root 安装，SHA256 为 `32b84644e3eeb7bb99af897d1f104ce7518fc87beafe919d0b81de4960b56901`，`root:root`、mode `0644`、`system_file` 标签，安装命令返回 0；设备 `/proc/mounts` 确认 system 仍只读，当前 `CURRENT_KEY_Y_MIN=320`。证据位于 `mainline_recon/z1_boot_mainline_20261115_215411.log` 的 `[r4_critical_snapshot_begin]`/`[r4_critical_snapshot_end]` 段。下一次开机自动应用尚未重启验证。当前 `immersive.navigation=*` 生效，但 system `build.prop` 仍为 `qemu.hw.mainkeys=0`，镜像尚未改为隐藏导航栏。
+- 锁屏图形：HWC r18（`db8b5fd`）已构建但未部署；当前 r17 锁屏行为仍保留末帧。
+- 按键：`key 158 -> VOLUME_UP` 只改在源码，等待真实 `getevent` 证据；不能写成已在板上完成。
+- 蓝牙：HCI init abort / WMT timeout 仍未解决。
 
 ### r3 的功能边界
 

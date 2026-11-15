@@ -2,6 +2,8 @@
 # Mainline driver registers as "mt6779-keypad".
 # Numbers below are Linux EV_KEY codes, not MSC_SCAN matrix values.
 # Requested: 复读(repeat) = VOLUME_DOWN, 跟读(follow) = VOLUME_UP.
+# User confirmed 2026-11-15: the follow key currently arrives as Linux key code 158
+# and was therefore reported as BACK; keep touchscreen BACK in z1_cst836u.kl.
 # Existing 250/251/252/254 assignments are unverified physical-key candidates.
 # Preserve these assignments until labeled getevent captures identify the keys.
 # Android 9 rejects the legacy WAKE and WAKE_DROPPED flags.
@@ -14,6 +16,6 @@ key 106   DPAD_RIGHT
 key 232   DPAD_CENTER
 key 105   DPAD_LEFT
 key 103   DPAD_UP
-key 158   BACK
+key 158   VOLUME_UP
 key 108   DPAD_DOWN
 key 254   VOLUME_DOWN
