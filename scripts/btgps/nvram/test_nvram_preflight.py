@@ -44,7 +44,7 @@ class PreflightTests(unittest.TestCase):
                     change(root, props)
                 getprop = root/'bin/getprop'
                 getprop.write_text('#!/usr/bin/python3\nimport sys\np='+repr(props)+
-                                   '\nprint(p.get(sys.argv[1], ""))\n')
+                                   '\nif p.pop("__query_failure__", False): sys.exit(1)\nprint(p.get(sys.argv[1], ""))\n')
                 getprop.chmod(0o755)
                 # Any attempted mutation fails the test, including ash builtins.
                 blocked = '\n'.join(f'{c}() {{ echo MUTATION_ATTEMPT >&2; return 99; }}'
@@ -114,11 +114,18 @@ class PreflightTests(unittest.TestCase):
             self.assertEqual(r.returncode, 2)
             self.assertIn('UNKNOWN daemon_has_not_reported_ready', r.stdout)
 
-    def test_missing_service_is_failure(self):
+    def test_unobserved_service_state_remains_unknown(self):
         def change(root, props): props.clear()
         for r in self.run_fixture(change):
-            self.assertEqual(r.returncode, 1)
-            self.assertIn('FAIL daemon_service_not_observed', r.stdout)
+            self.assertEqual(r.returncode, 2)
+            self.assertIn('UNKNOWN daemon_service_state_unobserved', r.stdout)
+
+    def test_failed_property_query_is_not_reported_as_missing_service(self):
+        def change(root, props): props['__query_failure__'] = True
+        for r in self.run_fixture(change):
+            self.assertEqual(r.returncode, 2)
+            self.assertIn('UNKNOWN daemon_service_state_unobserved', r.stdout)
+            self.assertNotIn('FAIL ', r.stdout)
 
     def test_arguments_cannot_override_live_paths(self):
         for r in self.run_fixture(args=('/dev/nvram',)):

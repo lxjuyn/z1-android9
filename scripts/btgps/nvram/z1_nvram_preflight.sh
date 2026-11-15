@@ -36,7 +36,7 @@ service_state=$(getprop init.svc.nvram_daemon 2>/dev/null) || service_state=
 case "$service_state" in
     running) pass daemon_running_snapshot ;;
     stopped|stopping|restarting) unknown daemon_not_running ;;
-    *) fail daemon_service_not_observed ;;
+    *) unknown daemon_service_state_unobserved ;;
 esac
 reported=$(getprop nvram_init 2>/dev/null) || reported=
 if [ "$reported" = Ready ]; then
