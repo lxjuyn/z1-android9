@@ -56,6 +56,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h>
+#include <limits.h>
 #include <poll.h>
 #include <pthread.h>
 #include <time.h>
@@ -109,7 +110,9 @@ extern "C" int __android_log_write(int prio, const char *tag, const char *text);
 #define LOG_TAG "z1hwc2"
 #include <log/log.h>
 
-#define Z1_HWC_VERSION "2026-11-15-r17"
+#define Z1_HWC_VERSION "2026-11-15-r18"
+#define Z1_BACKLIGHT_PATH "/sys/class/leds/lcd-backlight/brightness"
+#define Z1_BACKLIGHT_MAX_PATH "/sys/class/leds/lcd-backlight/max_brightness"
 
 /* ------------------------------------------------------------ constants --- */
 
@@ -446,6 +449,8 @@ struct z1_hwc2 : public hwc2_device_t {
 	uint32_t mode_blob;
 	bool modeset_done;
 	bool powered_on;
+	bool backlight_blank_applied;
+	int backlight_saved;
 	bool validated;
 	bool client_expected;	/* SurfaceFlinger will supply a client target */
 	bool color_transform;	/* a non-identity colour matrix is in effect */
@@ -1905,17 +1910,107 @@ static int32_t z1_set_output_buffer(hwc2_device_t *d, hwc2_display_t display,
 	return HWC2_ERROR_UNSUPPORTED;
 }
 
+static int z1_backlight_read(const char *path, int *value)
+{
+	char buf[32];
+	int fd = open(path, O_RDONLY | O_CLOEXEC);
+	if (fd < 0)
+		return -errno;
+	ssize_t n;
+	do {
+		n = read(fd, buf, sizeof(buf) - 1);
+	} while (n < 0 && errno == EINTR);
+	int error = n < 0 ? -errno : 0;
+	close(fd);
+	if (error)
+		return error;
+	if (n <= 0 || n == (ssize_t)sizeof(buf) - 1)
+		return -EIO;
+	buf[n] = '\0';
+	char *end;
+	errno = 0;
+	long result = strtol(buf, &end, 10);
+	if (errno || end == buf || result < 0 || result > INT_MAX)
+		return -EINVAL;
+	while (*end == ' ' || *end == '\n' || *end == '\r' || *end == '\t')
+		end++;
+	if (*end)
+		return -EINVAL;
+	*value = (int)result;
+	return 0;
+}
+
+static int z1_backlight_write(int value)
+{
+	char buf[32];
+	int length = snprintf(buf, sizeof(buf), "%d\n", value);
+	int fd = open(Z1_BACKLIGHT_PATH, O_WRONLY | O_CLOEXEC);
+	if (fd < 0)
+		return -errno;
+	ssize_t n;
+	do {
+		n = write(fd, buf, (size_t)length);
+	} while (n < 0 && errno == EINTR);
+	int error = n < 0 ? -errno : n != length ? -EIO : 0;
+	close(fd);
+	if (error)
+		return error;
+	int actual;
+	error = z1_backlight_read(Z1_BACKLIGHT_PATH, &actual);
+	return error ? error : actual != value ? -EIO : 0;
+}
+
 static int32_t z1_set_power_mode(hwc2_device_t *d, hwc2_display_t display,
 				 int32_t mode)
 {
 	z1_hwc2 *h = H(d);
+	int current = 0, error = 0;
 
-	(void)display;
-	klogf(1, "z1hwc2: setPowerMode %d -> %s\n", mode,
-	      mode == HWC2_POWER_MODE_ON ? "ON" : "OFF/DOZE");
-	h->powered_on = (mode == HWC2_POWER_MODE_ON);
-	/* Route B keeps the DSI streaming; blanking would leave the panel
-	 * frozen with the last frame.  Presenting is skipped while off. */
+	if (display != 0)
+		return HWC2_ERROR_BAD_DISPLAY;
+	if (mode == HWC2_POWER_MODE_DOZE || mode == HWC2_POWER_MODE_DOZE_SUSPEND)
+		return HWC2_ERROR_UNSUPPORTED;
+	if (mode != HWC2_POWER_MODE_ON && mode != HWC2_POWER_MODE_OFF)
+		return HWC2_ERROR_BAD_PARAMETER;
+
+	/* Route B must retain LK's DSI state. Stopping presents alone leaves the
+	 * last frame illuminated: blank the MT6323 ISINK instead of modesetting.
+	 * The light HAL shares brightness, so preserve its newer nonzero value
+	 * on wake. A concurrent positive write after OFF still needs coordination
+	 * in that HAL; this callback cannot provide a separate hardware blank gate.
+	 */
+	if (mode == HWC2_POWER_MODE_OFF) {
+		if (!h->backlight_blank_applied) {
+			if (!z1_backlight_read(Z1_BACKLIGHT_PATH, &current) && current > 0)
+				h->backlight_saved = current;
+			/* The light HAL may already have requested zero before OFF. */
+			if (h->backlight_saved <= 0) {
+				error = z1_backlight_read(Z1_BACKLIGHT_MAX_PATH, &current);
+				if (!error && current > 0)
+					h->backlight_saved = current;
+				else if (!error)
+					error = -EINVAL;
+			}
+		}
+		if (!error)
+			error = z1_backlight_write(0);
+		if (!error)
+			h->backlight_blank_applied = true;
+	} else if (h->backlight_blank_applied) {
+		/* Do not replace a newer brightness chosen by the framework. */
+		if (z1_backlight_read(Z1_BACKLIGHT_PATH, &current) || current == 0)
+			error = z1_backlight_write(h->backlight_saved);
+		if (!error)
+			h->backlight_blank_applied = false;
+	}
+	if (error) {
+		klogf(0, "z1hwc2: setPowerMode %d backlight failed: %s\n",
+		      mode, strerror(-error));
+		return HWC2_ERROR_NO_RESOURCES;
+	}
+	h->powered_on = mode == HWC2_POWER_MODE_ON;
+	klogf(1, "z1hwc2: setPowerMode %d -> %s (backlight saved=%d)\n", mode,
+	      h->powered_on ? "ON" : "OFF", h->backlight_saved);
 	return HWC2_ERROR_NONE;
 }
 
@@ -2815,6 +2910,8 @@ static int z1_open(const hw_module_t *module, const char *name,
 	h->client_copy_slot = 0;
 	h->next_layer_id = 1;
 	h->powered_on = true;
+	/* Cache the initial level in case the light HAL clears it before OFF. */
+	(void)z1_backlight_read(Z1_BACKLIGHT_PATH, &h->backlight_saved);
 	h->mode_force_client = 0;
 
 	h->common.tag = HARDWARE_DEVICE_TAG;
