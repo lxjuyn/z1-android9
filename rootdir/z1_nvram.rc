@@ -1,5 +1,6 @@
-# Factory MTK NVRAM daemon. It restores the device-local cache below
-# /data/nvram and publishes nvram_init=Ready after NVM_Init().
+# Factory MTK NVRAM daemon, registered for dependency diagnostics only.
+# Starting it can create or reset calibration files below /data/nvram.
+# Keep disabled: no automatic start and no calibration-ready property mapping.
 service nvram_daemon /system/bin/nvram_daemon
     class main
     user nvram
@@ -7,11 +8,3 @@ service nvram_daemon /system/bin/nvram_daemon
     oneshot
     disabled
     seclabel u:r:init:s0
-
-on post-fs-data
-    mkdir /data/nvram 2770 root nvram
-    setprop sys.z1.nvram.ready 0
-    start nvram_daemon
-
-on property:nvram_init=Ready
-    setprop sys.z1.nvram.ready 1
