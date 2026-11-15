@@ -24,8 +24,10 @@ CC=${CROSS_COMPILE_CC:-arm-linux-gnueabihf-gcc}
 QEMU=${QEMU_ARM:-qemu-arm}
 SYSROOT=${Z1_TEST_SYSROOT:-/usr/arm-linux-gnueabihf}
 PARENT=${Z1_AUDIO_PRODUCTS_DIR:-$WORKSPACE/bridge_backups/products}
-for tool in "$CC" "$QEMU" timeout readelf sha256sum; do command -v "$tool" >/dev/null; done
+for tool in "$CC" "$QEMU" timeout readelf sha256sum python3; do command -v "$tool" >/dev/null; done
 [[ -f "$SRC" && -d "$PARENT" && -d "$SYSROOT" ]] || { echo "Missing source, archive parent or sysroot" >&2; exit 2; }
+POLICY="$HERE/../../stock/primary_audio_policy_configuration.xml"
+[[ -f "$POLICY" ]] || { echo "Missing primary audio policy" >&2; exit 2; }
 PARENT=$(realpath "$PARENT")
 case "$PARENT/" in "$HERE/"*) echo "Output must be outside tracked audio directory" >&2; exit 2 ;; esac
 OUT=$(mktemp -d "$PARENT/products_audio_hal_$(date +%Y%m%d_%H%M%S)_XXXXXX")
@@ -35,6 +37,7 @@ set -x
 sha256sum "$HERE/libaudio.primary.z1.so" "$HERE/poc_r5g.o" > "$OUT/tracked-binaries.before.sha256"
 trap 'sha256sum -c "$OUT/tracked-binaries.before.sha256"' EXIT
 cp -p "$SRC" "$OUT/audio_primary_z1_poc.c"
+cp -p "$POLICY" "$OUT/primary_audio_policy_configuration.xml"
 cp -a "$HERE/inc" "$OUT/inc"
 cp -a "$HERE/tests" "$OUT/tests"
 "$CC" --version
@@ -46,14 +49,34 @@ cp -a "$HERE/tests" "$OUT/tests"
     "$OUT/tests/hal_contract_test.c" "$OUT/audio_primary_z1_poc.c" \
     -o "$OUT/hal_contract_test"
 failed=0
-for name in retry-null retry-unready retry-long lifecycle volume write-error; do
+if Z1_AUDIO_POLICY="$OUT/primary_audio_policy_configuration.xml" \
+    python3 -B "$OUT/tests/test_capability_policy.py"; then
+    :
+else
+    failed=$((failed + 1))
+fi
+cases=(
+    retry-null
+    retry-unready
+    retry-long
+    lifecycle
+    volume
+    write-error
+    position
+    output-config
+    stream-contract
+    input-contract
+    module-identity
+)
+for name in "${cases[@]}"; do
     if timeout 20 "$QEMU" -L "$SYSROOT" "$OUT/hal_contract_test" "$name"; then
         :
     else
         failed=$((failed + 1))
     fi
 done
-printf 'SUITE: %d/6 passed\n' "$((6 - failed))"
+total=$((${#cases[@]} + 1))
+printf 'SUITE: %d/%d passed\n' "$((total - failed))" "$total"
 if ((failed)); then exit 1; fi
 if [[ -n "$LIBDIR" ]]; then
     mkdir "$OUT/linklibs"

@@ -77,6 +77,20 @@ int pcm_write(struct pcm *pcm, const void *data, unsigned int count)
         memcpy(last_data, data, count);
     return 0;
 }
+unsigned int pcm_get_buffer_size(struct pcm *pcm)
+{
+    CHECK(pcm == &mock_pcm && pcm->ready, "buffer size from ready PCM");
+    return 4096;
+}
+int pcm_get_htimestamp(struct pcm *pcm, unsigned int *avail,
+                       struct timespec *timestamp)
+{
+    CHECK(pcm == &mock_pcm && pcm->ready, "timestamp from ready PCM");
+    *avail = 0;
+    timestamp->tv_sec = 1;
+    timestamp->tv_nsec = 2;
+    return 0;
+}
 int __android_log_print(int priority, const char *tag, const char *format, ...)
 {
     (void)tag;
@@ -110,6 +124,24 @@ static struct audio_stream_out *open_stream(struct audio_hw_device *dev)
     CHECK(config.sample_rate == 48000 && config.channel_mask == AUDIO_CHANNEL_OUT_STEREO
           && config.format == AUDIO_FORMAT_PCM_16_BIT, "stereo 48k PCM16 preserved");
     return out;
+}
+
+static int open_config(struct audio_hw_device *dev, audio_devices_t device,
+                       uint32_t rate, audio_channel_mask_t channels,
+                       audio_format_t format, struct audio_config *result,
+                       struct audio_stream_out **out)
+{
+    struct audio_config config = {
+        .sample_rate = rate,
+        .channel_mask = channels,
+        .format = format
+    };
+    *out = NULL;
+    int rc = dev->open_output_stream(dev, 0, device, AUDIO_OUTPUT_FLAG_PRIMARY,
+                                     &config, out, NULL);
+    if (result)
+        *result = config;
+    return rc;
 }
 
 static ssize_t write_audio(struct audio_stream_out *out)
@@ -218,6 +250,151 @@ static void write_error_case(struct audio_stream_out *out)
     printf("write error: final submitted frames=%u (mock only)\n", frames);
 }
 
+static void position_contract_case(struct audio_stream_out *out)
+{
+    uint32_t render_frames = 99;
+    uint64_t presented_frames = 99;
+    struct timespec timestamp = { .tv_sec = 99, .tv_nsec = 99 };
+
+    CHECK(out->get_render_position(out, &render_frames) == -ENOSYS &&
+          render_frames == 0,
+          "render position is unsupported before any PCM write");
+    CHECK(out->get_presentation_position(out, &presented_frames, &timestamp) == -ENOSYS &&
+          presented_frames == 0 && timestamp.tv_sec == 0 && timestamp.tv_nsec == 0,
+          "presentation position is unsupported before any PCM write");
+
+    device_ready = 1;
+    CHECK(write_audio(out) == (ssize_t)sizeof(samples), "position test submits audio");
+    render_frames = 99;
+    presented_frames = 99;
+    timestamp.tv_sec = 99;
+    timestamp.tv_nsec = 99;
+    CHECK(out->get_render_position(out, &render_frames) == -ENOSYS &&
+          render_frames == 0,
+          "successful write is not misreported as DAC render position");
+    CHECK(out->get_presentation_position(out, &presented_frames, &timestamp) == -ENOSYS &&
+          presented_frames == 0 && timestamp.tv_sec == 0 && timestamp.tv_nsec == 0,
+          "successful write does not fabricate a DAC timestamp");
+    printf("position contract: render and presentation remain unsupported\n");
+}
+
+static void output_config_case(struct audio_hw_device *dev)
+{
+    const audio_devices_t supported[] = {
+        AUDIO_DEVICE_OUT_SPEAKER,
+        AUDIO_DEVICE_OUT_EARPIECE,
+        AUDIO_DEVICE_OUT_WIRED_HEADSET,
+        AUDIO_DEVICE_OUT_WIRED_HEADPHONE,
+    };
+    struct audio_stream_out *extra = NULL;
+    struct audio_config actual;
+
+    for (unsigned int i = 0; i < sizeof(supported) / sizeof(supported[0]); i++) {
+        int rc = open_config(dev, supported[i], 48000, AUDIO_CHANNEL_OUT_STEREO,
+                             AUDIO_FORMAT_PCM_16_BIT, &actual, &extra);
+        CHECK(rc == 0 && extra != NULL, "policy-listed output device opens");
+        CHECK(actual.sample_rate == 48000 &&
+              actual.channel_mask == AUDIO_CHANNEL_OUT_STEREO &&
+              actual.format == AUDIO_FORMAT_PCM_16_BIT,
+              "supported 48k stereo PCM16 config is preserved");
+        if (extra)
+            dev->close_output_stream(dev, extra);
+    }
+    CHECK(open_calls == 0, "opening streams remains lazy");
+
+    int rc = open_config(dev, AUDIO_DEVICE_OUT_SPEAKER, 44100,
+                         AUDIO_CHANNEL_OUT_STEREO, AUDIO_FORMAT_PCM_FLOAT,
+                         &actual, &extra);
+    CHECK(rc == 0 && extra != NULL, "unsupported request is negotiated");
+    CHECK(actual.sample_rate == 48000 &&
+          actual.channel_mask == AUDIO_CHANNEL_OUT_STEREO &&
+          actual.format == AUDIO_FORMAT_PCM_16_BIT,
+          "stereo negotiation selects 48k PCM16");
+    if (extra)
+        dev->close_output_stream(dev, extra);
+
+    rc = open_config(dev, AUDIO_DEVICE_OUT_SPEAKER, 16000,
+                     AUDIO_CHANNEL_OUT_MONO, AUDIO_FORMAT_PCM_16_BIT,
+                     &actual, &extra);
+    CHECK(rc == 0 && extra != NULL, "mono output stream opens");
+    CHECK(actual.sample_rate == 48000 &&
+          actual.channel_mask == AUDIO_CHANNEL_OUT_MONO &&
+          actual.format == AUDIO_FORMAT_PCM_16_BIT,
+          "mono negotiation keeps one channel at 48k PCM16");
+    if (extra)
+        CHECK(extra->common.get_buffer_size(&extra->common) == 2048,
+              "mono stream buffer is one 1024-frame PCM16 period");
+    if (extra)
+        dev->close_output_stream(dev, extra);
+    printf("output config: policy devices and PCM16 negotiation checked\n");
+}
+
+static void stream_contract_case(struct audio_stream_out *out)
+{
+    CHECK(out->common.get_sample_rate(&out->common) == 48000,
+          "stream reports the supported rate");
+    CHECK(out->common.get_channels(&out->common) == AUDIO_CHANNEL_OUT_STEREO,
+          "stream reports stereo");
+    CHECK(out->common.get_format(&out->common) == AUDIO_FORMAT_PCM_16_BIT,
+          "stream reports PCM16");
+    CHECK(out->common.get_buffer_size(&out->common) == 4096,
+          "stereo stream buffer is four 1024-frame periods");
+
+    CHECK(out->common.set_sample_rate(&out->common, 44100) == 0,
+          "unsupported rate request is accepted for negotiation");
+    CHECK(out->common.get_sample_rate(&out->common) == 48000,
+          "rate negotiation remains at 48k");
+    CHECK(out->common.set_format(&out->common, AUDIO_FORMAT_PCM_FLOAT) == -EINVAL,
+          "unsupported stream format is rejected");
+    CHECK(out->common.get_format(&out->common) == AUDIO_FORMAT_PCM_16_BIT,
+          "failed format change preserves PCM16");
+    CHECK(open_calls == 0, "stream getters and negotiation do not open PCM");
+    printf("stream contract: 48k stereo PCM16, lazy PCM access\n");
+}
+
+static void input_contract_case(struct audio_hw_device *dev)
+{
+    struct audio_config config = {
+        .sample_rate = 16000,
+        .channel_mask = AUDIO_CHANNEL_IN_MONO,
+        .format = AUDIO_FORMAT_PCM_16_BIT
+    };
+    struct audio_stream_in *input = (struct audio_stream_in *)1;
+
+    CHECK(dev->get_input_buffer_size(dev, &config) == 0,
+          "capture buffer size is zero while capture is unsupported");
+    int rc = dev->open_input_stream(dev, 0, AUDIO_DEVICE_IN_BUILTIN_MIC, &config,
+                                    &input, AUDIO_INPUT_FLAG_NONE, NULL,
+                                    AUDIO_SOURCE_MIC);
+    CHECK(rc == -ENOSYS && input == NULL,
+          "capture open fails cleanly and clears the output pointer");
+    printf("input contract: capture explicitly unsupported\n");
+}
+
+static void module_identity_case(struct audio_hw_device *dev)
+{
+    CHECK(HAL_MODULE_INFO_SYM.common.tag == HARDWARE_MODULE_TAG,
+          "module has the libhardware tag");
+    CHECK(HAL_MODULE_INFO_SYM.common.module_api_version ==
+          AUDIO_MODULE_API_VERSION_0_1 &&
+          HAL_MODULE_INFO_SYM.common.hal_api_version == HARDWARE_HAL_API_VERSION,
+          "module API versions match the legacy wrapper");
+    CHECK(strcmp(HAL_MODULE_INFO_SYM.common.id, AUDIO_HARDWARE_MODULE_ID) == 0,
+          "module id is the libhardware lookup value");
+    CHECK(dev->common.tag == HARDWARE_DEVICE_TAG &&
+          dev->common.version == AUDIO_DEVICE_API_VERSION_2_0 &&
+          dev->common.module == &HAL_MODULE_INFO_SYM.common,
+          "opened device carries the A9 v2.0 identity");
+    CHECK(dev->get_supported_devices == NULL &&
+          dev->get_microphones == NULL,
+          "device enumeration remains owned by the policy");
+    CHECK(dev->set_master_mute == NULL && dev->get_master_mute == NULL &&
+          dev->create_audio_patch == NULL && dev->release_audio_patch == NULL &&
+          dev->get_audio_port == NULL && dev->set_audio_port_config == NULL,
+          "unsupported extension hooks are not advertised");
+    printf("module identity: A9 legacy wrapper and policy-owned devices\n");
+}
+
 int main(int argc, char **argv)
 {
     if (argc != 2)
@@ -240,6 +417,11 @@ int main(int argc, char **argv)
     else if (strcmp(argv[1], "lifecycle") == 0) lifecycle_case(out);
     else if (strcmp(argv[1], "volume") == 0) volume_case(dev, out);
     else if (strcmp(argv[1], "write-error") == 0) write_error_case(out);
+    else if (strcmp(argv[1], "position") == 0) position_contract_case(out);
+    else if (strcmp(argv[1], "output-config") == 0) output_config_case(dev);
+    else if (strcmp(argv[1], "stream-contract") == 0) stream_contract_case(out);
+    else if (strcmp(argv[1], "input-contract") == 0) input_contract_case(dev);
+    else if (strcmp(argv[1], "module-identity") == 0) module_identity_case(dev);
     else { fprintf(stderr, "Unknown case: %s\n", argv[1]); failures++; }
     dev->close_output_stream(dev, out);
     dev->common.close(hw);
