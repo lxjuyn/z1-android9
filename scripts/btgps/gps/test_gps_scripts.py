@@ -115,10 +115,27 @@ def mock(command, args):
         print(state.get('uid', 0))
     elif command == 'mount':
         assert len(args) == 3 and args[0] == '-o'
-        assert path(args[2]) == root / 'system'
+        mount_target = path(args[2])
+        assert mount_target == root / 'system'
         assert args[1] in ('remount,rw', 'remount,ro')
-        if args[1] == 'remount,ro' and state.get('fail_ro_mount'):
+        if (args[1] == 'remount,rw' and state.get('fail_rw_mount')) or \
+                (args[1] == 'remount,ro' and state.get('fail_ro_mount')):
             return 1
+        if args[1] == 'remount,ro' and state.get('fail_ro_mount_once'):
+            state['fail_ro_mount_once'] = False
+            save()
+            return 1
+        mount_file = root / 'proc/mounts'
+        mode = args[1].split(',')[1]
+        lines = []
+        for line in mount_file.read_text().splitlines():
+            fields = line.split()
+            if len(fields) >= 4 and fields[1] == str(mount_target):
+                flags = [flag for flag in fields[3].split(',') if flag not in ('ro', 'rw')]
+                fields[3] = ','.join([mode, *flags])
+                line = ' '.join(fields)
+            lines.append(line)
+        mount_file.write_text('\n'.join(lines) + '\n')
     elif command == 'sleep':
         assert args == ['1']
         if state.get('service_started') and state.get('props', {}).get('init.svc.mnld') == 'running':
@@ -151,6 +168,9 @@ class Fixture:
         initial = {'props': {'init.svc.mnld': 'stopped'}}
         initial.update(state or {})
         self.set_state(initial)
+        mode = initial.get('mount_mode', 'ro')
+        (self.root / 'proc/mounts').write_text(
+            f'rootfs {self.root}/system ext4 {mode},relatime 0 0\n')
         (self.root / 'proc/devices').write_text('Character devices:\n\nBlock devices:\n')
         for f in ('vendor/bin/mnld', 'system/xbin/libmnlp_mt6572'):
             p = self.root / f
@@ -185,6 +205,11 @@ class Fixture:
         state = json.loads((self.root / 'state.json').read_text())
         state.update(kwargs)
         self.set_state(state)
+
+    def set_system_mounts(self, entries):
+        (self.root / 'proc/mounts').write_text(''.join(
+            f'rootfs {self.root}/system ext4 {mode},relatime 0 0\n'
+            for mode in entries))
 
     def run(self, name='prep.sh', *args):
         result = subprocess.run(self.shell + [str(self.root / 'package' / name), *args],
@@ -438,7 +463,7 @@ class GPSRegression(unittest.TestCase):
                 lambda f: f.patch_state(props={'init.svc.z1_mnld': 'running'}), ())),
             ('remount failure', case(
                 lambda f: f.patch_state(fail=['mount']),
-                ('remount,rw', 'remount,ro'))),
+                ('remount,rw',))),
             ('copy failure', case(
                 lambda f: f.patch_state(fail=['cp']),
                 ('remount,rw', 'remount,ro'))),
@@ -466,19 +491,48 @@ class GPSRegression(unittest.TestCase):
             self.assertIn('no satellite or location verification', message)
         self.each([('installer complete', check)])
 
+    def test_installer_preserves_initially_rw_system(self):
+        def check(f):
+            f.patch_state(mount_mode='rw')
+            f.root.joinpath('proc/mounts').write_text(
+                f'rootfs {f.root}/system ext4 rw,relatime 0 0\n')
+            self.success(f, 'install_gps.sh', 'A')
+            self.assertEqual(f.calls('mount'), [])
+        self.each([('initial rw', check)])
+
+    def test_installer_rejects_duplicate_system_mounts(self):
+        def check(f):
+            f.set_system_mounts(('ro', 'ro'))
+            self.failure(f, 'install_gps.sh', 'A')
+            self.assertEqual(f.calls('mount'), [])
+        self.each([('duplicate mounts', check)])
+
     def test_installer_fails_if_system_cannot_be_restored_read_only(self):
         def check(f):
             f.patch_state(fail_ro_mount=True)
             result = f.run('install_gps.sh', 'A')
             self.assertNotEqual(result.returncode, 0)
-            self.assertEqual(f.calls('start'), [['mnld']])
+            self.assertEqual(f.calls('start'), [])
             self.assertEqual(
                 f.calls('mount'),
                 [['-o', 'remount,rw', str(f.root / 'system')],
+                 ['-o', 'remount,ro', str(f.root / 'system')],
                  ['-o', 'remount,ro', str(f.root / 'system')]])
             self.assertIn(f"cannot restore {f.root / 'system'} read-only",
                           (f.root / 'dev/kmsg').read_text())
         self.each([('read-only restore failure', check)])
+
+    def test_installer_retries_restore_in_exit_cleanup(self):
+        def check(f):
+            f.patch_state(fail_ro_mount_once=True)
+            result = f.run('install_gps.sh', 'A')
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(
+                f.calls('mount'),
+                [['-o', 'remount,rw', str(f.root / 'system')],
+                 ['-o', 'remount,ro', str(f.root / 'system')],
+                 ['-o', 'remount,ro', str(f.root / 'system')]])
+        self.each([('transient restore failure', check)])
 
     def test_route_b_patch_never_reads_or_writes_blobs(self):
         with tempfile.TemporaryDirectory() as d:
