@@ -8,6 +8,9 @@
 #include <cstdio>
 #include <cstring>
 #include <exception>
+#include <fcntl.h>
+#include <sys/ioctl.h>
+#include <linux/sync_file.h>
 #include <map>
 #include <poll.h>
 #include <pthread.h>
@@ -39,9 +42,16 @@ static std::vector<int> timeouts, polled_fds, closed_fds;
 static size_t step_index;
 static int64_t clock_ns;
 static int clock_error;
+static int sync_status, sync_error, sync_interruptions, sync_queries;
 static bool real_syscalls;
 static int allocations, commits, imports, copies, small_copies, plane_calls;
-static int timeline_calls, fence_calls, removed_fbs, import_result, copy_result;
+static int removed_fbs, import_result, copy_result, small_result;
+static int reserve_failure, dup_failure, dup_interruptions, next_fd, dup_calls;
+static int commit_failures, no_commit_fence, program_failure, add_failure;
+static int32_t *out_fence_ptr;
+static std::vector<int> copied_slots, small_slots;
+static std::vector<uint32_t> closed_gems, commit_flags;
+static std::vector<std::pair<uint32_t, hwc_frect_t>> programmed;
 static bool zero_fb;
 static int g_verbose;
 static drmModeAtomicReq request;
@@ -70,42 +80,70 @@ static int mock_poll(pollfd *pfd, nfds_t n, int timeout) {
 static int mock_close(int fd) { closed_fds.push_back(fd); return 0; }
 static z1_hwc2 *H(hwc2_device_t *d) { return static_cast<z1_hwc2 *>(d); }
 static void klogf(int, const char *, ...) {}
-static const char *hal_fmt_name(int) { return "mock"; }
-static void fb_forget(z1_hwc2 *, z1_fb *fb) { *fb = {}; }
-static int fb_import(z1_hwc2 *, buffer_handle_t handle, z1_fb *fb) {
-    ++imports;
-    if (import_result) return import_result;
-    fb->handle = handle;
-    fb->src_fd = static_cast<const z1_handle *>(handle)->fd;
-    fb->fb_id = zero_fb ? 0 : 31;
-    return 0;
-}
-static int copy_into_dumb(z1_hwc2 *, z1_dumb *d, buffer_handle_t) {
+static int copy_into_dumb(z1_hwc2 *h, z1_dumb *d, buffer_handle_t) {
     ++copies;
-    d->fb_id = zero_fb ? 0 : 32;
+    copied_slots.push_back(h->client_copy_slot);
+    d->fb_id = zero_fb ? 0 : 32 + h->client_copy_slot;
     return copy_result;
 }
-static int small_layer_sync(z1_hwc2 *, z1_layer *l) {
+static int layer_copy_sync(z1_hwc2 *, z1_layer *l) {
     ++small_copies;
-    l->small.fb_id = 33;
-    return 0;
+    small_slots.push_back(l->copy_slot);
+    l->staging[l->copy_slot].fb_id = 33 + l->copy_slot;
+    return small_result;
 }
 static drmModeAtomicReq *drmModeAtomicAlloc() { ++allocations; return &request; }
 static void drmModeAtomicFree(drmModeAtomicReq *) {}
-static int drmModeAtomicCommit(int, drmModeAtomicReq *, uint32_t, void *) { ++commits; return 0; }
+static int drmModeAtomicCommit(int, drmModeAtomicReq *, uint32_t flags, void *) {
+    ++commits; commit_flags.push_back(flags);
+    if (commit_failures > 0) { --commit_failures; errno = EINVAL; return -1; }
+    CHECK(out_fence_ptr != nullptr);
+    *out_fence_ptr = no_commit_fence ? -1 : 90 + commits;
+    return 0;
+}
 static int drmModeDestroyPropertyBlob(int, uint32_t) { return 0; }
 static int drmModeCreatePropertyBlob(int, const void *, size_t, uint32_t *b) { *b = 1; return 0; }
-static bool add_prop(drmModeAtomicReq *, const char *, uint32_t, uint32_t, uint64_t) { return true; }
-static void program_plane(z1_hwc2 *, drmModeAtomicReq *, int, uint32_t, int, int,
-                          int, int, const hwc_frect_t *, float, int32_t, bool) { ++plane_calls; }
+static bool add_prop(drmModeAtomicReq *, const char *name, uint32_t, uint32_t, uint64_t val) {
+    if (add_failure) return false;
+    if (!strcmp(name, "OUT_FENCE_PTR")) out_fence_ptr = reinterpret_cast<int32_t *>(val);
+    return true;
+}
+static bool program_plane(z1_hwc2 *, drmModeAtomicReq *, int, uint32_t fb, int, int,
+                          int, int, const hwc_frect_t *crop, float, int32_t, bool) {
+    ++plane_calls;
+    programmed.push_back({fb, crop ? *crop : hwc_frect_t{}});
+    return !program_failure;
+}
 static int drmModeRmFB(int, uint32_t) { ++removed_fbs; return 0; }
-static int drmCloseBufferHandle(int, uint32_t) { return 0; }
-static int sw_timeline_inc(int, uint32_t) { ++timeline_calls; return 0; }
-static int sw_fence_create(int, const char *, uint32_t) { ++fence_calls; return 99; }
+static int drmCloseBufferHandle(int, uint32_t gem) { closed_gems.push_back(gem); return 0; }
+static int mock_fcntl(int, int command, int) {
+    CHECK(command == F_DUPFD_CLOEXEC);
+    if (reserve_failure) { errno = EMFILE; return -1; }
+    return next_fd++;
+}
+static int mock_dup3(int, int dest, int flags) {
+    CHECK(flags == O_CLOEXEC); ++dup_calls;
+    if (dup_interruptions) { --dup_interruptions; errno = EINTR; return -1; }
+    if (dup_failure) { errno = EIO; return -1; }
+    return dest;
+}
+static int mock_ioctl(int fd, unsigned long command, sync_file_info *info) {
+    if (real_syscalls) return ::ioctl(fd, command, info);
+    CHECK(command == SYNC_IOC_FILE_INFO); ++sync_queries;
+    if (sync_interruptions) { --sync_interruptions; errno = EINTR; return -1; }
+    if (sync_error) { errno = sync_error; return -1; }
+    info->status = sync_status; return 0;
+}
+#define ioctl mock_ioctl
+#define fcntl mock_fcntl
+#define dup3 mock_dup3
 #define poll mock_poll
 #define clock_gettime mock_clock_gettime
 #define close mock_close
 /* PRODUCTION_FUNCTIONS */
+#undef ioctl
+#undef fcntl
+#undef dup3
 #undef close
 #undef clock_gettime
 #undef poll
@@ -113,9 +151,14 @@ static int sw_fence_create(int, const char *, uint32_t) { ++fence_calls; return 
 static void reset() {
     steps.clear(); timeouts.clear(); polled_fds.clear(); closed_fds.clear();
     step_index = 0; clock_ns = 1000000000; clock_error = 0; real_syscalls = false;
+    sync_status = 1; sync_error = sync_interruptions = sync_queries = 0;
     allocations = commits = imports = copies = small_copies = plane_calls = 0;
-    timeline_calls = fence_calls = removed_fbs = 0;
-    import_result = copy_result = 0; zero_fb = false; g_verbose = 0;
+    removed_fbs = 0;
+    import_result = copy_result = small_result = 0; zero_fb = false; g_verbose = 0;
+    reserve_failure = dup_failure = dup_interruptions = dup_calls = 0; next_fd = 200;
+    commit_failures = no_commit_fence = program_failure = add_failure = 0;
+    out_fence_ptr = nullptr; copied_slots.clear(); small_slots.clear();
+    closed_gems.clear(); commit_flags.clear(); programmed.clear();
 }
 static z1_handle handle = {0, 1, 12, 81, Z1_HANDLE_MAGIC, 0, 4096, 0,
                            0, 0, 32, 32, 32, 1, 0};
@@ -123,25 +166,23 @@ static z1_hwc2 display() {
     z1_hwc2 h{};
     h.powered_on = true; h.validated = true; h.modeset_done = true;
     h.plane_count = 4; h.width = 240; h.height = 320;
-    h.client_acquire_fence = -1; h.present_tl = -1;
-    h.last_present_ms = 17; h.timeline_val = 8; h.present_val = 9;
-    h.fences_pending = true; h.present_pending = true;
+    h.client_acquire_fence = -1; h.commit_fence = -1; h.crtc_out_fence_prop = 44;
+    h.last_present_ms = 17;
     h.pending_release.push_back({71, 72});
     return h;
 }
-static void layer(z1_hwc2 &h, int id, int fd, bool small = true) {
+static void layer(z1_hwc2 &h, int id, int fd, bool staging = true) {
     z1_layer l{};
     l.id = id; l.z = id; l.composition = HWC2_COMPOSITION_DEVICE;
-    l.acquire_fence = fd; l.release_fence = -1; l.use_small = small;
+    l.acquire_fence = fd; l.release_fence = -1; (void)staging;
     l.handle = &handle; l.frame = {0, 0, 32, 32}; l.alpha = 1;
     h.layers[id] = l;
 }
 static void no_present_side_effects(const z1_hwc2 &h, int fence) {
     CHECK(fence == -1); CHECK(commits == 0); CHECK(allocations == 0);
     CHECK(small_copies == 0); CHECK(plane_calls == 0);
-    CHECK(timeline_calls == 0); CHECK(fence_calls == 0); CHECK(removed_fbs == 0);
-    CHECK(h.timeline_val == 8); CHECK(h.present_val == 9);
-    CHECK(h.fences_pending); CHECK(h.present_pending);
+    CHECK(removed_fbs == 0); CHECK(dup_calls == 0);
+    CHECK(h.commit_fence == -1);
     CHECK(h.pending_release.size() == 1); CHECK(h.last_present_ms == 17);
     CHECK(h.validated);
 }
@@ -266,13 +307,13 @@ static void present_unusable_required_client() {
     layer(h, 1, -1); import_result = -EINVAL; copy_result = -ENOMEM;
     int32_t fence = 999;
     CHECK(z1_present_display(&h, 0, &fence) == HWC2_ERROR_NO_RESOURCES);
-    no_present_side_effects(h, fence); CHECK(imports == 1); CHECK(copies == 1);
+    no_present_side_effects(h, fence); CHECK(imports == 0); CHECK(copies == 1);
 }
 static void present_zero_required_fb() {
     auto h = display(); h.client_expected = true; h.client_target = &handle; zero_fb = true;
     int32_t fence = 999;
     CHECK(z1_present_display(&h, 0, &fence) == HWC2_ERROR_NO_RESOURCES);
-    no_present_side_effects(h, fence); CHECK(imports == 1);
+    no_present_side_effects(h, fence); CHECK(imports == 0);
 }
 static void present_success_after_retry() {
     auto h = display(); layer(h, 1, 10);
@@ -285,9 +326,10 @@ static void present_success_after_retry() {
     step_index = 0;
     CHECK(z1_present_display(&h, 0, &fence) == HWC2_ERROR_NONE);
     CHECK(commits == 1); CHECK(allocations == 1); CHECK(small_copies == 1);
-    CHECK(imports == 1); CHECK(closed_fds == (std::vector<int>{10, 12}));
+    CHECK(imports == 0); CHECK(closed_fds == (std::vector<int>{10, 12}));
     CHECK(h.layers[1].acquire_fence == -1); CHECK(h.client_acquire_fence == -1);
-    CHECK(fence == -1); CHECK(h.pending_release.empty()); CHECK(removed_fbs == 1);
+    CHECK(fence == 91); CHECK(h.pending_release.empty()); CHECK(removed_fbs == 0);
+    CHECK(h.submitted_release.size() == 1); CHECK(h.commit_fence == 200);
 }
 static void present_client_retry() {
     auto h = display(); h.client_expected = true; h.client_target = &handle;
@@ -303,14 +345,14 @@ static void present_unused_client() {
     h.client_expected = false; h.client_target = &handle; h.client_acquire_fence = 12;
     int32_t fence = 999;
     CHECK(z1_present_display(&h, 0, &fence) == HWC2_ERROR_NONE);
-    CHECK(commits == 1); CHECK(timeouts.empty()); CHECK(closed_fds.empty());
+    CHECK(commits == 1); CHECK(timeouts == std::vector<int>{0}); CHECK(closed_fds.empty());
     CHECK(h.client_acquire_fence == 12); CHECK(copies == 0);
 }
 static void present_client_copy_success() {
     auto h = display(); h.client_expected = true; h.client_target = &handle;
     import_result = -EINVAL; int32_t fence = 999;
     CHECK(z1_present_display(&h, 0, &fence) == HWC2_ERROR_NONE);
-    CHECK(commits == 1); CHECK(imports == 1); CHECK(copies == 1);
+    CHECK(commits == 1); CHECK(imports == 0); CHECK(copies == 1);
 }
 static void present_bad_display() {
     auto h = display(); int32_t fence = 999;
@@ -323,12 +365,132 @@ static void present_power_off() {
     CHECK(fence == -1); CHECK(commits == 0); CHECK(timeouts.empty());
     CHECK(h.layers[1].acquire_fence == 10);
 }
+static void completion_retires_only_submitted() {
+    auto h = display(); h.submitted_release.push_back({73, 74}); h.commit_fence = 91;
+    CHECK(!complete_commit(&h, 0)); CHECK(removed_fbs == 0);
+    CHECK(h.pending_release.size() == 1); CHECK(h.submitted_release.size() == 1);
+    steps = {{1, POLLIN, 0, 0}}; step_index = 0;
+    CHECK(complete_commit(&h, 0)); CHECK(removed_fbs == 1);
+    CHECK(closed_gems == std::vector<uint32_t>{74}); CHECK(h.pending_release.size() == 1);
+    CHECK(h.submitted_release.empty()); CHECK(h.commit_fence == -1);
+}
+static void previous_commit_timeout_preserves_slots() {
+    auto h = display(); layer(h, 1, -1); h.commit_fence = 91;
+    h.submitted_release.push_back({73, 74}); int32_t f = 8;
+    CHECK(z1_present_display(&h, 0, &f) == HWC2_ERROR_NO_RESOURCES);
+    CHECK(commits == 0); CHECK(copies == 0); CHECK(small_copies == 0);
+    CHECK(h.layers[1].copy_slot == 0); CHECK(h.commit_fence == 91);
+    CHECK(removed_fbs == 0); CHECK(f == -1); CHECK(!h.commit_broken);
+}
+static void previous_commit_error_fails_closed() {
+    auto h = display(); layer(h, 1, -1); h.commit_fence = 91;
+    steps = {{1, POLLNVAL, 0, 0}}; int32_t f = 8;
+    CHECK(z1_present_display(&h, 0, &f) == HWC2_ERROR_NO_RESOURCES);
+    CHECK(h.commit_broken); CHECK(small_copies == 0); CHECK(commits == 0);
+}
+static void commit_failure_does_not_flip() {
+    auto h = display(); layer(h, 1, -1); h.client_expected = true; h.client_target = &handle;
+    commit_failures = 1; int32_t f = 8;
+    CHECK(z1_present_display(&h, 0, &f) == HWC2_ERROR_NO_RESOURCES);
+    CHECK(commits == 1); CHECK(h.layers[1].copy_slot == 0);
+    CHECK(h.client_copy_slot == 0); CHECK(h.pending_release.size() == 1);
+    CHECK(h.submitted_release.empty()); CHECK(removed_fbs == 0); CHECK(f == -1);
+    CHECK(closed_fds == std::vector<int>{200});
+}
+static void copied_frames_use_only_inactive_slot() {
+    auto h = display(); layer(h, 1, -1); h.client_expected = true; h.client_target = &handle;
+    int32_t f = 8;
+    CHECK(z1_present_display(&h, 0, &f) == HWC2_ERROR_NONE);
+    CHECK(h.layers[1].copy_slot == 1); CHECK(h.client_copy_slot == 1);
+    CHECK(z1_present_display(&h, 0, &f) == HWC2_ERROR_NO_RESOURCES);
+    CHECK(copies == 1); CHECK(small_copies == 1);
+    steps = {{1, POLLIN, 0, 0}}; step_index = 0;
+    CHECK(z1_present_display(&h, 0, &f) == HWC2_ERROR_NONE);
+    CHECK(copied_slots == (std::vector<int>{0, 1}));
+    CHECK(small_slots == (std::vector<int>{0, 1})); CHECK(imports == 0);
+    CHECK(h.layers[1].copy_slot == 0); CHECK(h.client_copy_slot == 0);
+}
+static void no_fence_freezes_private_copies() {
+    auto h = display(); layer(h, 1, -1); no_commit_fence = 1; int32_t f = 8;
+    CHECK(z1_present_display(&h, 0, &f) == HWC2_ERROR_NO_RESOURCES);
+    CHECK(h.commit_broken); CHECK(h.layers[1].copy_slot == 0);
+    CHECK(z1_present_display(&h, 0, &f) == HWC2_ERROR_NO_RESOURCES);
+    CHECK(small_copies == 1); CHECK(commits == 1); CHECK(imports == 0);
+}
+static void descriptor_reservation_failure_precedes_commit() {
+    auto h = display(); layer(h, 1, -1); reserve_failure = 1; int32_t f = 8;
+    CHECK(z1_present_display(&h, 0, &f) == HWC2_ERROR_NO_RESOURCES);
+    CHECK(commits == 0); CHECK(h.layers[1].copy_slot == 0);
+}
+static void interrupted_dup_retries() {
+    auto h = display(); layer(h, 1, -1); dup_interruptions = 2; int32_t f = 8;
+    CHECK(z1_present_display(&h, 0, &f) == HWC2_ERROR_NONE);
+    CHECK(dup_calls == 3); CHECK(f == 91); CHECK(!h.commit_broken);
+}
+static void failed_dup_freezes_private_copies() {
+    auto h = display(); layer(h, 1, -1); dup_failure = 1; int32_t f = 8;
+    CHECK(z1_present_display(&h, 0, &f) == HWC2_ERROR_NO_RESOURCES);
+    CHECK(h.commit_broken); CHECK(h.commit_fence == 91); CHECK(f == -1);
+    CHECK(z1_present_display(&h, 0, &f) == HWC2_ERROR_NO_RESOURCES);
+    CHECK(small_copies == 1); CHECK(commits == 1);
+}
+static void copy_failure_never_commits_partial_frame() {
+    auto h = display(); layer(h, 1, -1); small_result = -EIO; int32_t f = 8;
+    CHECK(z1_present_display(&h, 0, &f) == HWC2_ERROR_NO_RESOURCES);
+    CHECK(commits == 0); CHECK(h.layers[1].copy_slot == 0);
+}
+static void plane_failure_never_commits() {
+    auto h = display(); layer(h, 1, -1); program_failure = 1; int32_t f = 8;
+    CHECK(z1_present_display(&h, 0, &f) == HWC2_ERROR_NO_RESOURCES);
+    CHECK(commits == 0); CHECK(dup_calls == 0);
+}
+static void out_fence_property_failure_never_commits() {
+    auto h = display(); layer(h, 1, -1); add_failure = 1; int32_t f = 8;
+    CHECK(z1_present_display(&h, 0, &f) == HWC2_ERROR_NO_RESOURCES);
+    CHECK(commits == 0); CHECK(h.layers[1].copy_slot == 0);
+}
+static void fallback_preserves_prepared_small_crop() {
+    auto h = display(); layer(h, 1, -1); h.modeset_done = false;
+    commit_failures = 1; int32_t f = 8;
+    CHECK(z1_present_display(&h, 0, &f) == HWC2_ERROR_NONE);
+    CHECK(commits == 2); CHECK(commit_flags[1] == 0);
+    CHECK(programmed[0].first == 33); CHECK(programmed[4].first == 33);
+    CHECK(programmed[0].second.right == 32); CHECK(programmed[4].second.right == 32);
+}
+static void copies_release_sources_without_waiting_for_scanout() {
+    auto h = display(); layer(h, 1, -1); int32_t f = 8;
+    CHECK(z1_present_display(&h, 0, &f) == HWC2_ERROR_NONE);
+    uint32_t n = 0; CHECK(z1_get_release_fences(&h, 0, &n, nullptr, nullptr) == HWC2_ERROR_NONE);
+    CHECK(n == 1); hwc2_layer_t id = 0; int32_t release = 7;
+    CHECK(z1_get_release_fences(&h, 0, &n, &id, &release) == HWC2_ERROR_NONE);
+    CHECK(id == 1); CHECK(release == -1); CHECK(h.commit_fence == 200);
+    // No source import: a failed future present may keep private scanout safely.
+    CHECK(imports == 0);
+}
+static void readable_failed_sync_is_not_completion() {
+    auto h = display(); h.commit_fence = 91; h.submitted_release.push_back({73, 74});
+    sync_status = -ETIMEDOUT; steps = {{1, POLLIN, 0, 0}};
+    CHECK(!complete_commit(&h, 100)); CHECK(h.commit_broken);
+    CHECK(removed_fbs == 0); CHECK(h.submitted_release.size() == 1);
+}
+static void readable_pending_sync_is_not_completion() {
+    sync_status = 0; steps = {{1, POLLIN, 0, 0}};
+    CHECK(wait_fence(10, 100) == -EIO);
+}
+static void sync_info_error_propagates() {
+    sync_error = ENOTTY; steps = {{1, POLLIN, 0, 0}};
+    CHECK(wait_fence(10, 100) == -ENOTTY);
+}
+static void sync_info_interrupt_retries() {
+    sync_interruptions = 2; steps = {{1, POLLIN, 0, 0}};
+    CHECK(wait_fence(10, 100) == 0); CHECK(sync_queries == 3);
+}
 static void host_real_poll() {
     real_syscalls = true;
     int fds[2]; CHECK(::pipe(fds) == 0);
     CHECK(wait_fence(fds[0], 5) == -ETIME);
     char c = 'x'; CHECK(::write(fds[1], &c, 1) == 1);
-    CHECK(wait_fence(fds[0], 5) == 0);
+    CHECK(wait_fence(fds[0], 5) == -ENOTTY);
     CHECK(::read(fds[0], &c, 1) == 1);
     CHECK(::close(fds[1]) == 0);
     CHECK(wait_fence(fds[0], 5) == -EIO);
@@ -349,7 +511,15 @@ int main() {
         CASE(present_unusable_required_client), CASE(present_zero_required_fb),
         CASE(present_success_after_retry), CASE(present_client_retry), CASE(present_unused_client),
         CASE(present_client_copy_success), CASE(present_bad_display), CASE(present_power_off),
-        CASE(host_real_poll)
+        CASE(completion_retires_only_submitted), CASE(previous_commit_timeout_preserves_slots),
+        CASE(previous_commit_error_fails_closed), CASE(commit_failure_does_not_flip),
+        CASE(copied_frames_use_only_inactive_slot), CASE(no_fence_freezes_private_copies),
+        CASE(descriptor_reservation_failure_precedes_commit), CASE(interrupted_dup_retries),
+        CASE(failed_dup_freezes_private_copies), CASE(copy_failure_never_commits_partial_frame),
+        CASE(plane_failure_never_commits), CASE(out_fence_property_failure_never_commits),
+        CASE(fallback_preserves_prepared_small_crop), CASE(copies_release_sources_without_waiting_for_scanout),
+        CASE(readable_failed_sync_is_not_completion), CASE(readable_pending_sync_is_not_completion),
+        CASE(sync_info_error_propagates), CASE(sync_info_interrupt_retries), CASE(host_real_poll)
     };
     int failed = 0;
     for (const auto &t : tests) {

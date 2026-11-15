@@ -44,7 +44,9 @@ def main():
     for name in ('z1_handle', 'z1_plane', 'z1_fb', 'z1_dumb', 'z1_layer', 'z1_hwc2'):
         definitions.append(re.search(r'^struct ' + name + r'\b[^{}]*\{.*?^\};', src, re.M | re.S).group(0))
     bodies = '\n\n'.join(function(src, name) for name in
-                         ('now_ms', 'wait_fence', 'client_target_fb', 'z1_present_display'))
+                         ('now_ms', 'wait_fence', 'complete_commit', 'close_fence_slots',
+                          'reserve_fence_slots', 'commit_with_fence',
+                          'client_target_fb', 'z1_get_release_fences', 'z1_present_display'))
     template = (here / 'test_fence_mock.cpp').read_text()
     generated = template.replace('/* PRODUCTION_TYPES */', '\n\n'.join(definitions))
     generated = generated.replace('/* PRODUCTION_FUNCTIONS */', bodies)

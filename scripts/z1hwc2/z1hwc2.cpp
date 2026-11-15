@@ -12,7 +12,7 @@
  * ---------
  *   SurfaceFlinger --HIDL composer 2.1--> this HAL --DRM atomic--> MT6572 OVL
  *   plane 0 : client target (GPU-composited bottom layer)
- *   plane 1..N : HWC2_COMPOSITION_DEVICE layers, bottom-to-top, zero copy
+ *   plane 1..N : HWC2_COMPOSITION_DEVICE layers, bottom-to-top, private copies
  *
  * Hard kernel constraints (verified against fork_linux/drivers/gpu/drm/mediatek):
  *  - zpos is immutable and equals the plane index; compositing order == plane order.
@@ -20,11 +20,9 @@
  *  - per-plane position IS supported (OVL_Lx_OFFSET gets (y << 16) | x).
  *  - a plane that is not part of a commit keeps scanning its old buffer, so
  *    unused planes must be disabled explicitly (FB_ID = 0, CRTC_ID = 0).
- *  - scanout buffers must be physically contiguous dma-bufs: the GEM import
- *    path rejects non-contiguous sg_tables (mtk_gem_prime_import_sg_table()).
- *    Buffers that cannot be imported degrade to CLIENT composition; the client
- *    target itself can additionally be copied into a local dumb buffer, which
- *    keeps the screen alive even with a non-contiguous gralloc.
+ *  - every plane scans a HAL-owned contiguous dumb buffer. Producer buffers
+ *    are copied after their acquire fences complete. This also protects the
+ *    Android 9 present-error path, which can release a producer's prior buffer.
  *
  * Composition policy
  * ------------------
@@ -43,10 +41,12 @@
  *
  * Fences
  * ------
- * Phase 1 (this build): release/present fences are -1, exactly like the
- * goldfish HWC1 that currently drives this panel, so no deadlock is possible.
- * Real sync fences need libsync's sw_sync timeline and are a later step; the
- * hooks are present but disabled.
+ * KMS OUT_FENCE_PTR supplies the completion fence for each atomic commit.
+ * Source reads finish before return, so HWC2 release fences can be -1.
+ * The present fence is a real KMS completion, never a timer or a future frame.
+ * Private copy slots and retired FBs remain pinned until their commit completes.
+ * Any lost completion freezes private scanout; no producer buffer stays pinned
+ * merely because SurfaceFlinger is told that a present failed.
  *
  * Diagnostics: klog() writes to /dev/kmsg, which is the only log channel that
  * reliably reaches the board's UART.  Verbosity follows the system property
@@ -72,6 +72,7 @@
 #include <vector>
 
 #include <sys/ioctl.h>
+#include <linux/sync_file.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 /*
@@ -108,7 +109,7 @@ extern "C" int __android_log_write(int prio, const char *tag, const char *text);
 #define LOG_TAG "z1hwc2"
 #include <log/log.h>
 
-#define Z1_HWC_VERSION "2026-11-10-r16"
+#define Z1_HWC_VERSION "2026-11-15-r17"
 
 /* ------------------------------------------------------------ constants --- */
 
@@ -398,11 +399,10 @@ struct z1_layer {
 	uint32_t transform;
 	int visible_rects;
 	bool have_crop;
-	int release_fence;	/* sw_sync fence, ownership transfers to SF */
+	int release_fence;	/* source reads finish synchronously; normally -1 */
 	int import_failed_fd;	/* fd whose import already failed (-1 = none) */
-	bool use_small;		/* buffer is smaller than the kernel's 64x64 fb
-				 * minimum and is presented through a padded copy */
-	z1_dumb small;		/* the padded copy for use_small */
+	z1_dumb staging[2];	/* HAL-owned scanout, padded to the KMS minimum */
+	int copy_slot;
 	bool lost_fb;		/* present had to skip it: force CLIENT next */
 	z1_fb fb;
 };
@@ -442,6 +442,7 @@ struct z1_hwc2 : public hwc2_device_t {
 	uint32_t connector_crtc_prop;
 	uint32_t crtc_mode_prop;
 	uint32_t crtc_active_prop;
+	uint32_t crtc_out_fence_prop;
 	uint32_t mode_blob;
 	bool modeset_done;
 	bool powered_on;
@@ -454,30 +455,19 @@ struct z1_hwc2 : public hwc2_device_t {
 	 * still be referenced by the state the display is scanning, so it is
 	 * only destroyed on the next present. */
 	std::vector<std::pair<uint32_t, uint32_t> > pending_release; /* fb, gem */
-	int pending_frame;
-
-	/* software sync fences (optional) */
-	bool fences_on;
-	int timeline_fd;
-	uint32_t timeline_val;	/* last signalled timeline value */
+	std::vector<std::pair<uint32_t, uint32_t> > submitted_release;
+	int commit_fence;	/* HAL-owned completion of the accepted commit */
+	bool commit_broken;	/* missing/invalid KMS completion: refuse new writes */
 	int modeset_tries;
-	/* vsync reporting + present fence (see the vsync thread below) */
-	int present_tl;		/* sw_sync timeline for present fences */
-	uint32_t present_val;	/* last signalled value on present_tl */
-	bool present_pending;	/* a present fence is waiting for the next vblank */
+	/* Vsync callbacks are independent of commit completion. */
 	volatile bool vsync_on;	/* SurfaceFlinger asked for vsync reports */
 	bool vsync_err_logged;	/* one-shot error report */
 	bool vsync_reported;	/* first delivered vsync logged */
 	volatile int vsync_stop;
 	pthread_t vsync_thread;
 	bool vsync_started;
-	bool fences_pending;	/* fences at timeline_val+1 are outstanding */
 	uint64_t last_present_ms;
 	uint64_t last_vblank_ms;	/* last vblank timestamp seen (monotonic ms) */
-	pthread_mutex_t fence_lock;
-	volatile int wd_stop;
-	pthread_t wd_thread;
-	bool wd_started;
 
 	/* stats */
 	uint64_t frames;
@@ -488,24 +478,7 @@ struct z1_hwc2 : public hwc2_device_t {
 	int mode_force_client;		/* debug.z1.hwc.mode == 0 */
 };
 
-/* ------------------------------------------------ software sync fences --- */
-
-/*
- * Release/present fences need a fence object that we can signal later, which
- * is exactly what the kernel's sw_sync driver provides (CONFIG_SW_SYNC,
- * exposed as <debugfs>/sync/sw_sync).  Everything here is optional: when the
- * property debug.z1.hwc.fences is 0 (default) or the node is missing, the HAL
- * keeps returning -1 like the goldfish HWC1 does.
- */
-struct z1_sw_sync_data {
-	uint32_t value;
-	char name[32];
-	int32_t fence;
-};
-#define Z1_SW_SYNC_IOC_MAGIC 'W'
-#define Z1_SW_SYNC_IOC_CREATE_FENCE \
-	_IOWR(Z1_SW_SYNC_IOC_MAGIC, 0, struct z1_sw_sync_data)
-#define Z1_SW_SYNC_IOC_INC _IOW(Z1_SW_SYNC_IOC_MAGIC, 1, uint32_t)
+/* ----------------------------------------------------- commit completion --- */
 
 static uint64_t now_ms(void)
 {
@@ -513,52 +486,6 @@ static uint64_t now_ms(void)
 
 	clock_gettime(CLOCK_MONOTONIC, &ts);
 	return (uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u;
-}
-
-static int sw_fence_create(int tl, const char *name, uint32_t value)
-{
-	struct z1_sw_sync_data d;
-
-	memset(&d, 0, sizeof(d));
-	d.value = value;
-	strncpy(d.name, name, sizeof(d.name) - 1);
-	d.fence = -1;
-	if (ioctl(tl, Z1_SW_SYNC_IOC_CREATE_FENCE, &d) < 0)
-		return -1;
-	return d.fence;
-}
-
-static int sw_timeline_inc(int tl, uint32_t by)
-{
-	return ioctl(tl, Z1_SW_SYNC_IOC_INC, &by) < 0 ? -errno : 0;
-}
-
-/*
- * If the display goes idle right after a frame, that frame's release fences
- * would never be signalled and a producer could block forever waiting for its
- * buffer.  This watchdog signs the timeline off after 250 ms of silence.
- */
-static void *fence_watchdog(void *arg)
-{
-	z1_hwc2 *h = static_cast<z1_hwc2 *>(arg);
-
-	while (!h->wd_stop) {
-		usleep(100 * 1000);
-		if (!h->fences_pending)
-			continue;
-		if (now_ms() - h->last_present_ms < 250)
-			continue;
-		pthread_mutex_lock(&h->fence_lock);
-		if (h->fences_pending) {
-			if (sw_timeline_inc(h->timeline_fd, 1) == 0)
-				h->timeline_val++;
-			h->fences_pending = false;
-			klogf(1, "z1hwc2: fence watchdog: released idle frame "
-			     "(timeline=%u)\n", h->timeline_val);
-		}
-		pthread_mutex_unlock(&h->fence_lock);
-	}
-	return nullptr;
 }
 
 /*
@@ -570,10 +497,8 @@ static void *fence_watchdog(void *arg)
  * DRM_MASTER needed) blocks until the next vblank and hands back the kernel's
  * own CLOCK_MONOTONIC timestamp, which is exactly what HWC2 wants.
  *
- * The same wake-up also signals the present (retire) fence of every frame that
- * was committed since the previous vblank: a frame "starts to appear" at the
- * next vblank, so that is the correct moment, not the return of the commit
- * ioctl.
+ * These callbacks report display timing only. They never retire buffers or
+ * signal present fences: only the KMS fence of that commit can do that.
  */
 static void *vsync_thread_fn(void *arg)
 {
@@ -605,15 +530,6 @@ static void *vsync_thread_fn(void *arg)
 			continue;
 		}
 		h->last_vblank_ms = now_ms();
-		if (h->present_tl >= 0) {
-			pthread_mutex_lock(&h->fence_lock);
-			if (h->present_pending) {
-				if (sw_timeline_inc(h->present_tl, 1) == 0)
-					h->present_val++;
-				h->present_pending = false;
-			}
-			pthread_mutex_unlock(&h->fence_lock);
-		}
 		if (h->cb_vsync) {
 			typedef void (*vsync_fn)(hwc2_callback_data_t,
 						 hwc2_display_t, int64_t);
@@ -631,37 +547,12 @@ static void *vsync_thread_fn(void *arg)
 	return nullptr;
 }
 
-static void fences_init(z1_hwc2 *h)
+static void vsync_init(z1_hwc2 *h)
 {
-	pthread_mutex_init(&h->fence_lock, nullptr);
-	h->timeline_fd = -1;
-	h->present_tl = -1;
-	h->last_present_ms = now_ms();
-	if (prop_int("debug.z1.hwc.fences", 1) == 0) {
-		klogf(1, "z1hwc2: fences disabled (debug.z1.hwc.fences=0)\n");
-		return;
-	}
-	h->timeline_fd = open("/sys/kernel/debug/sync/sw_sync",
-			      O_RDWR | O_CLOEXEC);
-	if (h->timeline_fd < 0) {
-		klogf(0, "z1hwc2: fences requested but "
-		     "/sys/kernel/debug/sync/sw_sync is unavailable (%s); "
-		     "is debugfs mounted and CONFIG_SW_SYNC enabled?\n",
-		      strerror(errno));
-		return;
-	}
-	h->present_tl = open("/sys/kernel/debug/sync/sw_sync",
-			     O_RDWR | O_CLOEXEC);
-	h->fences_on = true;
-	if (pthread_create(&h->wd_thread, nullptr, fence_watchdog, h) == 0)
-		h->wd_started = true;
-	if (prop_int("debug.z1.hwc.vsync", 1) != 0) {
-		if (pthread_create(&h->vsync_thread, nullptr, vsync_thread_fn,
-				   h) == 0)
-			h->vsync_started = true;
-	}
-	klogf(1, "z1hwc2: fences enabled (release fd=%d present fd=%d) "
-	     "vsync=%d\n", h->timeline_fd, h->present_tl,
+	if (prop_int("debug.z1.hwc.vsync", 1) != 0 &&
+	    pthread_create(&h->vsync_thread, nullptr, vsync_thread_fn, h) == 0)
+		h->vsync_started = true;
+	klogf(1, "z1hwc2: KMS commit fences enabled, vsync=%d\n",
 	      h->vsync_started ? 1 : 0);
 }
 
@@ -705,94 +596,20 @@ static uint32_t prop_id(int fd, uint32_t obj, uint32_t type, const char *name,
 static void fb_forget(z1_hwc2 *h, z1_fb *fb)
 {
 	if (fb->fb_id) {
-		/* Deferred: keep the fb alive for one more frame. */
+		/* Retire only after a successful replacement commit completes. */
 		h->pending_release.push_back(std::make_pair(fb->fb_id, fb->gem));
 	}
 	memset(fb, 0, sizeof(*fb));
 	fb->src_fd = -1;
 }
 
-/*
- * Import a gralloc buffer as a DRM framebuffer.
- *
- * Requires the buffer to be a physically contiguous dma-buf: mediatek's GEM
- * import rejects anything else.  Returns 0 on success, negative errno
- * otherwise (the caller then has to fall back to CLIENT composition).
- */
-static int fb_import(z1_hwc2 *h, buffer_handle_t handle, z1_fb *out)
+static void dumb_forget(z1_hwc2 *h, z1_dumb *d)
 {
-	struct z1_handle *gh = (struct z1_handle *)handle;
-	uint32_t gem = 0, fb = 0, fourcc, pitch;
-	int bpp;
-
-	if (!handle || gh->fd < 0) {
-		klogf(1, "z1hwc2: import refused: no handle/fd\n");
-		return -EINVAL;
-	}
-	if (gh->magic != Z1_HANDLE_MAGIC) {
-		klogf(0, "z1hwc2: import refused: bad gralloc magic %#x "
-		     "(fd=%d %dx%d stride=%d fmt=%d)\n",
-		     gh->magic, gh->fd, gh->width, gh->height, gh->stride,
-		     gh->format);
-		return -EINVAL;
-	}
-	if (gh->width <= 0 || gh->height <= 0 || gh->width > 4096 ||
-	    gh->height > 4096 || gh->stride <= 0 || gh->stride > 8192) {
-		klogf(0, "z1hwc2: import refused: implausible geometry fd=%d "
-		     "%dx%d stride=%d\n", gh->fd, gh->width, gh->height,
-		     gh->stride);
-		return -EINVAL;
-	}
-	bpp = hal_bpp(gh->format);
-	fourcc = hal_to_drm(gh->format);
-	if (!bpp || !fourcc) {
-		klogf(1, "z1hwc2: import refused: unsupported format %d\n",
-		      gh->format);
-		return -EINVAL;
-	}
-
-	if (drmPrimeFDToHandle(h->drm_fd, gh->fd, &gem)) {
-		int err = errno;
-
-		klogf(1, "z1hwc2: drmPrimeFDToHandle(%d) failed: %s "
-		     "(buffer is not a dma-buf, or not physically contiguous)\n",
-		     gh->fd, strerror(err));
-		return -err;
-	}
-
-	pitch = (uint32_t)gh->stride * (uint32_t)bpp;
-	{
-		uint32_t handles[4] = { gem, 0, 0, 0 };
-		uint32_t pitches[4] = { pitch, 0, 0, 0 };
-		uint32_t offsets[4] = { gh->offset > 0 ? (uint32_t)gh->offset : 0,
-					0, 0, 0 };
-
-		if (drmModeAddFB2(h->drm_fd, (uint32_t)gh->width,
-				  (uint32_t)gh->height, fourcc, handles, pitches,
-				  offsets, &fb, 0)) {
-			int err = errno;
-
-			klogf(0, "z1hwc2: drmModeAddFB2 failed: %s "
-			     "(%dx%d stride=%dp pitch=%u fourcc=%c%c%c%c)\n",
-			     strerror(err), gh->width, gh->height, gh->stride,
-			     pitch, (int)(fourcc & 0xff),
-			     (int)((fourcc >> 8) & 0xff),
-			     (int)((fourcc >> 16) & 0xff),
-			     (int)((fourcc >> 24) & 0xff));
-			drmCloseBufferHandle(h->drm_fd, gem);
-			return -err;
-		}
-	}
-
-	out->handle = handle;
-	out->src_fd = gh->fd;
-	out->w = (uint32_t)gh->width;
-	out->h = (uint32_t)gh->height;
-	out->pitch = pitch;
-	out->fourcc = fourcc;
-	out->gem = gem;
-	out->fb_id = fb;
-	return 0;
+	if (d->map && d->map != MAP_FAILED)
+		munmap(d->map, d->size);
+	if (d->fb_id || d->handle)
+		h->pending_release.push_back(std::make_pair(d->fb_id, d->handle));
+	memset(d, 0, sizeof(*d));
 }
 
 static int dumb_ensure(z1_hwc2 *h, z1_dumb *d, uint32_t w, uint32_t hgt,
@@ -899,64 +716,69 @@ static int dumb_ensure(z1_hwc2 *h, z1_dumb *d, uint32_t w, uint32_t hgt,
  * HAL update never leaves the panel black during bring-up.  The source is read
  * through the dma-buf CPU access path so GPU writes are visible.
  */
+/* Producer buffers are never scanned directly. Android 9 can release the
+ * previous buffer even after a failed present; only private copies make that
+ * error path safe without changing SurfaceFlinger itself. */
 static int copy_into_dumb(z1_hwc2 *h, z1_dumb *d, buffer_handle_t handle)
 {
-	struct z1_handle *gh = (struct z1_handle *)handle;
+	auto gh = (const z1_handle *)handle;
+	if (!gh || gh->numFds != 1 || gh->numInts != 12 ||
+	    gh->magic != Z1_HANDLE_MAGIC || gh->fd < 0 ||
+	    gh->width <= 0 || gh->width > 4096 ||
+	    gh->height <= 0 || gh->height > 4096 ||
+	    gh->stride < gh->width || gh->stride > 8192 ||
+	    gh->offset < 0 || gh->size <= 0)
+		return -EINVAL;
 	int bpp = hal_bpp(gh->format);
 	uint32_t fourcc = hal_to_drm(gh->format);
-	uint32_t src_pitch, aw;
-	uint8_t *src;
-	struct dma_buf_sync sync;
-	bool synced = false;
-	int ret;
-
 	if (!bpp || !fourcc)
 		return -EINVAL;
-	/* OVL wants an aligned pitch; keep the dumb buffer aligned the same
-	 * way gralloc aligns its strides (16 pixels). */
-	aw = ((uint32_t)gh->width + 15u) & ~15u;
-	if (dumb_ensure(h, d, aw, (uint32_t)gh->height, fourcc, gh->format))
+	size_t pitch = (size_t)gh->stride * (unsigned)bpp;
+	size_t bytes = (size_t)gh->width * (unsigned)bpp;
+	size_t end = (size_t)gh->offset +
+		     (size_t)(gh->height - 1) * pitch + bytes;
+	if (end > (size_t)gh->size)
+		return -EINVAL;
+	uint32_t aw = ((uint32_t)gh->width + 15u) & ~15u;
+	uint32_t ah = std::max((uint32_t)gh->height, 64u);
+	aw = std::max(aw, 64u);
+	if (dumb_ensure(h, d, aw, ah, fourcc, gh->format))
+		return -ENOMEM;
+	if (!d->map || d->map == MAP_FAILED || d->pitch < bytes ||
+	    (size_t)(gh->height - 1) * d->pitch + bytes > d->size)
 		return -EINVAL;
 
-	src_pitch = (uint32_t)gh->stride * (uint32_t)bpp;
-	if (gh->size <= 0 || gh->offset < 0 ||
-	    src_pitch * (uint32_t)gh->height + (uint32_t)gh->offset >
-		    (uint32_t)gh->size) {
-		klogf(0, "z1hwc2: copy: implausible source size %d\n", gh->size);
-		return -EINVAL;
-	}
-	src = (uint8_t *)mmap(nullptr, (size_t)gh->size, PROT_READ, MAP_SHARED,
-			      gh->fd, 0);
-	if (src == MAP_FAILED) {
-		klogf(0, "z1hwc2: copy: mmap(fd=%d, %d bytes) failed: %s\n",
-		      gh->fd, gh->size, strerror(errno));
+	auto src = (uint8_t *)mmap(nullptr, (size_t)gh->size, PROT_READ,
+				 MAP_SHARED, gh->fd, 0);
+	if (src == MAP_FAILED)
 		return -errno;
-	}
-
-	memset(&sync, 0, sizeof(sync));
+	struct dma_buf_sync sync{};
 	sync.flags = DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ;
-	if (ioctl(gh->fd, DMA_BUF_IOCTL_SYNC, &sync) == 0)
-		synced = true;
-
-	{
-		uint32_t rows = (uint32_t)gh->height;
-		uint32_t bytes = (uint32_t)gh->width * (uint32_t)bpp;
-		uint32_t y;
-
-		if (bytes > src_pitch)
-			bytes = src_pitch;
-		for (y = 0; y < rows; y++)
-			memcpy((uint8_t *)d->map + (size_t)y * d->pitch,
-			       src + (size_t)gh->offset +
-				       (size_t)y * src_pitch, bytes);
+	int synced;
+	do {
+		synced = ioctl(gh->fd, DMA_BUF_IOCTL_SYNC, &sync);
+	} while (synced < 0 && errno == EINTR);
+	/* ashmem is coherent and has no DMA_BUF_IOCTL_SYNC; real DMA-buf
+	 * failures must abort the frame rather than display stale cache data. */
+	if (synced < 0 && errno != ENOTTY) {
+		int err = -errno;
+		munmap(src, (size_t)gh->size);
+		return err;
 	}
-
-	if (synced) {
+	for (int y = 0; y < gh->height; y++)
+		memcpy((uint8_t *)d->map + (size_t)y * d->pitch,
+		       src + (size_t)gh->offset + (size_t)y * pitch, bytes);
+	__sync_synchronize();
+	int ret = 0;
+	if (synced == 0) {
 		sync.flags = DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ;
-		(void)ioctl(gh->fd, DMA_BUF_IOCTL_SYNC, &sync);
+		do {
+			ret = ioctl(gh->fd, DMA_BUF_IOCTL_SYNC, &sync);
+		} while (ret < 0 && errno == EINTR);
+		if (ret < 0)
+			ret = -errno;
 	}
 	munmap(src, (size_t)gh->size);
-	ret = 0;
 	return ret;
 }
 
@@ -1112,6 +934,14 @@ static int drm_open(z1_hwc2 *h)
 	h->crtc_active_prop = prop_id(h->drm_fd, h->crtc_id,
 				      DRM_MODE_OBJECT_CRTC, "ACTIVE", nullptr,
 				      nullptr);
+	h->crtc_out_fence_prop = prop_id(h->drm_fd, h->crtc_id,
+				       DRM_MODE_OBJECT_CRTC, "OUT_FENCE_PTR",
+				       nullptr, nullptr);
+	if (!h->crtc_out_fence_prop) {
+		klogf(0, "z1hwc2: CRTC lacks OUT_FENCE_PTR; refusing unsafe scanout\n");
+		drmModeFreeResources(res);
+		return -1;
+	}
 
 	pres = drmModeGetPlaneResources(h->drm_fd);
 	if (!pres) {
@@ -1283,7 +1113,19 @@ static int wait_fence(int fd, int timeout_ms)
 				return -EBADF;
 			if (pfd.revents & (POLLERR | POLLHUP))
 				return -EIO;
-			return (pfd.revents & POLLIN) ? 0 : -EIO;
+			if (!(pfd.revents & POLLIN))
+				return -EIO;
+			/* poll signals failed fences as readable too. Only a
+			 * positive sync_file status means successful completion. */
+			struct sync_file_info info{};
+			int checked;
+			do {
+				checked = ioctl(fd, SYNC_IOC_FILE_INFO, &info);
+			} while (checked < 0 && errno == EINTR);
+			if (checked < 0)
+				return -errno;
+			return info.status > 0 ? 0 :
+			       (info.status < 0 ? info.status : -EIO);
 		}
 		if (ret == 0)
 			return -ETIME;
@@ -1302,7 +1144,70 @@ static int wait_fence(int fd, int timeout_ms)
 	}
 }
 
-static void program_plane(z1_hwc2 *h, drmModeAtomicReq *req, int idx,
+/* Drop only resources retired by a commit whose OWN fence has completed.
+ * pending_release may already contain objects from the next validate pass. */
+static bool complete_commit(z1_hwc2 *h, int timeout_ms)
+{
+	if (h->commit_broken)
+		return false;
+	if (h->commit_fence >= 0) {
+		int ret = wait_fence(h->commit_fence, timeout_ms);
+
+		if (ret < 0) {
+			if (ret != -ETIME)
+				h->commit_broken = true;
+			return false;
+		}
+		close(h->commit_fence);
+		h->commit_fence = -1;
+	}
+	for (const auto &fb : h->submitted_release) {
+		if (fb.first)
+			drmModeRmFB(h->drm_fd, fb.first);
+		if (fb.second)
+			drmCloseBufferHandle(h->drm_fd, fb.second);
+	}
+	h->submitted_release.clear();
+	return true;
+}
+
+static void close_fence_slots(std::vector<int> *slots)
+{
+	for (int fd : *slots)
+		if (fd >= 0)
+			close(fd);
+	slots->clear();
+}
+
+/* Reserve all return descriptors BEFORE changing display state. dup3 below
+ * replaces already-open slots, avoiding post-commit EMFILE/ENFILE failures. */
+static bool reserve_fence_slots(int fd, size_t count, std::vector<int> *slots)
+{
+	for (size_t i = 0; i < count; i++) {
+		int copy = fcntl(fd, F_DUPFD_CLOEXEC, 0);
+
+		if (copy < 0) {
+			close_fence_slots(slots);
+			return false;
+		}
+		slots->push_back(copy);
+	}
+	return true;
+}
+
+static int commit_with_fence(z1_hwc2 *h, drmModeAtomicReq *req,
+			     uint32_t flags, int32_t *fence)
+{
+	*fence = -1;
+	if (!add_prop(req, "OUT_FENCE_PTR", h->crtc_id,
+		      h->crtc_out_fence_prop, (uint64_t)(uintptr_t)fence)) {
+		errno = EINVAL;
+		return -1;
+	}
+	return drmModeAtomicCommit(h->drm_fd, req, flags, h);
+}
+
+static bool program_plane(z1_hwc2 *h, drmModeAtomicReq *req, int idx,
 			  uint32_t fb_id, int x, int y, int w, int hgt,
 			  const hwc_frect_t *crop, float alpha, int32_t blend,
 			  bool has_alpha_channel)
@@ -1311,14 +1216,15 @@ static void program_plane(z1_hwc2 *h, drmModeAtomicReq *req, int idx,
 	int32_t sx, sy, sw, sh;
 	uint32_t a8;
 	uint32_t bmode;
+	bool ok = true;
 
 	if (!fb_id) {
 		/* Explicitly disable: a plane that is not committed keeps its
 		 * previous SRC_CON bit and would keep scanning the old
 		 * buffer. */
-		add_prop(req, "FB_ID", p->id, p->p_fb, 0);
-		add_prop(req, "CRTC_ID", p->id, p->p_crtc, 0);
-		return;
+		ok &= add_prop(req, "FB_ID", p->id, p->p_fb, 0);
+		ok &= add_prop(req, "CRTC_ID", p->id, p->p_crtc, 0);
+		return ok;
 	}
 
 	sx = crop ? (int32_t)crop->left : 0;
@@ -1341,22 +1247,22 @@ static void program_plane(z1_hwc2 *h, drmModeAtomicReq *req, int idx,
 	if (hgt <= 0 || hgt > (int)h->height || y > (int)h->height - hgt)
 		hgt = (int)h->height - y;
 	if (w <= 0 || hgt <= 0) {
-		add_prop(req, "FB_ID", p->id, p->p_fb, 0);
-		add_prop(req, "CRTC_ID", p->id, p->p_crtc, 0);
-		return;
+		ok &= add_prop(req, "FB_ID", p->id, p->p_fb, 0);
+		ok &= add_prop(req, "CRTC_ID", p->id, p->p_crtc, 0);
+		return ok;
 	}
 
-	add_prop(req, "FB_ID", p->id, p->p_fb, fb_id);
-	add_prop(req, "CRTC_ID", p->id, p->p_crtc, h->crtc_id);
-	add_prop(req, "CRTC_X", p->id, p->p_cx, (uint64_t)(uint32_t)x);
-	add_prop(req, "CRTC_Y", p->id, p->p_cy, (uint64_t)(uint32_t)y);
-	add_prop(req, "CRTC_W", p->id, p->p_cw, (uint32_t)w);
-	add_prop(req, "CRTC_H", p->id, p->p_ch, (uint32_t)hgt);
+	ok &= add_prop(req, "FB_ID", p->id, p->p_fb, fb_id);
+	ok &= add_prop(req, "CRTC_ID", p->id, p->p_crtc, h->crtc_id);
+	ok &= add_prop(req, "CRTC_X", p->id, p->p_cx, (uint64_t)(uint32_t)x);
+	ok &= add_prop(req, "CRTC_Y", p->id, p->p_cy, (uint64_t)(uint32_t)y);
+	ok &= add_prop(req, "CRTC_W", p->id, p->p_cw, (uint32_t)w);
+	ok &= add_prop(req, "CRTC_H", p->id, p->p_ch, (uint32_t)hgt);
 	/* SRC_* are 16.16 fixed point */
-	add_prop(req, "SRC_X", p->id, p->p_sx, (uint32_t)(sx << 16));
-	add_prop(req, "SRC_Y", p->id, p->p_sy, (uint32_t)(sy << 16));
-	add_prop(req, "SRC_W", p->id, p->p_sw, (uint32_t)(sw << 16));
-	add_prop(req, "SRC_H", p->id, p->p_sh, (uint32_t)(sh << 16));
+	ok &= add_prop(req, "SRC_X", p->id, p->p_sx, ((uint32_t)sx << 16));
+	ok &= add_prop(req, "SRC_Y", p->id, p->p_sy, ((uint32_t)sy << 16));
+	ok &= add_prop(req, "SRC_W", p->id, p->p_sw, ((uint32_t)sw << 16));
+	ok &= add_prop(req, "SRC_H", p->id, p->p_sh, ((uint32_t)sh << 16));
 
 	/*
 	 * Plane alpha: the MT6572 OVL driver takes the LOW 8 BITS of the
@@ -1369,7 +1275,7 @@ static void program_plane(z1_hwc2 *h, drmModeAtomicReq *req, int idx,
 		a8 = 255;
 	(void)has_alpha_channel;
 	if (p->has_alpha)
-		add_prop(req, "alpha", p->id, p->p_alpha, a8);
+		ok &= add_prop(req, "alpha", p->id, p->p_alpha, a8);
 
 	if (p->has_blend) {
 		switch (blend) {
@@ -1384,8 +1290,9 @@ static void program_plane(z1_hwc2 *h, drmModeAtomicReq *req, int idx,
 			bmode = Z1_DRM_BLEND_PREMULTI;
 			break;
 		}
-		add_prop(req, "pixel blend mode", p->id, p->p_blend, bmode);
+		ok &= add_prop(req, "pixel blend mode", p->id, p->p_blend, bmode);
 	}
+	return ok;
 }
 
 /* Return a fb_id for the client target, importing it or (fallback) copying
@@ -1393,58 +1300,24 @@ static void program_plane(z1_hwc2 *h, drmModeAtomicReq *req, int idx,
 static int client_target_fb(z1_hwc2 *h, uint32_t *out_fb, uint32_t *out_w,
 			    uint32_t *out_h, const char **how)
 {
-	struct z1_handle *gh = (struct z1_handle *)h->client_target;
-	int ret;
+	auto gh = (const z1_handle *)h->client_target;
 
+	*out_fb = 0;
 	*out_w = h->width;
 	*out_h = h->height;
-	if (!h->client_target) {
-		*out_fb = 0;
-		*how = "none";
+	*how = "none";
+	if (!gh)
 		return 0;
+	z1_dumb *copy = &h->shadow[h->client_copy_slot];
+	if (copy_into_dumb(h, copy, h->client_target)) {
+		*how = "unusable";
+		return -EINVAL;
 	}
-	if (gh->magic == Z1_HANDLE_MAGIC && gh->width > 0 && gh->height > 0) {
-		*out_w = (uint32_t)gh->width;
-		*out_h = (uint32_t)gh->height;
-	}
-	if (h->client_fb.fb_id && h->client_fb.handle == h->client_target &&
-	    h->client_fb.src_fd == gh->fd) {
-		*out_fb = h->client_fb.fb_id;
-		*how = "cached";
-		return 0;
-	}
-	if (h->client_fb.fb_id)
-		fb_forget(h, &h->client_fb);
-
-	ret = fb_import(h, h->client_target, &h->client_fb);
-	if (ret == 0) {
-		*out_fb = h->client_fb.fb_id;
-		*how = "imported";
-		return 0;
-	}
-
-	/* Fallback: CPU copy into a dumb buffer (double buffered so the frame
-	 * being scanned is not overwritten). */
-	{
-		z1_dumb *d = &h->shadow[h->client_copy_slot];
-
-		if (copy_into_dumb(h, d, h->client_target) == 0) {
-			h->client_copy_slot ^= 1;
-			*out_fb = d->fb_id;
-			*how = "copied";
-			if (h->frames < 3 || h->frames % 600 == 0)
-				klogf(1, "z1hwc2: client target COPIED (slow "
-				     "path): fd=%d %dx%d stride=%d fmt=%s -> "
-				     "dumb fb=%u frame=%" PRIu64 "\n", gh->fd,
-				      gh->width, gh->height, gh->stride,
-				      hal_fmt_name(gh->format), d->fb_id,
-				      h->frames);
-			return 0;
-		}
-	}
-	*out_fb = 0;
-	*how = "unusable";
-	return -EINVAL;
+	*out_w = (uint32_t)gh->width;
+	*out_h = (uint32_t)gh->height;
+	*out_fb = copy->fb_id;
+	*how = "copied";
+	return 0;
 }
 
 static int32_t z1_present_display(hwc2_device_t *d, hwc2_display_t display,
@@ -1528,6 +1401,7 @@ static int32_t z1_create_layer(hwc2_device_t *d, hwc2_display_t display,
 	l.id = id;
 	l.acquire_fence = -1;
 	l.import_failed_fd = -1;
+	l.release_fence = -1;
 	l.composition = HWC2_COMPOSITION_INVALID;
 	l.blend = HWC2_BLEND_MODE_INVALID;
 	l.alpha = 1.0f;
@@ -1564,6 +1438,8 @@ static int32_t z1_destroy_layer(hwc2_device_t *d, hwc2_display_t display,
 		close(l->acquire_fence);
 	if (l->release_fence >= 0)
 		close(l->release_fence);
+	for (int i = 0; i < 2; i++)
+		dumb_forget(h, &l->staging[i]);
 	h->layers.erase(layer);
 	klogf(2, "z1hwc2: destroyLayer %" PRIu64 "\n", (uint64_t)layer);
 	return HWC2_ERROR_NONE;
@@ -2122,9 +1998,8 @@ static int32_t z1_get_release_fences(hwc2_device_t *d, hwc2_display_t display,
 
 		if (n >= *out_num_elements)
 			break;
-		/* Only device layers that were scanned out this frame carry a
-		 * fence; the rest are "ready immediately" (-1) as the spec
-		 * allows.  Ownership of the fd transfers to SurfaceFlinger. */
+		/* Every producer source has already been copied. This remains
+		 * true when a layer changes from DEVICE to CLIENT. */
 		out_layers[n] = it->first;
 		out_fences[n] = l->release_fence;
 		l->release_fence = -1;
@@ -2156,68 +2031,11 @@ static int32_t z1_get_client_target_support(hwc2_device_t *d,
 
 /* -------------------------------------------------------------- validate --- */
 
-/*
- * The kernel refuses framebuffers smaller than 64x64 in either axis
- * (mtk_drm_drv.c sets mode_config.min_width/min_height = 64 and
- * drm_internal_framebuffer_create() rejects anything below that with
- * -EINVAL).  A status bar is 240x24, so it can never be scanned directly --
- * and because CLIENT layers must sit at the bottom of the stack, demoting it
- * would force the whole screen back to client composition.
- *
- * Instead: copy the small layer into a dumb buffer that is padded to at least
- * 64 rows and hand THAT to the OVL, with a source rectangle covering only the
- * real content.  A 240x24 status bar is 23 KiB, so this costs almost nothing
- * and keeps every other layer on hardware planes.
- */
-static int small_layer_sync(z1_hwc2 *h, z1_layer *l)
+/* Every layer uses private scanout. The common copy helper also pads staging
+ * layers to the kernel's 64x64 framebuffer minimum without changing the crop. */
+static int layer_copy_sync(z1_hwc2 *h, z1_layer *l)
 {
-	struct z1_handle *gh = (struct z1_handle *)l->handle;
-	struct dma_buf_sync sync;
-	uint32_t fourcc, aw, ah, src_pitch, bytes;
-	int bpp, ret = 0, y;
-	uint8_t *src, *dst;
-	bool synced = false;
-
-	if (!gh)
-		return -EINVAL;
-	bpp = hal_bpp(gh->format);
-	fourcc = hal_to_drm(gh->format);
-	if (!bpp || !fourcc)
-		return -EINVAL;
-
-	aw = ((uint32_t)gh->width + 15u) & ~15u;
-	ah = (uint32_t)gh->height < 64u ? 64u : (uint32_t)gh->height;
-	if (dumb_ensure(h, &l->small, aw, ah, fourcc, gh->format) != 0)
-		return -ENOMEM;
-
-	src_pitch = (uint32_t)gh->stride * (uint32_t)bpp;
-	bytes = (uint32_t)gh->width * (uint32_t)bpp;
-	if (gh->size <= 0 || gh->offset < 0 ||
-	    src_pitch * (uint32_t)gh->height + (uint32_t)gh->offset >
-		    (uint32_t)gh->size || bytes > src_pitch)
-		return -EINVAL;
-
-	src = (uint8_t *)mmap(nullptr, (size_t)gh->size, PROT_READ, MAP_SHARED,
-			      gh->fd, 0);
-	if (src == MAP_FAILED)
-		return -errno;
-	memset(&sync, 0, sizeof(sync));
-	sync.flags = DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ;
-	if (ioctl(gh->fd, DMA_BUF_IOCTL_SYNC, &sync) == 0)
-		synced = true;
-
-	dst = (uint8_t *)l->small.map;
-	for (y = 0; y < gh->height; y++)
-		memcpy(dst + (size_t)y * l->small.pitch,
-		       src + (size_t)gh->offset + (size_t)y * src_pitch, bytes);
-	__sync_synchronize();
-
-	if (synced) {
-		sync.flags = DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ;
-		(void)ioctl(gh->fd, DMA_BUF_IOCTL_SYNC, &sync);
-	}
-	munmap(src, (size_t)gh->size);
-	return ret;
+	return copy_into_dumb(h, &l->staging[l->copy_slot], l->handle);
 }
 
 /*
@@ -2304,51 +2122,12 @@ static int32_t z1_validate_display(hwc2_device_t *d, hwc2_display_t display,
 		p->format_ok = hal_bpp(gh ? gh->format : -1) &&
 			       hal_to_drm(gh ? gh->format : -1);
 
-		/*
-		 * Only attempt the (expensive) dma-buf import when every other
-		 * hardware constraint is already satisfied; the policy header
-		 * owns those checks.
-		 */
-		if (p->handle_ok && p->format_ok) {
-			z1_policy_layer probe = *p;
-
-			probe.importable = 1;
-			if (z1_policy_device_block_reason(&probe) == 0) {
-				if (gh->width < 64 || gh->height < 64) {
-					/* below the kernel's fb minimum: padded
-					 * copy instead of a scanout import */
-					l->use_small = true;
-					p->importable = 1;
-					goto next_layer;
-				}
-				l->use_small = false;
-				if (l->import_failed_fd == gh->fd) {
-					/* Already known bad for this exact
-					 * buffer: do not hammer the kernel with
-					 * a failing PRIME import every frame. */
-					p->importable = 0;
-				} else {
-					if (!l->fb.fb_id ||
-					    l->fb.handle != l->handle ||
-					    l->fb.src_fd != gh->fd) {
-						if (l->fb.fb_id)
-							fb_forget(h, &l->fb);
-						(void)fb_import(h, l->handle,
-								&l->fb);
-					}
-					p->importable = l->fb.fb_id ? 1 : 0;
-					if (!p->importable)
-						l->import_failed_fd = gh->fd;
-				}
-			}
-next_layer:
-			/* A layer whose framebuffer disappeared during present must
-			 * be reported back as CLIENT, otherwise it silently stays
-			 * missing from the screen. */
-			if (l->lost_fb) {
-				p->importable = 0;
-				l->lost_fb = false;
-			}
+		/* Importability here means the private-copy path is supported.
+		 * No producer GEM is ever handed to KMS, including on errors. */
+		p->importable = p->handle_ok && p->format_ok;
+		if (l->lost_fb) {
+			p->importable = 0;
+			l->lost_fb = false;
 		}
 	}
 
@@ -2471,12 +2250,15 @@ static int32_t z1_present_display(hwc2_device_t *d, hwc2_display_t display,
 	drmModeAtomicReq *req;
 	std::vector<z1_layer *> device_layers;
 	std::vector<z1_layer *> scanned;
+	std::vector<int> fence_slots;
+	int32_t commit_fence = -1;
 	uint32_t client_fb = 0;
 	uint32_t client_w = 0, client_h = 0;
 	const char *client_how = "none";
 	uint32_t flags = 0;
 	int slot = 0;
 	int ret;
+	bool plane_ok = true;
 
 	*out_retire_fence = -1;
 	if (display != 0)
@@ -2484,6 +2266,10 @@ static int32_t z1_present_display(hwc2_device_t *d, hwc2_display_t display,
 	if (!h->powered_on) {
 		klogf(3, "z1hwc2: present skipped (display off)\n");
 		return HWC2_ERROR_NONE;
+	}
+	if (!h->crtc_out_fence_prop || !complete_commit(h, 100)) {
+		klogf(0, "z1hwc2: previous commit is incomplete or invalid; retaining scanout\n");
+		return HWC2_ERROR_NO_RESOURCES;
 	}
 
 	h->frames++;
@@ -2581,11 +2367,11 @@ static int32_t z1_present_display(hwc2_device_t *d, hwc2_display_t display,
 		if (drmModeCreatePropertyBlob(h->drm_fd, &h->mode,
 					      sizeof(h->mode), &blob) == 0) {
 			h->mode_blob = blob;
-			add_prop(req, "connector CRTC_ID", h->connector_id,
+			plane_ok &= add_prop(req, "connector CRTC_ID", h->connector_id,
 				 h->connector_crtc_prop, h->crtc_id);
-			add_prop(req, "crtc MODE", h->crtc_id, h->crtc_mode_prop,
+			plane_ok &= add_prop(req, "crtc MODE", h->crtc_id, h->crtc_mode_prop,
 				 blob);
-			add_prop(req, "crtc ACTIVE", h->crtc_id, h->crtc_active_prop,
+			plane_ok &= add_prop(req, "crtc ACTIVE", h->crtc_id, h->crtc_active_prop,
 				 1);
 			flags |= DRM_MODE_ATOMIC_ALLOW_MODESET;
 		}
@@ -2597,7 +2383,7 @@ static int32_t z1_present_display(hwc2_device_t *d, hwc2_display_t display,
 		memset(&crop, 0, sizeof(crop));
 		crop.right = (float)client_w;
 		crop.bottom = (float)client_h;
-		program_plane(h, req, slot, client_fb, 0, 0, (int)client_w,
+		plane_ok &= program_plane(h, req, slot, client_fb, 0, 0, (int)client_w,
 			      (int)client_h, &crop, 1.0f,
 			      HWC2_BLEND_MODE_NONE, false);
 		slot++;
@@ -2606,75 +2392,39 @@ static int32_t z1_present_display(hwc2_device_t *d, hwc2_display_t display,
 			   slot < h->plane_count; i++) {
 		z1_layer *l = device_layers[i];
 
-		/* Small layers are presented through a padded copy: never try to
-		 * import them (their framebuffer is below the kernel's 64x64
-		 * minimum, so AddFB2 always fails and used to set lost_fb,
-		 * which then demoted the layer again on the next frame). */
-		if (l->use_small) {
-			struct z1_handle *gh = (struct z1_handle *)l->handle;
-			hwc_frect_t crop;
-
-			if (!gh || small_layer_sync(h, l) != 0) {
-				l->lost_fb = true;
-				klogf(0, "z1hwc2: small layer %" PRIu64
-				     " copy failed, skipping\n",
-				      (uint64_t)l->id);
-				continue;
-			}
-			memset(&crop, 0, sizeof(crop));
-			crop.right = (float)gh->width;
-			crop.bottom = (float)gh->height;
-			program_plane(h, req, slot, l->small.fb_id,
-				      l->frame.left, l->frame.top,
-				      l->frame.right - l->frame.left,
-				      l->frame.bottom - l->frame.top,
-				      &crop, l->alpha, l->blend,
-				      l->small.fourcc == DRM_FORMAT_ABGR8888 ||
-					      l->small.fourcc == DRM_FORMAT_ARGB8888);
-			scanned.push_back(l);
-			slot++;
-			continue;
+		if (layer_copy_sync(h, l)) {
+			l->lost_fb = true;
+			drmModeAtomicFree(req);
+			return HWC2_ERROR_NO_RESOURCES;
 		}
-
-		if (!l->fb.fb_id || l->fb.handle != l->handle ||
-		    (l->handle &&
-		     l->fb.src_fd != ((struct z1_handle *)l->handle)->fd)) {
-			if (l->fb.fb_id)
-				fb_forget(h, &l->fb);
-			if (!l->handle || fb_import(h, l->handle, &l->fb) != 0) {
-				l->lost_fb = true;
-				klogf(0, "z1hwc2: layer %" PRIu64 " lost its "
-				     "framebuffer at present; it will be "
-				     "reported as CLIENT next frame\n",
-				      (uint64_t)l->id);
-				continue;
-			}
-		}
-		program_plane(h, req, slot, l->fb.fb_id,
-			      l->frame.left, l->frame.top,
-			      l->frame.right - l->frame.left,
-			      l->frame.bottom - l->frame.top,
-			      l->have_crop ? &l->crop : nullptr, l->alpha,
-			      l->blend,
-			      l->fb.fourcc == DRM_FORMAT_ABGR8888 ||
-				      l->fb.fourcc == DRM_FORMAT_ARGB8888);
-		if (g_verbose >= 3)
-			klogf(3, "z1hwc2: plane[%d] layer=%" PRIu64 " fb=%u "
-			     "dst=%d,%d %dx%d src=%dx%d alpha=%.3f blend=%d\n",
-			      slot, (uint64_t)l->id, l->fb.fb_id,
-			      l->frame.left, l->frame.top,
-			      l->frame.right - l->frame.left,
-			      l->frame.bottom - l->frame.top,
-			      (int)(l->crop.right - l->crop.left),
-			      (int)(l->crop.bottom - l->crop.top),
-			      l->alpha, l->blend);
+		auto gh = (const z1_handle *)l->handle;
+		z1_dumb *copy = &l->staging[l->copy_slot];
+		hwc_frect_t whole{};
+		whole.right = (float)gh->width;
+		whole.bottom = (float)gh->height;
+		plane_ok &= program_plane(h, req, slot, copy->fb_id,
+				  l->frame.left, l->frame.top,
+				  l->frame.right - l->frame.left,
+				  l->frame.bottom - l->frame.top,
+				  l->have_crop ? &l->crop : &whole,
+				  l->alpha, l->blend,
+				  copy->fourcc == DRM_FORMAT_ABGR8888 ||
+					  copy->fourcc == DRM_FORMAT_ARGB8888);
 		scanned.push_back(l);
 		slot++;
 	}
 	for (int p = slot; p < h->plane_count; p++)
-		program_plane(h, req, p, 0, 0, 0, 0, 0, nullptr, 1.0f, 0, false);
+		plane_ok &= program_plane(h, req, p, 0, 0, 0, 0, 0, nullptr, 1.0f, 0, false);
 
-	ret = drmModeAtomicCommit(h->drm_fd, req, flags, h);
+	if (scanned.size() != device_layers.size() || !plane_ok) {
+		drmModeAtomicFree(req);
+		return HWC2_ERROR_NO_RESOURCES;
+	}
+	if (!reserve_fence_slots(h->drm_fd, 1, &fence_slots)) {
+		drmModeAtomicFree(req);
+		return HWC2_ERROR_NO_RESOURCES;
+	}
+	ret = commit_with_fence(h, req, flags, &commit_fence);
 	if (ret) {
 		int err = errno;
 
@@ -2689,6 +2439,7 @@ static int32_t z1_present_display(hwc2_device_t *d, hwc2_display_t display,
 			drmModeAtomicFree(req);
 			req = drmModeAtomicAlloc();
 			if (req) {
+				plane_ok = true;
 				slot = 0;
 				if (client_fb && slot < h->plane_count) {
 					hwc_frect_t crop;
@@ -2696,44 +2447,48 @@ static int32_t z1_present_display(hwc2_device_t *d, hwc2_display_t display,
 					memset(&crop, 0, sizeof(crop));
 					crop.right = (float)client_w;
 					crop.bottom = (float)client_h;
-					program_plane(h, req, slot, client_fb,
+					plane_ok &= program_plane(h, req, slot, client_fb,
 						      0, 0, (int)client_w,
 						      (int)client_h, &crop, 1.0f,
 						      HWC2_BLEND_MODE_NONE, false);
 					slot++;
 				}
-				for (size_t i = 0;
-				     i < device_layers.size() &&
-				     slot < h->plane_count;
-				     i++) {
-					z1_layer *l = device_layers[i];
-
-					if (!l->fb.fb_id)
-						continue;
-					program_plane(h, req, slot, l->fb.fb_id,
-						      l->frame.left,
-						      l->frame.top,
+				for (z1_layer *l : scanned) {
+					uint32_t fb = l->staging[l->copy_slot].fb_id;
+					uint32_t fmt = l->staging[l->copy_slot].fourcc;
+					hwc_frect_t small_crop{};
+					auto gh = (const z1_handle *)l->handle;
+					small_crop.right = (float)gh->width;
+					small_crop.bottom = (float)gh->height;
+					plane_ok &= program_plane(h, req, slot, fb,
+						      l->frame.left, l->frame.top,
 						      l->frame.right - l->frame.left,
 						      l->frame.bottom - l->frame.top,
-						      l->have_crop ? &l->crop : nullptr,
+						      l->have_crop ? &l->crop : &small_crop,
 						      l->alpha, l->blend,
-						      l->fb.fourcc == DRM_FORMAT_ABGR8888 ||
-							      l->fb.fourcc == DRM_FORMAT_ARGB8888);
+						      fmt == DRM_FORMAT_ABGR8888 ||
+							      fmt == DRM_FORMAT_ARGB8888);
 					slot++;
 				}
 				for (int p = slot; p < h->plane_count; p++)
-					program_plane(h, req, p, 0, 0, 0, 0, 0,
+					plane_ok &= program_plane(h, req, p, 0, 0, 0, 0, 0,
 						      nullptr, 1.0f, 0, false);
-				ret = drmModeAtomicCommit(h->drm_fd, req, 0, h);
+				if (commit_fence >= 0)
+					close(commit_fence);
+				ret = plane_ok ? commit_with_fence(h, req, 0, &commit_fence) : -1;
 				if (ret == 0) {
 					klogf(1, "z1hwc2: plane-only commit "
 					     "accepted (no modeset)\n");
 					err = 0;
+					flags = 0;
 				}
 			}
 		}
 		if (ret) {
 			drmModeAtomicFree(req);
+			close_fence_slots(&fence_slots);
+			if (commit_fence >= 0)
+				close(commit_fence);
 			h->last_device_layers = (uint32_t)device_layers.size();
 			/*
 			 * Tell the truth: the frame did NOT reach the display.
@@ -2746,88 +2501,45 @@ static int32_t z1_present_display(hwc2_device_t *d, hwc2_display_t display,
 	}
 	drmModeAtomicFree(req);
 
-	/*
-	 * Destroy the framebuffers that were replaced before this commit, NOW
-	 * that the new plane state is in place.  Order matters: the kernel's
-	 * drm_framebuffer_remove() force-disables any plane that still
-	 * references the framebuffer being removed (it must, per the DRM ABI),
-	 * so doing this before the commit would blank the layer for one frame.
-	 */
-	if (!h->pending_release.empty()) {
-		for (size_t i = 0; i < h->pending_release.size(); i++) {
-			if (h->pending_release[i].first)
-				drmModeRmFB(h->drm_fd, h->pending_release[i].first);
-			if (h->pending_release[i].second)
-				drmCloseBufferHandle(h->drm_fd,
-						     h->pending_release[i].second);
-		}
-		h->pending_release.clear();
+	/* KMS accepted this frame. Keep its resources even if completion is
+	 * delayed. A following present must pass complete_commit() before it
+	 * can copy another frame or retire these framebuffer objects. */
+	if (commit_fence < 0) {
+		h->commit_broken = true;
+		close_fence_slots(&fence_slots);
+		klogf(0, "z1hwc2: successful commit returned no completion fence\n");
+		return HWC2_ERROR_NO_RESOURCES;
 	}
-
-	/*
-	 * Release fences.  A device layer's buffer may only be written again
-	 * once the display has stopped scanning it, which is when the *next*
-	 * frame is committed.  sw_sync gives us a fence we can signal later:
-	 * one frame per timeline point, signalled right after the following
-	 * commit.  Property gated because it needs CONFIG_SW_SYNC plus a
-	 * mounted debugfs.
-	 *
-	 * The present/retire fence is still -1: sf's DispSync treats -1 as
-	 * "unreliable" and falls back to its software model, which is the state
-	 * this panel has always run in.  (It also keeps the HAL from feeding
-	 * zero timestamps from sw_sync fences, which would poison the model.)
-	 */
-	if (h->fences_on) {
-		uint32_t next;
-
-		pthread_mutex_lock(&h->fence_lock);
-		/*
-		 * The commit above has replaced the plane state, so the
-		 * previous frame's buffers are only now guaranteed to be free.
-		 * (Signalling before the commit would let a producer rewrite a
-		 * buffer that is still being scanned.)
-		 */
-		if (h->fences_pending) {
-			if (sw_timeline_inc(h->timeline_fd, 1) == 0)
-				h->timeline_val++;
-			h->fences_pending = false;
+	for (int fd : fence_slots) {
+		int copied;
+		do {
+			copied = dup3(commit_fence, fd, O_CLOEXEC);
+		} while (copied < 0 && (errno == EINTR || errno == EBUSY));
+		if (copied < 0) {
+			h->commit_broken = true;
+			h->commit_fence = commit_fence;
+			close_fence_slots(&fence_slots);
+			return HWC2_ERROR_NO_RESOURCES;
 		}
-		next = h->timeline_val + 1;
-		for (size_t i = 0; i < scanned.size(); i++) {
-			z1_layer *l = scanned[i];
-
-			if (l->release_fence >= 0)
-				close(l->release_fence);
-			l->release_fence =
-				sw_fence_create(h->timeline_fd, "z1rel", next);
-		}
-		h->fences_pending = true;
-
-		/*
-		 * Present (retire) fence: must be signalled when this frame
-		 * starts to appear, i.e. at the next vblank.  The vsync thread
-		 * does that; if vsync reporting is off, fall back to an
-		 * already-signalled fence so nobody waits forever.
-		 */
-		if (h->present_tl >= 0) {
-			uint32_t v;
-
-			if (h->vsync_started && h->vsync_on) {
-				v = h->present_val + 1;
-				*out_retire_fence =
-					sw_fence_create(h->present_tl,
-							"z1present", v);
-				if (*out_retire_fence >= 0)
-					h->present_pending = true;
-			} else {
-				*out_retire_fence =
-					sw_fence_create(h->present_tl,
-							"z1present",
-							h->present_val);
-			}
-		}
-		pthread_mutex_unlock(&h->fence_lock);
 	}
+	h->commit_fence = fence_slots[0];
+	for (auto &entry : h->layers) {
+		z1_layer *l = &entry.second;
+
+		if (l->release_fence >= 0)
+			close(l->release_fence);
+		l->release_fence = -1; /* source read finished before KMS commit */
+	}
+	/* All reserved fds have transferred to the HAL/layers. */
+	fence_slots.clear();
+	*out_retire_fence = commit_fence;
+	h->submitted_release.swap(h->pending_release);
+	if (!strcmp(client_how, "copied"))
+		h->client_copy_slot ^= 1;
+	for (z1_layer *l : scanned)
+		l->copy_slot ^= 1;
+	(void)complete_commit(h, 0);
+
 	h->last_present_ms = now_ms();
 
 	if (!h->modeset_done) {
@@ -3022,27 +2734,25 @@ static int z1_close(hw_device_t *dev)
 		pthread_join(h->vsync_thread, nullptr);
 		h->vsync_started = false;
 	}
-	h->wd_stop = 1;
-	if (h->wd_started) {
-		pthread_join(h->wd_thread, nullptr);
-		h->wd_started = false;
+	if (h->commit_fence >= 0) {
+		(void)complete_commit(h, 1000);
+		if (h->commit_fence >= 0)
+			close(h->commit_fence);
 	}
-	if (h->present_tl >= 0) {
-		close(h->present_tl);
-		h->present_tl = -1;
-	}
-	if (h->fences_on) {
-		pthread_mutex_lock(&h->fence_lock);
-		if (h->fences_pending) {
-			(void)sw_timeline_inc(h->timeline_fd, 1);
-			h->fences_pending = false;
-		}
-		pthread_mutex_unlock(&h->fence_lock);
+	/* RmFB/DRM close retain kernel references as required; never forge a
+	 * successful fence when closing after a failed or stalled commit. */
+	for (const auto &fb : h->submitted_release) {
+		if (fb.first)
+			drmModeRmFB(h->drm_fd, fb.first);
+		if (fb.second)
+			drmCloseBufferHandle(h->drm_fd, fb.second);
 	}
 	for (std::map<hwc2_layer_t, z1_layer>::iterator it = h->layers.begin();
 	     it != h->layers.end(); ++it) {
 		if (it->second.fb.fb_id)
 			fb_forget(h, &it->second.fb);
+		for (int i = 0; i < 2; i++)
+			dumb_forget(h, &it->second.staging[i]);
 		if (it->second.acquire_fence >= 0)
 			close(it->second.acquire_fence);
 	}
@@ -3054,8 +2764,7 @@ static int z1_close(hw_device_t *dev)
 		if (h->pending_release[i].first)
 			drmModeRmFB(h->drm_fd, h->pending_release[i].first);
 		if (h->pending_release[i].second)
-			drmCloseBufferHandle(h->drm_fd,
-					     h->pending_release[i].second);
+			drmCloseBufferHandle(h->drm_fd, h->pending_release[i].second);
 	}
 	for (int i = 0; i < 2; i++) {
 		if (h->shadow[i].map && h->shadow[i].map != MAP_FAILED)
@@ -3074,8 +2783,6 @@ static int z1_close(hw_device_t *dev)
 	     it != h->layers.end(); ++it)
 		if (it->second.release_fence >= 0)
 			close(it->second.release_fence);
-	if (h->timeline_fd >= 0)
-		close(h->timeline_fd);
 	if (h->mode_blob)
 		drmModeDestroyPropertyBlob(h->drm_fd, h->mode_blob);
 	if (h->drm_fd >= 0)
@@ -3103,7 +2810,7 @@ static int z1_open(const hw_module_t *module, const char *name,
 		return -ENOMEM;
 	h->drm_fd = -1;
 	h->client_expected = true;
-	h->timeline_fd = -1;
+	h->commit_fence = -1;
 	h->client_acquire_fence = -1;
 	h->client_copy_slot = 0;
 	h->next_layer_id = 1;
@@ -3126,7 +2833,7 @@ static int z1_open(const hw_module_t *module, const char *name,
 		return -ENODEV;
 	}
 
-	fences_init(h);
+	vsync_init(h);
 
 	*device = &h->common;
 	return 0;
