@@ -1,0 +1,17 @@
+# Factory MTK NVRAM daemon. It restores the device-local cache below
+# /data/nvram and publishes nvram_init=Ready after NVM_Init().
+service nvram_daemon /system/bin/nvram_daemon
+    class main
+    user nvram
+    group nvram system
+    oneshot
+    disabled
+    seclabel u:r:init:s0
+
+on post-fs-data
+    mkdir /data/nvram 2770 root nvram
+    setprop sys.z1.nvram.ready 0
+    start nvram_daemon
+
+on property:nvram_init=Ready
+    setprop sys.z1.nvram.ready 1
