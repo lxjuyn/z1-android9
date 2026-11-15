@@ -165,7 +165,7 @@ def source_checks(base):
  codec = re.sub(r'/\*[\s\S]*?\*/|//[^\n]*', '', files['codec'])
  routes = re.search(r'mt6323_dapm_routes\[\]\s*=\s*\{([\s\S]*?)\n\};', codec)
  q = chr(34)
- supplies = set(re.findall(r'SND_SOC_DAPM_SUPPLY\(\s*'+q+'([^'+q+']+)'+q, codec))
+ supplies = set(re.findall(r'SND_SOC_DAPM_SUPPLY(?:_S)?\(\s*'+q+'([^'+q+']+)'+q, codec))
  if routes:
   pattern = r'\{\s*'+q+'([^'+q+']+)'+q+r'\s*,\s*(?:'+q+'[^'+q+']*'+q+r'|NULL)\s*,\s*'+q+'([^'+q+']+)'+q+r'\s*\}'
   edges = re.findall(pattern, routes.group(1)); reachable = {'MIC Input'}
@@ -176,6 +176,18 @@ def source_checks(base):
   ok = 'AIF1 Capture' in reachable
   checks.append(item('codec_signal_path', 'observed' if ok else 'blocked',
                      'MIC signal route reaches AIF1' if ok else 'No non-supply MIC Input -> AIF1 Capture route; DAPM supply edges do not carry signal connectivity'))
+  # A source dependency is not evidence of runtime register sequencing. Walk
+  # only unconditional edges so a controlled/invalid supply cannot look ready.
+  dependencies = {'AIF1 Capture'}
+  unconditional = re.findall(r'\{\s*"([^"]+)"\s*,\s*NULL\s*,\s*"([^"]+)"\s*\}', routes.group(1))
+  for _ in range(len(unconditional)+1):
+   previous = set(dependencies)
+   dependencies |= {src for sink,src in unconditional if sink in dependencies}
+   if previous == dependencies: break
+  clock_ok = 'AUDCLK' in supplies and 'AUDCLK' in dependencies and 'NEWIF' not in dependencies
+  checks.append(item('codec_capture_clock', 'observed' if clock_ok else 'blocked',
+                     'Capture depends on shared AUDCLK without downlink NEWIF; source graph only'
+                     if clock_ok else 'Missing unconditional capture AUDCLK dependency or capture enables downlink NEWIF'))
  else: checks.append(item('codec_signal_path', 'unknown', 'Route table parser did not match'))
  return checks, [dict(path=str(Path(base)/SOURCE_PATHS[k]),sha256=hashlib.sha256(v.encode()).hexdigest()) for k,v in files.items()]
 

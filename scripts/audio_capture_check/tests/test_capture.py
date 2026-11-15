@@ -113,6 +113,41 @@ class CaptureCheck(unittest.TestCase):
    p=Path(tmp)/'snapshot';p.write_text(SNAPSHOT);out=io.StringIO()
    with contextlib.redirect_stdout(out): rc=c.main(['--snapshot',str(p)])
    result=json.loads(out.getvalue());self.assertEqual(rc,0);self.assertEqual(result['result'],'incomplete');self.assertFalse(result['recording_verified'])
+ def test_subsequenced_supply_cannot_carry_signal(self):
+  with tempfile.TemporaryDirectory(dir=BASE/'tests') as tmp:
+   p=Path(tmp)
+   for rel in c.SOURCE_PATHS.values(): (p/rel).parent.mkdir(parents=True,exist_ok=True);(p/rel).write_text('placeholder')
+   codec=p/c.SOURCE_PATHS['codec']
+   codec.write_text('''SND_SOC_DAPM_SUPPLY_S("MIC UL", 1, 0)
+static const struct snd_soc_dapm_route mt6323_dapm_routes[] = {
+ { "MIC UL", NULL, "MIC Input" },
+ { "AIF1 Capture", NULL, "MIC UL" },
+};''')
+   checks,_=c.source_checks(p)
+   self.assertEqual(next(x['status'] for x in checks if x['code']=='codec_signal_path'),'blocked')
+
+ def test_capture_clock_dependency_is_required_and_not_downlink(self):
+  with tempfile.TemporaryDirectory(dir=BASE/'tests') as tmp:
+   p=Path(tmp)
+   for rel in c.SOURCE_PATHS.values(): (p/rel).parent.mkdir(parents=True,exist_ok=True);(p/rel).write_text('placeholder')
+   codec=p/c.SOURCE_PATHS['codec']
+   text='''SND_SOC_DAPM_SUPPLY("AUDCLK", 0)
+SND_SOC_DAPM_SUPPLY_S("MIC UL", 1, 0)
+static const struct snd_soc_dapm_route mt6323_dapm_routes[] = {
+ { "MIC Route", "Switch", "MIC Input" },
+ { "MIC Route", NULL, "MIC UL" },
+ { "AIF1 Capture", NULL, "MIC Route" },
+ CLOCK_EDGE
+};'''
+   for edge,expected in [('', 'blocked'),
+      ('{ "MIC UL", NULL, "AUDCLK" },','observed'),
+      ('{ "MIC UL", "Switch", "AUDCLK" },','blocked'),
+      ('{ "MIC UL", NULL, "AUDCLK" }, { "MIC UL", NULL, "NEWIF" },','blocked')]:
+    with self.subTest(edge=edge):
+     codec.write_text(text.replace('CLOCK_EDGE',edge))
+     checks,_=c.source_checks(p)
+     self.assertEqual(next(x['status'] for x in checks if x['code']=='codec_capture_clock'),expected)
+
  def test_supply_graph_and_real_route(self):
   with tempfile.TemporaryDirectory(dir=BASE/'tests') as tmp:
    p=Path(tmp)
