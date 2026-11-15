@@ -269,10 +269,14 @@ static int out_set_volume(struct audio_stream_out *s, float l, float r)
 
 static int out_get_render_position(const struct audio_stream_out *s, uint32_t *f)
 {
-    /* 原版恒 0; 有写帧计数后返回累计帧数 (简单 HAL 惯例, 优于常量 0)。 */
+    /* pcm_write completion is not DAC presentation. Returning the submitted
+     * frame count makes AudioFlinger treat queued data as already audible and
+     * corrupts A/V latency accounting. This HAL has no reliable hardware
+     * timestamp, so explicitly select the framework's unsupported fallback. */
+    (void)s;
     if (f)
-        *f = (uint32_t)((const struct z1_stream_out *)s)->frames_written;
-    return 0;
+        *f = 0;
+    return -ENOSYS;
 }
 
 static int out_get_next_write_timestamp(const struct audio_stream_out *s, int64_t *t)
@@ -293,13 +297,13 @@ static int out_flush(struct audio_stream_out *s) { (void)s; return 0; }
 static int out_get_presentation_position(const struct audio_stream_out *s,
                                          uint64_t *frames, struct timespec *timestamp)
 {
-    const struct z1_stream_out *o = (const struct z1_stream_out *)s;
-    if (!frames || !timestamp)
-        return -EINVAL;
-    *frames = o->frames_written;
-    if (clock_gettime(CLOCK_MONOTONIC, timestamp) != 0)
-        return -errno;
-    return 0;
+    /* As above, do not claim that the kernel write boundary is DAC playback. */
+    (void)s;
+    if (frames)
+        *frames = 0;
+    if (timestamp)
+        memset(timestamp, 0, sizeof(*timestamp));
+    return -ENOSYS;
 }
 
 /* ======================== device functions ======================= */
@@ -326,9 +330,10 @@ static char *adev_get_parameters(const struct audio_hw_device *dev, const char *
 
 static size_t adev_get_input_buffer_size(const struct audio_hw_device *dev,
                                         const struct audio_config *cfg)
-{ (void)dev;
-  size_t ch = popcount_mask(cfg->channel_mask) ? popcount_mask(cfg->channel_mask) : 2;
-  return ch * sizeof(int16_t) * Z1_DEFAULT_PERIOD; }
+{ (void)dev; (void)cfg;
+  /* open_input_stream is still -ENOSYS. Returning a non-zero size advertises
+   * capture support to the HIDL wrapper before the open call rejects it. */
+  return 0; }
 
 static int adev_open_output_stream(struct audio_hw_device *dev,
                                   audio_io_handle_t handle, audio_devices_t devices,

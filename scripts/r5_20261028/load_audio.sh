@@ -81,6 +81,8 @@ else
     log "/proc/asound/cards absent (snd core did not register a card)"
 fi
 
-n=$(grep -c '^mt\|^snd\|^sound' /proc/modules 2>/dev/null)
+# Use ERE alternation and make an empty match count a valid zero, so the
+# diagnostic cannot hide a loaded stack behind grep's non-zero exit status.
+n=$(grep -Ec '^(mt|snd|sound)' /proc/modules 2>/dev/null || true)
 log "=== audio load done: $n audio modules in /proc/modules ==="
 exit 0

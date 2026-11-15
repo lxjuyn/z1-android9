@@ -145,8 +145,8 @@ static void retry_case(struct audio_stream_out *out, int null_handle)
         CHECK(write_audio(out) == (ssize_t)sizeof(samples), "keep writing on ready handle");
     CHECK(open_calls == 2, "ready handle reused");
     uint32_t frames = 0;
-    CHECK(out->get_render_position(out, &frames) == 0 && frames == 20,
-          "count only successfully submitted frames");
+    CHECK(out->get_render_position(out, &frames) == -ENOSYS && frames == 0,
+          "do not report queued frames as DAC presentation");
     printf("retry %s: observed opens=%u writes=%u\n",
            null_handle ? "NULL" : "non-ready", open_calls, write_calls);
 }
@@ -209,12 +209,12 @@ static void write_error_case(struct audio_stream_out *out)
     write_error = 1;
     CHECK(write_audio(out) == -EIO, "write error not reported as consumed bytes");
     uint32_t frames = 99;
-    CHECK(out->get_render_position(out, &frames) == 0 && frames == 0,
-          "failed write adds no frames");
+    CHECK(out->get_render_position(out, &frames) == -ENOSYS && frames == 0,
+          "failed write does not claim a presentation position");
     write_error = 0;
     CHECK(write_audio(out) == (ssize_t)sizeof(samples), "next successful write accepted");
-    CHECK(out->get_render_position(out, &frames) == 0 && frames == 4,
-          "successful write adds frames");
+    CHECK(out->get_render_position(out, &frames) == -ENOSYS && frames == 0,
+          "successful write still lacks a DAC presentation timestamp");
     printf("write error: final submitted frames=%u (mock only)\n", frames);
 }
 
