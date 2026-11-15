@@ -95,17 +95,37 @@ expected=$(printf '%x:0' "$major") || die "cannot format GPS major"
 [ "$rdev" = "$expected" ] || die "stpgps major/minor mismatch; existing node left untouched"
 chmod 0660 "$NODE" && chown 1000:1000 "$NODE" || die "cannot set stpgps permissions"
 
+SOCKET=/dev/socket/mnld
 if [ "$state" != running ]; then
     start mnld || die "init rejected start mnld"
 fi
+
+# init creates the socket before exec'ing mnld. Require the service state,
+# socket, and STP node together before accepting startup as ready.
 i=0
 while [ "$i" -lt 5 ]; do
     state=$(getprop init.svc.mnld) || die "cannot read mnld state after start"
-    if [ "$state" = running ]; then
-        log "mnld reports running; satellites, NMEA and location callbacks remain unverified"
-        exit 0
+    if [ "$state" = running ] && test -S "$SOCKET" && test -c "$NODE"; then
+        break
     fi
     sleep 1 || die "service wait interrupted"
     i=$((i + 1))
 done
-die "mnld did not report running within 5s (state=$state)"
+state=$(getprop init.svc.mnld) || die "cannot reread mnld state after readiness wait"
+[ "$state" = running ] || die "mnld did not remain running within 5s (state=$state)"
+test -S "$SOCKET" || die "mnld reports running but its socket is absent"
+test -c "$NODE" || die "mnld reports running but the STP transport disappeared"
+
+# A momentary running state is not healthy. Board logs show mnld surviving
+# 1.2-5.1s before exit 1, so hold readiness across an 8s stabilization window.
+stable=0
+while [ "$stable" -lt 8 ]; do
+    sleep 1 || die "service stabilization interrupted"
+    state=$(getprop init.svc.mnld) || die "cannot read mnld state while stabilizing"
+    [ "$state" = running ] || die "mnld exited during 8s stabilization (state=$state)"
+    test -S "$SOCKET" || die "mnld socket disappeared during stabilization"
+    test -c "$NODE" || die "STP transport disappeared during stabilization"
+    stable=$((stable + 1))
+done
+log "mnld stayed running for 8s with socket and STP transport; satellites, NMEA and location callbacks remain unverified"
+exit 0

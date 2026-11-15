@@ -73,7 +73,9 @@ def mock(command, args):
         state['node_rdev'] = f'{int(args[2]):x}:{int(args[3]):x}'
         save()
     elif command == 'test':
-        assert len(args) == 2 and args[0] == '-c'
+        assert len(args) == 2 and args[0] in ('-c', '-S')
+        if args[0] == '-S':
+            return 0 if path(args[1]).is_file() else 1
         return 0 if path(args[1]).is_file() and state.get('node_rdev') else 1
     elif command == 'stat':
         assert args[:2] == ['-c', '%t:%T']
@@ -87,6 +89,10 @@ def mock(command, args):
         assert args == ['mnld']
         if not state.get('never_running'):
             state['props']['init.svc.mnld'] = 'running'
+            state['service_started'] = True
+            state['running_sleeps'] = 0
+            if not state.get('omit_socket'):
+                (root / 'dev/socket/mnld').touch()
         save()
     elif command in ('stop', 'setprop'):
         raise AssertionError('must not fake service state or stop another service')
@@ -104,6 +110,15 @@ def mock(command, args):
         assert args == ['-o', 'remount,rw', '/']
     elif command == 'sleep':
         assert args == ['1']
+        if state.get('service_started') and state.get('props', {}).get('init.svc.mnld') == 'running':
+            sleeps = state.get('running_sleeps', 0) + 1
+            state['running_sleeps'] = sleeps
+            if sleeps >= state.get('exit_after_running_sleeps', 1 << 30):
+                state['props']['init.svc.mnld'] = 'stopped'
+                (root / 'dev/socket/mnld').unlink(missing_ok=True)
+            if sleeps >= state.get('drop_transport_after_running_sleeps', 1 << 30):
+                (root / 'dev/stpgps').unlink(missing_ok=True)
+            save()
     elif command == 'sh':
         target = path(args[0])
         assert '# GPS_HOST_TEST_COPY' in target.read_text()
@@ -119,7 +134,7 @@ class Fixture:
         self.tmp = tempfile.TemporaryDirectory(prefix='z1-gps-regression-')
         self.root = Path(self.tmp.name)
         self.shell = shell
-        for d in ('data/misc', 'dev', 'proc', 'vendor/bin', 'system/xbin',
+        for d in ('data/misc', 'dev/socket', 'proc', 'vendor/bin', 'system/xbin',
                   'system/lib/modules/z1-radio', 'system/etc/permissions', 'package/z1_gpsdrv'):
             (self.root / d).mkdir(parents=True)
         initial = {'props': {'init.svc.mnld': 'stopped'}}
@@ -138,7 +153,7 @@ class Fixture:
                    'install_gps.sh': HERE / 'install_gps.sh',
                    'z1_gpsdrv_load.sh': HERE / 'z1_gpsdrv_load.sh'}
         # Single regex substitution prevents rewriting paths inside replacements.
-        pattern = re.compile(r'/(?:data|system|sys|proc|vendor)(?=/)|/dev/(?:kmsg|stpgps)')
+        pattern = re.compile(r'/(?:data|system|sys|proc|vendor)(?=/)|/dev/(?:kmsg|stpgps|socket)')
         wrappers = '\n'.join(
             f'{c}() {{ {shlex.quote(sys.executable)} {shlex.quote(str(Path(__file__).resolve()))} '
             f'--mock {c} "$@"; }}' for c in COMMANDS)
@@ -340,6 +355,37 @@ class GPSRegression(unittest.TestCase):
             self.assertEqual(f.calls('start'), [['mnld']])
             self.assertEqual(len(f.calls('sleep')), 5)
         self.each([('start accepted but not running', check)])
+
+    def test_service_early_exit_fails_stabilization(self):
+        def check(f):
+            f.patch_state(exit_after_running_sleeps=3)
+            result = f.run()
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('exited during 8s stabilization', (f.root / 'dev/kmsg').read_text())
+            self.assertEqual(f.calls('start'), [['mnld']])
+        self.each([('running then exit 1', check)])
+
+    def test_socket_and_transport_must_survive_startup(self):
+        def missing_socket(f):
+            f.patch_state(omit_socket=True)
+            result = f.run()
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('socket is absent', (f.root / 'dev/kmsg').read_text())
+        def lost_transport(f):
+            f.patch_state(drop_transport_after_running_sleeps=3)
+            result = f.run()
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('STP transport disappeared during stabilization',
+                          (f.root / 'dev/kmsg').read_text())
+        self.each([('socket absent', missing_socket), ('transport disappears', lost_transport)])
+
+    def test_success_requires_full_stabilization_window(self):
+        def check(f):
+            self.success(f)
+            self.assertEqual(len(f.calls('sleep')), 8)
+            self.assertIn('stayed running for 8s with socket and STP transport',
+                          (f.root / 'dev/kmsg').read_text())
+        self.each([('stable for eight seconds', check)])
 
     def test_loader_exactly_one_attempt_and_attribute_checks(self):
         def failed(f):
