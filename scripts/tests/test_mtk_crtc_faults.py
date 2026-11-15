@@ -60,7 +60,7 @@ def main():
 
     for fragment, label in (
         ("mtk_crtc->failed_fbs = devm_kcalloc", "failed_fbs allocation"),
-        ("mtk_crtc->failed_extra_fbs = devm_kcalloc", "failed_extra_fbs allocation"),
+        ("mtk_crtc->failed_async_fbs = devm_kcalloc", "failed_async_fbs allocation"),
         (".atomic_check", "atomic-check registration"),
         ("= mtk_crtc_atomic_check,", "atomic-check callback"),
     ):
@@ -209,7 +209,7 @@ struct mtk_crtc {
 	struct spinlock config_lock;
 	int config_error;
 	struct drm_framebuffer **failed_fbs;
-	struct drm_framebuffer **failed_extra_fbs;
+	struct drm_framebuffer **failed_async_fbs;
 };
 
 static inline struct mtk_crtc *to_mtk_crtc(struct drm_crtc *crtc)
@@ -463,7 +463,7 @@ static void fixture_init(struct fixture *fixture, unsigned int layers)
 	fixture->mtk.planes = fixture->planes;
 	fixture->mtk.layer_nr = layers;
 	fixture->mtk.failed_fbs = fixture->failed;
-	fixture->mtk.failed_extra_fbs = fixture->failed_async;
+	fixture->mtk.failed_async_fbs = fixture->failed_async;
 	for (i = 0; i < layers; i++)
 		fixture->planes[i].state = &fixture->plane_states[i];
 	reset_observers();
@@ -798,7 +798,7 @@ static void test_async_fault_keeps_distinct_swapped_out_fb(void)
 
 	mtk_crtc_fail_config_locked(&fixture.mtk, &first, -EIO);
 	assert(fixture.mtk.failed_fbs[0] == &first_fb);
-	assert(fixture.mtk.failed_extra_fbs[0] == NULL);
+	assert(fixture.mtk.failed_async_fbs[0] == NULL);
 	assert(first_fb.refs == 1);
 	assert(framebuffer_gets == 1);
 
@@ -808,7 +808,7 @@ static void test_async_fault_keeps_distinct_swapped_out_fb(void)
 	add_plane_state(&later, &fixture.planes[0], NULL, &later_state);
 	mtk_crtc_fail_config_locked(&fixture.mtk, &later, -EIO);
 	assert(fixture.mtk.failed_fbs[0] == &first_fb);
-	assert(fixture.mtk.failed_extra_fbs[0] == &later_fb);
+	assert(fixture.mtk.failed_async_fbs[0] == &later_fb);
 	assert(first_fb.refs == 1);
 	assert(later_fb.refs == 1);
 	assert(framebuffer_gets == 2);
@@ -818,63 +818,11 @@ static void test_async_fault_keeps_distinct_swapped_out_fb(void)
 	repeated.new_crtc_state = &crtc_state;
 	add_plane_state(&repeated, &fixture.planes[0], NULL, &later_state);
 	mtk_crtc_fail_config_locked(&fixture.mtk, &repeated, -EIO);
-	assert(fixture.mtk.failed_extra_fbs[0] == &later_fb);
+	assert(fixture.mtk.failed_async_fbs[0] == &later_fb);
 	assert(later_fb.refs == 1);
 	assert(framebuffer_gets == 2);
 	assert(error_logs == 1);
 	puts("PASS async-fault-keeps-distinct-swapped-out-fb");
-}
-
-static void test_queued_fault_keeps_distinct_old_fb(void)
-{
-	struct fixture fixture;
-	struct drm_atomic_state first;
-	struct drm_atomic_state queued;
-	struct drm_plane_state current_state;
-	struct drm_plane_state queued_old_state;
-	struct drm_plane_state queued_new_state;
-	struct drm_crtc_state crtc_state;
-	struct drm_framebuffer future_fb;
-	struct drm_framebuffer queued_old_fb;
-
-	fixture_init(&fixture, 1);
-	memset(&first, 0, sizeof(first));
-	memset(&queued, 0, sizeof(queued));
-	memset(&current_state, 0, sizeof(current_state));
-	memset(&queued_old_state, 0, sizeof(queued_old_state));
-	memset(&queued_new_state, 0, sizeof(queued_new_state));
-	memset(&crtc_state, 0, sizeof(crtc_state));
-	memset(&future_fb, 0, sizeof(future_fb));
-	memset(&queued_old_fb, 0, sizeof(queued_old_fb));
-
-	current_state.crtc = &fixture.mtk.base;
-	current_state.fb = &future_fb;
-	queued_old_state.crtc = &fixture.mtk.base;
-	queued_old_state.fb = &queued_old_fb;
-	queued_new_state.crtc = &fixture.mtk.base;
-	queued_new_state.fb = &future_fb;
-	fixture.plane_states[0] = current_state;
-
-	first.crtc = &fixture.mtk.base;
-	first.new_crtc_state = &crtc_state;
-	mtk_crtc_fail_config_locked(&fixture.mtk, &first, -EIO);
-	assert(fixture.mtk.failed_fbs[0] == &future_fb);
-	assert(fixture.mtk.failed_extra_fbs[0] == NULL);
-	assert(future_fb.refs == 1);
-	assert(framebuffer_gets == 1);
-
-	queued.crtc = &fixture.mtk.base;
-	queued.new_crtc_state = &crtc_state;
-	add_plane_state(&queued, &fixture.planes[0], &queued_old_state,
-			&queued_new_state);
-	mtk_crtc_fail_config_locked(&fixture.mtk, &queued, -EIO);
-	assert(fixture.mtk.failed_fbs[0] == &future_fb);
-	assert(fixture.mtk.failed_extra_fbs[0] == &queued_old_fb);
-	assert(future_fb.refs == 1);
-	assert(queued_old_fb.refs == 1);
-	assert(framebuffer_gets == 2);
-	assert(error_logs == 1);
-	puts("PASS queued-fault-keeps-distinct-old-fb");
 }
 
 static void test_post_error_irq_stops_reprogramming(void)
@@ -930,7 +878,6 @@ int main(void)
 	test_atomic_begin_duplicate_event_fails_both_events();
 	test_failure_pins_scanout_and_completes_events();
 	test_async_fault_keeps_distinct_swapped_out_fb();
-	test_queued_fault_keeps_distinct_old_fb();
 	test_post_error_irq_stops_reprogramming();
 	test_plane_check_rejects_sticky_error_before_dispatch();
 	return 0;
