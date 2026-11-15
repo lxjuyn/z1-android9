@@ -21,7 +21,8 @@ HERE = Path(__file__).resolve().parent
 PREP = HERE.parents[1] / 'ramdisk_v9/z1_gps_prep.sh'
 ATTRS = ('status', 'state', 'pwrctl', 'suspend', 'pwrsave')
 COMMANDS = ('insmod', 'mknod', 'test', 'stat', 'chown', 'chmod', 'getprop',
-            'start', 'stop', 'setprop', 'mount', 'cp', 'mv', 'sleep', 'id', 'sh')
+            'start', 'stop', 'setprop', 'mount', 'cp', 'cmp', 'mv', 'sleep',
+            'id', 'sh')
 SHELLS = [[shutil.which('dash') or '/bin/sh']]
 if shutil.which('busybox'):
     SHELLS.append([shutil.which('busybox'), 'ash'])
@@ -103,12 +104,21 @@ def mock(command, args):
     elif command == 'cp':
         source, destination = map(path, args)
         shutil.copy2(source, destination)
+        if state.get('corrupt_after_copy') == source.name:
+            destination.write_bytes(b'corrupt readback fixture')
+    elif command == 'cmp':
+        assert len(args) == 3 and args[0] == '-s'
+        source, destination = map(path, args[1:])
+        return 0 if source.read_bytes() == destination.read_bytes() else 1
     elif command == 'id':
         assert args == ['-u']
         print(state.get('uid', 0))
     elif command == 'mount':
-        assert args[:2] == ['-o', 'remount,rw']
+        assert len(args) == 3 and args[0] == '-o'
         assert path(args[2]) == root / 'system'
+        assert args[1] in ('remount,rw', 'remount,ro')
+        if args[1] == 'remount,ro' and state.get('fail_ro_mount'):
+            return 1
     elif command == 'sleep':
         assert args == ['1']
         if state.get('service_started') and state.get('props', {}).get('init.svc.mnld') == 'running':
@@ -413,29 +423,62 @@ class GPSRegression(unittest.TestCase):
         self.each([(r, case(r)) for r in ('B', 'b', 'unknown')])
 
     def test_installer_propagates_failures(self):
-        def case(change):
+        def case(change, mount_modes):
             def check(f):
                 change(f)
                 self.failure(f, 'install_gps.sh')
                 self.assertFalse(f.calls('start'))
+                self.assertEqual(
+                    f.calls('mount'),
+                    [['-o', mode, str(f.root / 'system')] for mode in mount_modes])
             return check
         self.each([
-            ('not root', case(lambda f: f.patch_state(uid=1000))),
-            ('service mismatch', case(lambda f: f.patch_state(props={'init.svc.z1_mnld': 'running'}))),
-            ('remount failure', case(lambda f: f.patch_state(fail=['mount']))),
-            ('copy failure', case(lambda f: f.patch_state(fail=['cp']))),
-            ('prep failure', case(lambda f: f.patch_state(fail_module='z1_gpsdrv.ko'))),
+            ('not root', case(lambda f: f.patch_state(uid=1000), ())),
+            ('service mismatch', case(
+                lambda f: f.patch_state(props={'init.svc.z1_mnld': 'running'}), ())),
+            ('remount failure', case(
+                lambda f: f.patch_state(fail=['mount']),
+                ('remount,rw', 'remount,ro'))),
+            ('copy failure', case(
+                lambda f: f.patch_state(fail=['cp']),
+                ('remount,rw', 'remount,ro'))),
+            ('readback failure', case(
+                lambda f: f.patch_state(corrupt_after_copy='z1_gpsdrv.ko'),
+                ('remount,rw', 'remount,ro'))),
+            ('prep failure', case(
+                lambda f: f.patch_state(fail_module='z1_gpsdrv.ko'),
+                ('remount,rw', 'remount,ro'))),
         ])
 
     def test_installer_happy_path_is_not_location_success(self):
         def check(f):
             self.success(f, 'install_gps.sh', 'A')
             self.assertEqual(f.calls('mount'),
-                             [['-o', 'remount,rw', str(f.root / 'system')]])
+                             [['-o', 'remount,rw', str(f.root / 'system')],
+                              ['-o', 'remount,ro', str(f.root / 'system')]])
+            self.assertEqual(
+                [(Path(c[1]).name, Path(c[2]).name) for c in f.calls('cmp')],
+                [('z1_gpsdrv.ko', 'z1_gpsdrv.ko'),
+                 ('android.hardware.location.gps.xml',
+                  'android.hardware.location.gps.xml')])
             self.assertEqual(f.calls('start'), [['mnld']])
             message = (f.root / 'dev/kmsg').read_text()
             self.assertIn('no satellite or location verification', message)
         self.each([('installer complete', check)])
+
+    def test_installer_fails_if_system_cannot_be_restored_read_only(self):
+        def check(f):
+            f.patch_state(fail_ro_mount=True)
+            result = f.run('install_gps.sh', 'A')
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(f.calls('start'), [['mnld']])
+            self.assertEqual(
+                f.calls('mount'),
+                [['-o', 'remount,rw', str(f.root / 'system')],
+                 ['-o', 'remount,ro', str(f.root / 'system')]])
+            self.assertIn(f"cannot restore {f.root / 'system'} read-only",
+                          (f.root / 'dev/kmsg').read_text())
+        self.each([('read-only restore failure', check)])
 
     def test_route_b_patch_never_reads_or_writes_blobs(self):
         with tempfile.TemporaryDirectory() as d:
