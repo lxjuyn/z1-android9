@@ -21,6 +21,7 @@ ALLOWED = {
     "hwcomposer.z1.so", "gralloc.z1.so", "z1_audio.primary.mt6572.so",
     "z1_libwifi-hal.so", "z1_libbt-vendor.so", "z1_cst836u.ko",
     "z1_mt6572-afe-pcm.ko", "z1_snd-soc-mt6323.ko", "z1stage_boot.sh",
+    "z1rootd.sh",
 }
 MODULE_VERMAGIC = b"7.0.0-rc7-z1+ SMP mod_unload ARMv7 p2v8 "
 

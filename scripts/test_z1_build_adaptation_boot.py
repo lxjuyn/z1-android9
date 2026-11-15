@@ -160,6 +160,27 @@ class AdaptationBootTests(unittest.TestCase):
             digest, name = line.split("  ")
             self.assertEqual(digest, boot.sha((self.output / name).read_bytes()))
 
+    def test_rootd_update_is_baked_in_and_keeps_storage_and_metadata(self):
+        old_rootd = b"#!/system/bin/sh\n# old root daemon\n"
+        self.files["z1rootd.sh"] = old_rootd
+        self.body = b"".join(record(n, d, 0o100755 if n == "z1rootd.sh" else 0o100644)
+                             for n, d in self.files.items()) + record("TRAILER!!!", b"")
+        self.write_base()
+        new_rootd = b"#!/system/bin/sh\n# atomic output daemon\n"
+        (self.root / "new-rootd.sh").write_bytes(new_rootd)
+        self.data["base"] = self.identity("base.img")
+        self.data["replacements"] = [{"name": "z1rootd.sh",
+            "source": self.identity("new-rootd.sh"), "original_sha256": boot.sha(old_rootd)}]
+        self.save()
+        candidate.build(self.manifest, self.output)
+        _, _, _, _, rd = boot.split_boot((self.output / "boot.img").read_bytes())
+        body, records = boot.cpio(rd)
+        files = boot.contents(body, records)
+        self.assertEqual(files["z1rootd.sh"], new_rootd)
+        self.assertEqual(files["init.z1.rc"], self.files["init.z1.rc"])
+        rootd = next(r for r in records if r["name"] == "z1rootd.sh")
+        self.assertEqual(rootd["fields"][1], 0o100755)
+
     def test_all_input_hashes_and_original_hash_are_checked(self):
         original = copy.deepcopy(self.data)
         for key in ("base", "zimage", "dtb", "source", "old"):
