@@ -91,6 +91,9 @@ def main():
             "static enum z1_temp_gate z1_charger_temp_check(",
             "static void z1_charger_apply(",
             "static void z1_charger_update(",
+            "static void z1_charger_stop(",
+            "static void z1_charger_remove(",
+            "static void z1_charger_shutdown(",
         )
     )
     define_names = (
@@ -150,8 +153,22 @@ def main():
 struct device { int unused; };
 struct delayed_work { int unused; };
 struct iio_channel { int unused; };
-struct mutex { int unused; };
+struct mutex { int held; };
 struct power_supply { int unused; };
+struct z1_charger;
+struct platform_device {
+	struct z1_charger *drvdata;
+};
+
+CHARGER_STRUCT
+
+static void mutex_lock(struct mutex *lock);
+static void mutex_unlock(struct mutex *lock);
+static void cancel_delayed_work_sync(struct delayed_work *work);
+static struct z1_charger *platform_get_drvdata(struct platform_device *pdev);
+static void power_supply_put(struct power_supply *psy);
+static void check_impl(int condition, const char *expression, int line);
+#define CHECK(expression) check_impl(!!(expression), #expression, __LINE__)
 
 union power_supply_propval {
 	int intval;
@@ -216,6 +233,10 @@ static int battery_temp_error;
 static int battery_lookups;
 static int battery_reads;
 static int power_supply_changes;
+static int power_supply_puts;
+static int cancel_calls;
+static struct z1_charger *lifecycle_charger;
+static int lifecycle_checks;
 static struct power_supply battery;
 
 static void record_operation(enum operation_kind kind, unsigned int reg,
@@ -264,6 +285,11 @@ static int regmap_update_bits(struct regmap *regmap, unsigned int reg,
 	int ret;
 
 	record_operation(OP_UPDATE, reg, mask, value);
+	if (lifecycle_checks && reg == MT6323_CHR_CON0) {
+		CHECK(lifecycle_charger->stopping);
+		CHECK(cancel_calls == 1);
+		CHECK(lifecycle_charger->lock.held);
+	}
 	ret = injected_fault();
 	if (ret)
 		return ret;
@@ -277,9 +303,7 @@ static int regmap_update_bits(struct regmap *regmap, unsigned int reg,
 		else if (mask &
 			 (Z1_CHR_CON0_CSDAC_EN | Z1_CHR_CON0_CHR_EN))
 			effective_mask &=
-				regmap->master_sticky_mask |
-				~(Z1_CHR_CON0_CSDAC_EN |
-				  Z1_CHR_CON0_CHR_EN);
+				~regmap->master_sticky_mask;
 	}
 	regmap->regs[reg] =
 		(regmap->regs[reg] & ~effective_mask) |
@@ -329,7 +353,6 @@ static void power_supply_changed(struct power_supply *psy)
 #define dev_err_once(...) ((void)0)
 #define dev_err_ratelimited(...) ((void)0)
 
-CHARGER_STRUCT
 TEMP_ENUM
 
 static struct device device;
@@ -342,14 +365,18 @@ static void reset_harness(void)
 	map.fault_at = -1;
 	map.second_fault_at = -1;
 	map.fault_error = -EIO;
-	map.master_sticky_mask =
-		Z1_CHR_CON0_CSDAC_EN | Z1_CHR_CON0_CHR_EN;
+	/* A reset mock has normal hardware; fault tests opt into sticky bits. */
+	map.master_sticky_mask = 0;
 	battery_present = 0;
 	battery_temp = 250;
 	battery_temp_error = 0;
 	battery_lookups = 0;
 	battery_reads = 0;
 	power_supply_changes = 0;
+	power_supply_puts = 0;
+	cancel_calls = 0;
+	lifecycle_charger = NULL;
+	lifecycle_checks = 0;
 }
 
 static void reset_charger(struct z1_charger *chg)
@@ -369,7 +396,37 @@ static void check_impl(int condition, const char *expression, int line)
 	exit(1);
 }
 
-#define CHECK(expression) check_impl(!!(expression), #expression, __LINE__)
+static void mutex_lock(struct mutex *lock)
+{
+	CHECK(!lock->held);
+	lock->held = 1;
+}
+
+static void mutex_unlock(struct mutex *lock)
+{
+	CHECK(lock->held);
+	lock->held = 0;
+}
+
+static void cancel_delayed_work_sync(struct delayed_work *work)
+{
+	CHECK(lifecycle_charger != NULL);
+	CHECK(work == &lifecycle_charger->poll_work);
+	CHECK(lifecycle_charger->stopping);
+	CHECK(!lifecycle_charger->lock.held);
+	cancel_calls++;
+}
+
+static struct z1_charger *platform_get_drvdata(struct platform_device *pdev)
+{
+	return pdev->drvdata;
+}
+
+static void power_supply_put(struct power_supply *psy)
+{
+	CHECK(psy == &battery);
+	power_supply_puts++;
+}
 
 static int count_operations(enum operation_kind kind, unsigned int reg)
 {
@@ -453,7 +510,6 @@ static void test_enable_master_readback(void)
 	const unsigned int sticky[] = {
 		Z1_CHR_CON0_CHR_EN,
 		Z1_CHR_CON0_CSDAC_EN,
-		0,
 	};
 	unsigned int i;
 
@@ -510,6 +566,11 @@ static void test_disable_success(void)
 static void test_disable_master_faults(void)
 {
 	struct z1_charger chg;
+	const unsigned int stuck_bits[] = {
+		Z1_CHR_CON0_CHR_EN,
+		Z1_CHR_CON0_CSDAC_EN,
+	};
+	unsigned int i;
 
 	reset_charger(&chg);
 	chg.charging = true;
@@ -540,7 +601,76 @@ static void test_disable_master_faults(void)
 	CHECK(chg.charging);
 	CHECK(chg.disable_pending);
 	CHECK(map.operation_count == 2);
+	for (i = 0; i < sizeof(stuck_bits) / sizeof(stuck_bits[0]); i++) {
+		unsigned int watchdog15 = Z1_CHR_CON15_CHRWDT_INT_EN |
+			Z1_CHR_CON15_CHRWDT_FLAG_WR;
+
+		reset_charger(&chg);
+		chg.charging = true;
+		chg.disable_pending = false;
+		map.regs[MT6323_CHR_CON0] = stuck_bits[i];
+		map.regs[MT6323_CHR_CON13] = Z1_CHR_CON13_CHRWDT_EN;
+		map.regs[MT6323_CHR_CON15] = watchdog15;
+		map.master_sticky_mask = stuck_bits[i];
+		CHECK(z1_charger_disable(&chg) == -EIO);
+		CHECK((map.regs[MT6323_CHR_CON0] &
+		       (Z1_CHR_CON0_CHR_EN | Z1_CHR_CON0_CSDAC_EN)) ==
+		      stuck_bits[i]);
+		CHECK(chg.charging);
+		CHECK(chg.disable_pending);
+		CHECK(map.regs[MT6323_CHR_CON13] & Z1_CHR_CON13_CHRWDT_EN);
+		CHECK((map.regs[MT6323_CHR_CON15] & watchdog15) == watchdog15);
+		CHECK(map.operation_count == 2);
+	}
 	puts("PASS disable-master-failures-retain-charging-state");
+}
+
+static void run_stop_callback(void (*callback)(struct platform_device *),
+			      int expect_put)
+{
+	struct z1_charger chg;
+	struct platform_device pdev;
+	int operations_before;
+
+	reset_charger(&chg);
+	chg.charging = true;
+	chg.bat_psy = expect_put ? &battery : NULL;
+	map.regs[MT6323_CHR_CON0] =
+		Z1_CHR_CON0_CHR_EN | Z1_CHR_CON0_CSDAC_EN;
+	map.regs[MT6323_CHR_CON13] = Z1_CHR_CON13_CHRWDT_EN;
+	map.regs[MT6323_CHR_CON15] = Z1_CHR_CON15_CHRWDT_INT_EN;
+	pdev.drvdata = &chg;
+	lifecycle_charger = &chg;
+	lifecycle_checks = 1;
+	if (callback)
+		callback(&pdev);
+	else
+		z1_charger_stop(&chg);
+	CHECK(chg.stopping);
+	CHECK(cancel_calls == 1);
+	CHECK(!chg.lock.held);
+	CHECK(!chg.charging);
+	CHECK(!chg.disable_pending);
+	CHECK(!(map.regs[MT6323_CHR_CON0] &
+		(Z1_CHR_CON0_CHR_EN | Z1_CHR_CON0_CSDAC_EN)));
+	CHECK(!(map.regs[MT6323_CHR_CON13] & Z1_CHR_CON13_CHRWDT_EN));
+	CHECK(!(map.regs[MT6323_CHR_CON15] & Z1_CHR_CON15_CHRWDT_INT_EN));
+	operations_before = map.operation_count;
+	z1_charger_update(&chg);
+	z1_charger_apply(&chg, true);
+	CHECK(map.operation_count == operations_before);
+	CHECK(chg.stopping);
+	CHECK(!chg.charging);
+	CHECK(power_supply_puts == expect_put);
+	lifecycle_checks = 0;
+}
+
+static void test_stop_remove_shutdown_lifecycle(void)
+{
+	run_stop_callback(NULL, 0);
+	run_stop_callback(z1_charger_remove, 1);
+	run_stop_callback(z1_charger_shutdown, 0);
+	puts("PASS stop-remove-shutdown-order-and-no-reenable");
 }
 
 static void test_disable_cleanup_faults(void)
@@ -810,6 +940,7 @@ int main(void)
 	test_enable_master_readback();
 	test_disable_success();
 	test_disable_master_faults();
+	test_stop_remove_shutdown_lifecycle();
 	test_disable_cleanup_faults();
 	test_feed_watchdog_faults();
 	test_stopping_blocks_apply();
