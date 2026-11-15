@@ -254,14 +254,15 @@ esac''')
         content = "#!/bin/sh\nsetprop PRIVATE_HOOK_CONTENT value\n"
         files = ["install.sh", "cmd.sh", "cmd.run", "cmd.run.stale",
                  ".disable_hwcomposer", ".disable_gralloc",
-                 "active/hwcomposer.z1.so", "active/gralloc.z1.so"]
+                 "active/hwcomposer.z1.so", "active/gralloc.z1.so",
+                 "active/.hwcomposer.z1.so.pin", "active/.gralloc.z1.so.pin"]
         for name in files:
             self.write("data/local/tmp/z1stage/" + name, content)
         before = {name: (self.root / "data/local/tmp/z1stage" / name).stat().st_mtime_ns
                   for name in files}
         self.write("data/local/tmp/z1stage/private.txt", "UNLISTED_PRIVATE_CONTENT")
         output = self.run_probe()
-        self.assertIn("BEGIN version=3", output)
+        self.assertIn("BEGIN version=4", output)
         self.assertNotIn("PRIVATE_HOOK_CONTENT", output)
         self.assertNotIn("private.txt", output)
         self.assertNotIn("UNLISTED_PRIVATE_CONTENT", output)

@@ -6,6 +6,9 @@
   同时提供 `boot.img` 打包器，把候选二进制和开机脚本一起烘进 ramdisk。
 - 状态：主机侧全部交付并在本机做了端到端打包验证；**串口在线路径未上板实测**
   （交付时板子断电），第 12 节逐条列出未验证项。
+  **2026-11-15 更新**：`active/` 不再无条件压过新 ramdisk。自定义文件必须带有与
+  当前 boot candidate 相同的身份 pin；详见
+  [Z1_STAGE_PINNED_IDENTITY_20261115.md](../Z1_STAGE_PINNED_IDENTITY_20261115.md)。
 
 ---
 
@@ -22,7 +25,7 @@ cat /dev/ttyUSB0 >> /tmp/z1_serial.log &
 # 终端 B：传文件 → 激活 → 重启合成器 → 看日志
 Z=z1a9_gpt/scripts/z1deploy/z1push.sh
 $Z /tmp/z1hwcout/hwcomposer.z1.so hwcomposer.z1.so
-$Z --cmd 'mkdir -p /data/local/tmp/z1stage/active && cp /data/local/tmp/z1stage/hwcomposer.z1.so /data/local/tmp/z1stage/active/hwcomposer.z1.so'
+$Z --cmd 'mkdir -p /data/local/tmp/z1stage/active && cp /data/local/tmp/z1stage/hwcomposer.z1.so.ramdisk /data/local/tmp/z1stage/active/hwcomposer.z1.so'
 $Z --rootcmd 'cp /data/local/tmp/z1stage/active/hwcomposer.z1.so /vendor/lib/hw/hwcomposer.z1.so.z1new
 chmod 0644 /vendor/lib/hw/hwcomposer.z1.so.z1new
 mv -f /vendor/lib/hw/hwcomposer.z1.so.z1new /vendor/lib/hw/hwcomposer.z1.so
@@ -104,6 +107,7 @@ $Z --cmd 'dmesg | grep -E "z1stage|z1rootd" | tail -30'
 | `/hwcomposer.z1.so`、`/gralloc.z1.so`、`/z1kmstest` | ramdisk 根目录的候选（可选） |
 | `/data/local/tmp/z1stage/` | 运行期工作目录（`0777`，`shell:shell`） |
 | `/data/local/tmp/z1stage/active/` | **激活集**（`0777`：shell 用户直接可写） |
+| `/data/local/tmp/z1stage/active/.<name>.pin` | 自定义 active 文件绑定的 boot candidate 身份；不匹配时该 override 被忽略 |
 | `/data/local/tmp/z1stage/cmd.sh` | 操作员投递的 root 脚本（必须 `mv` 原子落地） |
 | `/data/local/tmp/z1stage/out.txt` | root 脚本的 stdout+stderr + `###RC=<rc> ###DONE` |
 | `/data/local/tmp/z1stage/install.sh` | 可选：每次 rootd 启动（≈每次开机）执行的 root 钩子 |
@@ -147,7 +151,7 @@ $Z --cmd 'dmesg | grep -E "z1stage|z1rootd" | tail -30'
 
 ## 4. `active/` 激活集：语义、优先级、回退
 
-`z1stage_boot.sh` 在每次 `post-fs-data` 做两件事：
+`z1stage_boot.sh` 在每次 `post-fs-data` 做三件事：
 
 ### 4.1 种入候选（ramdisk → stage）
 
@@ -160,6 +164,20 @@ $Z --cmd 'dmesg | grep -E "z1stage|z1rootd" | tail -30'
 
 权限：`.so` 0644，脚本/可执行 0755，`chown 2000:2000`（AID shell）。
 注意用的是数字 uid/gid —— 镜像里没有 `/etc/passwd`，`chown shell:shell` 会解析失败。
+
+### 4.1a 身份 pin：新 boot 不能被旧 active 偷换
+
+当前 ramdisk 里的 `/<name>` 是 boot identity authority。`active/<name>` 仅在以下
+任一条件成立时生效：
+
+1. 它与当前 `/<name>` 逐字节相同；或
+2. `active/.<name>.pin` 仅含当前 ramdisk candidate 的 SHA256。
+
+没有 candidate 时，pin 可为 `system:<当前 system 模块 SHA256>`；两边都没有时为
+`absent`。pin 缺失、内容不匹配、使用符号链接或 active 自身是符号链接时，
+脚本记录 `WARN ... ignored`，保留 active/pin 原始字节，并回退当前 ramdisk 或
+system 模块。这样刷入新 HWC 后，旧 `/data` 里的 persistent override 不会把测试
+结果伪装成新 boot 的结果。
 
 ### 4.2 应用激活集（stage → /vendor）
 
@@ -183,9 +201,11 @@ fi
 
 **语义总结**
 
-| `active/hwcomposer.z1.so` | 结果 | 生效模块 |
+| `active/hwcomposer.z1.so` 状态 | 结果 | 生效模块 |
 |---|---|---|
-| 存在 | 覆盖到 `/vendor/lib/hw/hwcomposer.z1.so` | active 里那份 |
+| 与当前 ramdisk candidate 相同 | 覆盖到 `/vendor/lib/hw/hwcomposer.z1.so` | active 里那份 |
+| 不同，但 pin = 当前 candidate SHA256 | 覆盖到 `/vendor/lib/hw/hwcomposer.z1.so` | active 里那份 |
+| 不同，pin 缺失或来自旧 boot | 忽略 active，保留其字节 | 当前 ramdisk candidate |
 | 不存在 | 删除 `/vendor/lib/hw/hwcomposer.z1.so` | `/system/lib/hw/hwcomposer.z1.so`（原厂 HWC1） |
 
 ⚠️ **行为变化（必读）**：v79–v82 是"开机无条件把 ramdisk 的 `/hwcomposer.z1.so`
@@ -232,8 +252,9 @@ $Z --dry-run /tmp/z1hwcout/hwcomposer.z1.so hwcomposer.z1.so   # 只打印计划
 ### 5.3 激活并重启合成器
 
 ```bash
-# 1) 放进激活集（shell 用户就能写，目录 0777）
-$Z --cmd 'mkdir -p /data/local/tmp/z1stage/active && cp /data/local/tmp/z1stage/hwcomposer.z1.so /data/local/tmp/z1stage/active/hwcomposer.z1.so'
+# 1) 放进激活集。拷贝当前候选时可直接用 `.ramdisk`；自定义文件请改用
+#    scripts/z1deploy/z1_install_hal.sh，它会写 matching boot-identity pin。
+$Z --cmd 'mkdir -p /data/local/tmp/z1stage/active && cp /data/local/tmp/z1stage/hwcomposer.z1.so.ramdisk /data/local/tmp/z1stage/active/hwcomposer.z1.so'
 
 # 2) 以 root 落到 /vendor（cp→chmod→rename，绝不在原地覆盖）
 $Z --rootcmd 'cp /data/local/tmp/z1stage/active/hwcomposer.z1.so /vendor/lib/hw/hwcomposer.z1.so.z1new

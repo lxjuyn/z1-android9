@@ -11,6 +11,9 @@
 #   * push the .so to /data/local/tmp/z1stage/<name>.z1.so via z1push.sh
 #     (base64 + device sha256 verification)
 #   * copy it into active/<name>.z1.so so a reboot re-applies it
+#   * pin that override to the current ramdisk candidate identity
+#     (active/.<name>.z1.so.pin), so a later boot image is not silently
+#     masked by this persistent custom file
 #   * as root: cp to /vendor/lib/hw/<name>.z1.so.z1tmp, chmod 0644, mv -f over
 #     the real file (never rewrite an mmap'ed .so in place), then sha256sum
 #   * restart the HAL service; for hwcomposer that is
@@ -18,9 +21,9 @@
 #     SurfaceFlinger when it stops.  For gralloc it is
 #     `setprop ctl.restart vendor.gralloc-2-0`.
 #
-# "rollback" deletes active/<name>.z1.so and the /vendor override, which makes
-# libhardware fall back to /system/lib/hw (the stock goldfish HWC1 composer /
-# the stock gralloc).
+# "rollback" deletes active/<name>.z1.so, its pin, and the /vendor override,
+# which makes libhardware fall back to /system/lib/hw (the stock goldfish HWC1
+# composer / the stock gralloc).
 #
 # Environment: Z1LOG (append-only serial capture, required), Z1DEV.
 # ---------------------------------------------------------------------------
@@ -88,13 +91,27 @@ do_install() {
     "$PUSH" --mode 0644 "$src" "$remote" || die "push failed"
     cmd "sha256sum $STAGE/$remote" || true
 
-    # 2) keep it in active/ so the boot script re-applies it after a reboot,
-    #    then install into /vendor as root.
+    # 2) keep it in active/ so the boot script re-applies it after a reboot.
+    #    The pin names the current boot candidate; a future boot with another
+    #    candidate rejects this override instead of testing it accidentally.
     root_cmd "set -e
 mkdir -p $STAGE/active
 cp -f $STAGE/$remote $STAGE/active/$remote
 chmod 0644 $STAGE/active/$remote
 chown 2000:2000 $STAGE/active/$remote 2>/dev/null || true
+if [ -f $STAGE/$remote.ramdisk ]; then
+    set -- \$(sha256sum $STAGE/$remote.ramdisk)
+    boot_id=\$1
+elif [ -f /system/lib/hw/$remote ]; then
+    set -- \$(sha256sum /system/lib/hw/$remote)
+    boot_id=system:\$1
+else
+    boot_id=absent
+fi
+[ -n \"\$boot_id\" ] || exit 9
+printf '%s\\n' \"\$boot_id\" > $STAGE/active/.$remote.pin
+chmod 0644 $STAGE/active/.$remote.pin
+chown 2000:2000 $STAGE/active/.$remote.pin 2>/dev/null || true
 cp -f $STAGE/active/$remote $VENDOR/$remote.z1tmp
 chmod 0644 $VENDOR/$remote.z1tmp
 mv -f $VENDOR/$remote.z1tmp $VENDOR/$remote
@@ -120,6 +137,7 @@ do_rollback() {
     svc=$(svc_of "$remote")
     echo "rolling back $remote (removing the /vendor override and the active copy)"
     root_cmd "rm -f $STAGE/active/$remote
+rm -f $STAGE/active/.$remote.pin
 rm -f $VENDOR/$remote
 ls -l $VENDOR/ | grep -E 'hwcomposer|gralloc' || true
 getprop | grep -E 'z1stage' | head -5" || die "root rollback failed"

@@ -130,7 +130,9 @@ read_stage_hooks() {
             return
         fi
     done
-    for _hook_name in install.sh cmd.sh cmd.run cmd.run.stale .disable_hwcomposer .disable_gralloc; do
+    for _hook_name in install.sh cmd.sh cmd.run cmd.run.stale \
+        .disable_hwcomposer .disable_gralloc \
+        active/.hwcomposer.z1.so.pin active/.gralloc.z1.so.pin; do
         read_stage_hook "/data/local/tmp/z1stage/$_hook_name"
     done
     if [ -L /data/local/tmp/z1stage/active ]; then
@@ -143,7 +145,7 @@ read_stage_hooks() {
     fi
 }
 
-printf '%s\n' '[probe] BEGIN version=3 read_only=1'
+printf '%s\n' '[probe] BEGIN version=4 read_only=1'
 if _date=$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null); then
     printf '[probe] utc=%s\n' "$_date"
 else
@@ -152,7 +154,10 @@ fi
 read_value /proc/uptime
 read_value /proc/version
 for _prop in sys.boot_completed sys.z1.storage_ready z1stage.status z1stage.fsck \
-    z1stage.hwcomposer.sha z1stage.gralloc.sha z1stage.cpufreq z1stage.devfreq \
+    z1stage.hwcomposer z1stage.hwcomposer.sha z1stage.hwcomposer.source \
+    z1stage.hwcomposer.pin z1stage.hwcomposer.boot \
+    z1stage.gralloc z1stage.gralloc.sha z1stage.gralloc.source \
+    z1stage.gralloc.pin z1stage.gralloc.boot z1stage.cpufreq z1stage.devfreq \
     init.svc.zygote init.svc.surfaceflinger init.svc.bootanim init.svc.z1_rootd \
     init.svc.vendor.hwcomposer-2-1 init.svc.vendor.gralloc-2-0; do
     read_prop "$_prop"

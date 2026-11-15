@@ -21,7 +21,10 @@
 #   3. The "active" install set is applied to /vendor/lib/hw:
 #        active/hwcomposer.z1.so -> /vendor/lib/hw/hwcomposer.z1.so  (0644)
 #        active/gralloc.z1.so    -> /vendor/lib/hw/gralloc.z1.so     (0644)
-#      An active file wins, otherwise the ramdisk candidate is installed.
+#      An active file wins only when it is byte-identical to the current
+#      ramdisk candidate or carries a matching boot-identity pin in
+#      active/.<name>.pin.  A stale persistent override is retained but
+#      ignored, so a new boot image cannot silently test the old HAL.
 #      With neither source (or with a kill switch), the override is removed,
 #      restoring the stock module in /system/lib/hw (the original HWC1
 #      hwcomposer.z1.so / gralloc.z1.so).  A9 libhardware resolves the module
@@ -44,6 +47,8 @@
 
 STAGE=/data/local/tmp/z1stage
 VENDOR_HW=/vendor/lib/hw
+RAMDISK_ROOT=/
+SYSTEM_HW=/system/lib/hw
 SHELL_UID=2000          # AID_SHELL
 SHELL_GID=2000          # AID_SHELL
 
@@ -329,9 +334,15 @@ seed z1rootd.sh 0755
 # Semantics (simple and predictable, because a wedged console must never be
 # required to recover the display):
 #
-#   $STAGE/active/<name>  wins if the operator put one there   -> install it
+#   $STAGE/active/<name>  wins only when pinned to this boot   -> install it
 #   else /<name> (ramdisk) is installed every boot             -> the image wins
 #   else the /vendor override is REMOVED                       -> stock module
+#
+# The current ramdisk candidate is the identity authority.  A persistent active
+# file is accepted when it is byte-identical to that candidate, or when
+# active/.<name>.pin contains exactly the candidate SHA256.  Custom operator
+# binaries therefore remain possible, but a pin from an older boot image cannot
+# silently mask a newly baked HWC/gralloc candidate.
 #
 # A kill switch exists for a broken HAL/gralloc: create the file
 # $STAGE/.disable_<module> (hwcomposer / gralloc) and reboot (or run the same
@@ -431,36 +442,110 @@ atomic_install() {   # <src> <dst> <label>; cmp errors are not mismatches
     return 0
 }
 
-remove_override() {   # <dst> <label>
-    [ -e "$1" ] || return 0
+valid_boot_identity() {   # <sha256|system:sha256|absent>
+    _vbi_value=$1
+    case "$_vbi_value" in
+        absent) return 0 ;;
+        system:*) _vbi_sha=${_vbi_value#system:} ;;
+        *) _vbi_sha=$_vbi_value ;;
+    esac
+    case "$_vbi_sha" in *[!0-9a-f]*) return 1 ;; esac
+    [ "${#_vbi_sha}" -eq 64 ]
+}
+
+boot_identity() {   # <file-name>
+    if [ -f "$RAMDISK_ROOT/$1" ]; then
+        sha_of "$RAMDISK_ROOT/$1"
+    elif [ -f "$SYSTEM_HW/$1" ]; then
+        printf 'system:%s' "$(sha_of "$SYSTEM_HW/$1")"
+    else
+        printf 'absent'
+    fi
+}
+
+publish_module_state() {   # <module> <kind> <source> <pin-state>
+    set_prop "z1stage.$1" "$2"
+    set_prop "z1stage.$1.source" "$3"
+    set_prop "z1stage.$1.pin" "$4"
+}
+
+remove_override() {   # <dst> <module> <label>
+    if [ ! -e "$1" ]; then
+        publish_module_state "$2" system system disabled
+        return 0
+    fi
     ensure_system_rw || { restore_system_ro; return 1; }
     if "$RM" -f "$1" 2>/dev/null; then
         REMOVED=$((REMOVED + 1))
-        log "install $2: override removed; system module takes over"
+        log "install $3: override removed; system module takes over"
+        publish_module_state "$2" system system disabled
         return 0
     fi
-    install_error "$2: cannot remove override"
+    install_error "$3: cannot remove override"
     return 1
 }
 
 install_one() {   # <file-name> <disable-token>
     _io_name=$1
+    _io_module=$2
     _io_active="$STAGE/active/$_io_name"
+    _io_pin="$STAGE/active/.${_io_name}.pin"
     _io_dst="$VENDOR_HW/$_io_name"
+    _io_boot=$(boot_identity "$_io_name")
+    _io_src=
+    _io_kind=
+    _io_source=
+    _io_pin_value=
+    _io_pin_state=missing
     [ "$SYSTEM_WRITE_FAILED" -eq 0 ] || return 1
-    if [ -f "$STAGE/.disable_$2" ]; then
-        remove_override "$_io_dst" "$_io_name (kill switch)"
+    if [ -f "$STAGE/.disable_$_io_module" ]; then
+        remove_override "$_io_dst" "$_io_module" "$_io_name (kill switch)"
         return $?
     fi
     if [ -f "$_io_active" ]; then
-        _io_src=$_io_active
-    elif [ -f "/$_io_name" ]; then
-        _io_src="/$_io_name"
-    else
-        remove_override "$_io_dst" "$_io_name (no candidate)"
+        if [ -L "$_io_active" ]; then
+            _io_pin_state=symlink-rejected
+            log "WARN active $_io_name is a symlink; ignored"
+        elif [ -f "$RAMDISK_ROOT/$_io_name" ] &&
+             "$CMP" -s "$_io_active" "$RAMDISK_ROOT/$_io_name" 2>/dev/null; then
+            _io_src=$_io_active
+            _io_kind=active
+            _io_source=active:candidate-match
+            _io_pin_state=candidate-match
+        else
+            if [ -f "$_io_pin" ] && [ ! -L "$_io_pin" ]; then
+                IFS= read -r _io_pin_value < "$_io_pin" 2>/dev/null || _io_pin_value=
+            fi
+            if valid_boot_identity "$_io_boot" &&
+               [ -n "$_io_pin_value" ] && [ "$_io_pin_value" = "$_io_boot" ]; then
+                _io_src=$_io_active
+                _io_kind=active
+                _io_source=active:pinned
+                _io_pin_state=match
+            else
+                if [ -f "$_io_pin" ] || [ -L "$_io_pin" ]; then
+                    _io_pin_state=mismatch
+                    log "WARN active $_io_name pin does not match boot $_io_boot; ignored"
+                else
+                    log "WARN active $_io_name is unpinned for boot $_io_boot; ignored"
+                fi
+            fi
+        fi
+    fi
+    if [ -z "${_io_src:-}" ] && [ -f "$RAMDISK_ROOT/$_io_name" ]; then
+        _io_src="$RAMDISK_ROOT/$_io_name"
+        _io_kind=ramdisk
+        _io_source=ramdisk
+    elif [ -z "${_io_src:-}" ]; then
+        remove_override "$_io_dst" "$_io_module" "$_io_module (no candidate)"
         return $?
     fi
-    atomic_install "$_io_src" "$_io_dst" "$_io_name"
+    if atomic_install "$_io_src" "$_io_dst" "$_io_name"; then
+        publish_module_state "$_io_module" "$_io_kind" "$_io_source" "$_io_pin_state"
+        return 0
+    else
+        return 1
+    fi
 }
 
 install_sys_file() {   # <src-in-ramdisk> <dst>; absence preserves system image
@@ -470,14 +555,16 @@ install_sys_file() {   # <src-in-ramdisk> <dst>; absence preserves system image
 
 publish_identity() {
     for _id_module in hwcomposer gralloc; do
-        _id_path="$VENDOR_HW/$_id_module.z1.so"
+        _id_name="$_id_module.z1.so"
+        _id_path="$VENDOR_HW/$_id_name"
+        set_prop "z1stage.${_id_module}.boot" "$(boot_identity "$_id_name")"
         if [ -f "$_id_path" ]; then
             set_prop "z1stage.${_id_module}.sha" "$(sha_of "$_id_path")"
         else
-            set_prop "z1stage.${_id_module}.sha" "system:$(sha_of "/system/lib/hw/$_id_module.z1.so")"
+            set_prop "z1stage.${_id_module}.sha" "system:$(sha_of "$SYSTEM_HW/$_id_name")"
         fi
     done
-    log "identity: hwcomposer=$($GETPROP z1stage.hwcomposer.sha 2>/dev/null) gralloc=$($GETPROP z1stage.gralloc.sha 2>/dev/null)"
+    log "identity: hwcomposer=$($GETPROP z1stage.hwcomposer.sha 2>/dev/null) source=$($GETPROP z1stage.hwcomposer.source 2>/dev/null) gralloc=$($GETPROP z1stage.gralloc.sha 2>/dev/null) source=$($GETPROP z1stage.gralloc.source 2>/dev/null)"
 }
 
 # Best-effort RO restoration also covers an interrupted installation.  Rename

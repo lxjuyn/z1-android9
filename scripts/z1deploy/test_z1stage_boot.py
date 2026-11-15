@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Host fault tests for the actual staging shell functions; never opens a device."""
+import hashlib
 import os
 from pathlib import Path
 import subprocess
@@ -184,11 +185,79 @@ sb_state() { printf '%s\n' "$SB"; }
         vendor=self.p/'vendor';vendor.mkdir();dst=vendor/'hwcomposer.z1.so';dst.write_bytes(b'old')
         rc,t=self.run_shell(f'STAGE={stage}; VENDOR_HW={vendor}; install_one hwcomposer.z1.so hwcomposer; restore_system_ro',FS_FUNCS+INSTALL_FUNCS)
         self.assertEqual(rc,0);self.assertFalse(dst.exists());self.assertNotIn('cp ',t)
-    def test_active_override_wins(self):
-        stage=self.p/'stage';(stage/'active').mkdir(parents=True);(stage/'active/hwcomposer.z1.so').write_bytes(b'active')
+    def module_install(self, active=None, candidate=None, pin=None, system=None):
+        stage=self.p/'stage'; active_dir=stage/'active'; active_dir.mkdir(parents=True,exist_ok=True)
+        ramdisk=self.p/'ramdisk-root'; ramdisk.mkdir(exist_ok=True)
+        system_hw=self.p/'system-hw'; system_hw.mkdir(exist_ok=True)
+        vendor=self.p/'vendor'; vendor.mkdir(exist_ok=True)
+        dst=vendor/'hwcomposer.z1.so'; dst.write_bytes(b'old-vendor')
+        for path, data in ((ramdisk/'hwcomposer.z1.so',candidate),
+                           (system_hw/'hwcomposer.z1.so',system),
+                           (active_dir/'hwcomposer.z1.so',active)):
+            path.unlink(missing_ok=True)
+            if data is not None: path.write_bytes(data)
+        pin_path=active_dir/'.hwcomposer.z1.so.pin'
+        pin_path.unlink(missing_ok=True)
+        if pin is not None: pin_path.write_text(pin+'\n')
+        self.trace.write_text('')
+        body=(f'STAGE={stage}; VENDOR_HW={vendor}; RAMDISK_ROOT={ramdisk}; '
+              f'SYSTEM_HW={system_hw}; install_one hwcomposer.z1.so hwcomposer; '
+              'result=$?; restore_system_ro; restore=$?; '
+              '[ "$result" -eq 0 ] && [ "$restore" -eq 0 ]')
+        rc,t=self.run_shell(body,FS_FUNCS+INSTALL_FUNCS)
+        return rc,t,dst,active_dir
+    def test_active_candidate_match_wins_without_pin(self):
+        rc,t,dst,active=self.module_install(active=b'current',candidate=b'current')
+        self.assertEqual(rc,0);self.assertEqual(dst.read_bytes(),b'current')
+        self.assertIn('PROP z1stage.hwcomposer active',t)
+        self.assertIn('PROP z1stage.hwcomposer.source active:candidate-match',t)
+        self.assertIn('PROP z1stage.hwcomposer.pin candidate-match',t)
+    def test_custom_active_override_requires_matching_boot_pin(self):
+        candidate=b'current-candidate'
+        rc,t,dst,active=self.module_install(
+            active=b'custom-active',candidate=candidate,
+            pin=hashlib.sha256(candidate).hexdigest())
+        self.assertEqual(rc,0);self.assertEqual(dst.read_bytes(),b'custom-active')
+        self.assertIn('PROP z1stage.hwcomposer.source active:pinned',t)
+        self.assertIn('PROP z1stage.hwcomposer.pin match',t)
+    def test_custom_active_can_be_pinned_to_absent_candidate(self):
+        rc,t,dst,active=self.module_install(active=b'custom-active',pin='absent')
+        self.assertEqual(rc,0);self.assertEqual(dst.read_bytes(),b'custom-active')
+        self.assertIn('PROP z1stage.hwcomposer.source active:pinned',t)
+    def test_unpinned_or_stale_active_never_masks_new_candidate(self):
+        cases=(None,'0'*64)
+        for pin in cases:
+            with self.subTest(pin=pin):
+                candidate=b'new-candidate'
+                rc,t,dst,active=self.module_install(
+                    active=b'stale-active',candidate=candidate,pin=pin)
+                self.assertEqual(rc,0);self.assertEqual(dst.read_bytes(),b'new-candidate')
+                self.assertEqual((active/'hwcomposer.z1.so').read_bytes(),b'stale-active')
+                self.assertIn('PROP z1stage.hwcomposer ramdisk',t)
+                self.assertIn('ignored',t)
+    def test_stale_active_without_candidate_falls_back_to_system(self):
+        rc,t,dst,active=self.module_install(
+            active=b'stale-active',system=b'stock-system',pin='0'*64)
+        self.assertEqual(rc,0);self.assertFalse(dst.exists())
+        self.assertEqual((active/'hwcomposer.z1.so').read_bytes(),b'stale-active')
+        self.assertIn('PROP z1stage.hwcomposer system',t)
+        self.assertIn('override removed',t)
+    def test_active_and_pin_symlinks_are_rejected(self):
+        stage=self.p/'stage';active_dir=stage/'active';active_dir.mkdir(parents=True)
+        ramdisk=self.p/'ramdisk-root';ramdisk.mkdir()
+        expected=self.p/'expected';expected.write_bytes(b'new-candidate')
+        (ramdisk/'hwcomposer.z1.so').write_bytes(b'new-candidate')
+        custom=self.p/'custom';custom.write_bytes(b'custom-active')
+        (active_dir/'hwcomposer.z1.so').symlink_to(custom)
+        (active_dir/'.hwcomposer.z1.so.pin').symlink_to(expected)
         vendor=self.p/'vendor';vendor.mkdir();dst=vendor/'hwcomposer.z1.so';dst.write_bytes(b'old')
-        rc,t=self.run_shell(f'STAGE={stage}; VENDOR_HW={vendor}; install_one hwcomposer.z1.so hwcomposer; restore_system_ro',FS_FUNCS+INSTALL_FUNCS)
-        self.assertEqual(rc,0);self.assertEqual(dst.read_bytes(),b'active')
+        self.trace.write_text('')
+        body=(f'STAGE={stage}; VENDOR_HW={vendor}; RAMDISK_ROOT={ramdisk}; '
+              f'SYSTEM_HW={self.p}/system-hw; install_one hwcomposer.z1.so hwcomposer; '
+              'result=$?; restore_system_ro; [ "$result" -eq 0 ]')
+        rc,t=self.run_shell(body,FS_FUNCS+INSTALL_FUNCS)
+        self.assertEqual(rc,0);self.assertEqual(dst.read_bytes(),b'new-candidate')
+        self.assertIn('active hwcomposer.z1.so is a symlink',t)
     def frequency_setup(self):
         stage=self.p/'stage';stage.mkdir();(stage/'oc_level').write_text('oc\n')
         cpu=self.p/'cpu';cpu.mkdir();gpu=self.p/'gpu';gpu.mkdir()
