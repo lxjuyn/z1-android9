@@ -79,8 +79,8 @@ static void reset(void) {
     ts.client = &client; ts.input = &input;
     nevents = schedules = reads = frame_logs = raw_logs = error_logs = 0;
     read_result = sizeof(frame); log_raw = 64; log_frames = 0;
-    max_x = 240; max_y = 320; key_y_min = 300;
-    key_x_split1 = 80; key_x_split2 = 160;
+    max_x = 240; max_y = 320; key_y_min = 320;
+    key_x_split1 = 90; key_x_split2 = 160;
     flip_x = flip_y = swap_xy = false;
 }
 static void expect(unsigned i, int t, int c, int v) {
@@ -183,12 +183,16 @@ static void test_orientation(void) {
     expect(1, EV_ABS, ABS_X, 30); expect(2, EV_ABS, ABS_Y, 10);
 }
 static void test_boundaries(void) {
-    /* Tests existing policy, not evidence that these are hardware bounds. */
-    const unsigned x[] = {79, 80, 159, 160};
+    /* Display coordinates 300 and 319 stay touch; 320 enters nav strip. */
+    const unsigned x[] = {89, 90, 159, 160};
     const int keys[] = {KEY_BACK, KEY_HOME, KEY_HOME, KEY_MENU};
     for (unsigned n=0; n<4; n++) {
-        reset(); poll_frame(1, 0x80, x[n], 299); assert(ts.touching);
-        poll_frame(1, 0x80, x[n], 300); assert(ts.last_key == keys[n]);
+        reset(); poll_frame(1, 0x80, x[n], 300);
+        assert(ts.touching && !ts.last_key);
+        reset(); poll_frame(1, 0x80, x[n], 319);
+        assert(ts.touching && !ts.last_key);
+        reset(); poll_frame(1, 0x80, x[n], 320);
+        assert(!ts.touching && ts.last_key == keys[n]);
     }
 }
 struct testcase { const char *name; void (*fn)(void); };
@@ -200,6 +204,8 @@ static const struct testcase cases[] = {
     {"orientation", test_orientation}, {"boundaries", test_boundaries},
 };
 int main(int argc, char **argv) {
+    /* Guard the harness against silently testing a stale production default. */
+    assert(key_y_min == 320 && max_y == 320 && key_x_split1 == 90);
     unsigned ran = 0;
     for (unsigned i=0; i<sizeof(cases)/sizeof(cases[0]); i++) {
         if (argc > 1 && strcmp(argv[1], cases[i].name)) continue;

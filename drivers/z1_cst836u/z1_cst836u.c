@@ -62,8 +62,10 @@ static unsigned int log_raw = 64;
 /* Opt-in, bounded capture of the existing read window; no extra I2C reads. */
 static unsigned int log_frames;
 /* Capacitive key strip: raw y at/above key_y_min is a nav key press.
+ * max_y is 320, so 320 is the first coordinate outside the displayed
+ * 0..319 range; this keeps all display coordinates as BTN_TOUCH.
  * The two x splits divide the strip into Back / Home / Recents. */
-static unsigned int key_y_min = 300;
+static unsigned int key_y_min = 320;
 /* Measured on hardware (2026-11-11): the three nav keys report raw
  * controller X = 80 / 120 / 200.  The old 80/160 split put the leftmost key
  * exactly on the boundary (x < 80 is false at x == 80), so BACK reported HOME.

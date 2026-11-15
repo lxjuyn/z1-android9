@@ -1,0 +1,6 @@
+# The display occupies raw Y=0..319. Older boot ramdisks defaulted the
+# capacitive navigation strip to Y=300, stealing touches from the display.
+# Apply the board-tested boundary after the touchscreen module has loaded.
+# New CST836U builds also default to 320 before Android finishes booting.
+on property:sys.boot_completed=1
+    write /sys/module/z1_cst836u/parameters/key_y_min 320

@@ -154,7 +154,8 @@ PRODUCT_COPY_FILES += \
 ifneq ($(Z1_KERNEL_VARIANT),stock)
 PRODUCT_COPY_FILES += \
     $(DEVICE_PATH)/keylayout/mt6779-keypad.kl:$(TARGET_COPY_OUT_SYSTEM)/usr/keylayout/mt6779-keypad.kl \
-    $(DEVICE_PATH)/keylayout/z1_cst836u.kl:$(TARGET_COPY_OUT_SYSTEM)/usr/keylayout/z1_cst836u.kl
+    $(DEVICE_PATH)/keylayout/z1_cst836u.kl:$(TARGET_COPY_OUT_SYSTEM)/usr/keylayout/z1_cst836u.kl \
+    $(DEVICE_PATH)/rootdir/z1_touch_navigation.rc:$(TARGET_COPY_OUT_SYSTEM)/etc/init/z1_touch_navigation.rc
 endif
 
 PRODUCT_CHARACTERISTICS := nosdcard
