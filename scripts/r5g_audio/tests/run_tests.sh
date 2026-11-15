@@ -99,5 +99,8 @@ if [[ -n "$LIBDIR" ]]; then
     sha256sum "$OUT/audio.primary.mt6572.so" "$OUT/audio_primary_z1.o" "$OUT"/linklibs/*.so
     echo 'Android candidate built only; no device loading or playback was tested.'
 fi
-sha256sum "$OUT/audio_primary_z1_poc.c" "$OUT/hal_contract_test" "$OUT"/tests/*
+sha256sum "$OUT/audio_primary_z1_poc.c" "$OUT/hal_contract_test"
+for test_file in "$OUT"/tests/*; do
+    if [[ -f "$test_file" ]]; then sha256sum "$test_file"; fi
+done
 printf 'ARTIFACT_DIR=%s\n' "$OUT"
