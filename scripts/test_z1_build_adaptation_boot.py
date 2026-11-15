@@ -23,6 +23,49 @@ def record(name, data, mode=0o100644):
     return boot.pad(header, 4) + boot.pad(data, 4)
 
 
+def module_elf(info, extra=b""):
+    names = b"\0.shstrtab\0.modinfo\0"
+    header = bytearray(52)
+    header[:7] = b"\x7fELF\x01\x01\x01"
+    struct.pack_into("<HHI", header, 16, 1, 40, 1)
+    struct.pack_into("<I", header, 32, 52)
+    struct.pack_into("<HHH", header, 46, 40, 3, 1)
+    table = bytearray(120)
+    struct.pack_into("<10I", table, 40, 1, 3, 0, 0, 172, len(names), 0, 0, 1, 0)
+    struct.pack_into("<10I", table, 80, 11, 1, 0, 0, 172 + len(names),
+                     len(info), 0, 0, 1, 0)
+    return bytes(header + table) + names + info + extra
+
+
+class ModuleIdentityTests(unittest.TestCase):
+    def test_exact_modinfo_field(self):
+        candidate.check_arm(module_elf(b"license=GPL\0vermagic=" +
+                            candidate.MODULE_VERMAGIC + b"\0"), "module.ko")
+
+    def test_prefix_lookalikes_and_duplicate_fields_rejected(self):
+        for value in (b"7.0.0-rc7-z1+evil", b"7.0.0-rc7-z1+",
+                      candidate.MODULE_VERMAGIC + b"extra"):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "vermagic"):
+                candidate.check_arm(module_elf(b"vermagic=" + value + b"\0"), "module.ko")
+        field = b"vermagic=" + candidate.MODULE_VERMAGIC + b"\0"
+        with self.assertRaisesRegex(ValueError, "vermagic"):
+            candidate.check_arm(module_elf(field * 2), "module.ko")
+
+    def test_marker_outside_modinfo_and_unterminated_field_rejected(self):
+        field = b"vermagic=" + candidate.MODULE_VERMAGIC
+        for data in (module_elf(b"license=GPL\0", field + b"\0"), module_elf(field)):
+            with self.subTest(data=data), self.assertRaisesRegex(ValueError, "modinfo|vermagic"):
+                candidate.check_arm(data, "module.ko")
+
+    def test_corrupt_section_table_and_payload_rejected(self):
+        good = module_elf(b"vermagic=" + candidate.MODULE_VERMAGIC + b"\0")
+        for offset, value in ((32, len(good)), (52 + 80 + 16, len(good) + 1)):
+            data = bytearray(good)
+            struct.pack_into("<I", data, offset, value)
+            with self.subTest(offset=offset), self.assertRaisesRegex(ValueError, "section"):
+                candidate.check_arm(bytes(data), "module.ko")
+
+
 @unittest.skipUnless(all(shutil.which(x) for x in ("dtc", "fdtget", "fdtput")),
                      "device-tree host tools unavailable")
 class AdaptationBootTests(unittest.TestCase):

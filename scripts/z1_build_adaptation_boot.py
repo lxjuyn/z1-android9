@@ -22,6 +22,42 @@ ALLOWED = {
     "z1_libwifi-hal.so", "z1_libbt-vendor.so", "z1_cst836u.ko",
     "z1_mt6572-afe-pcm.ko", "z1_snd-soc-mt6323.ko", "z1stage_boot.sh",
 }
+MODULE_VERMAGIC = b"7.0.0-rc7-z1+ SMP mod_unload ARMv7 p2v8 "
+
+
+def check_module_vermagic(data, name):
+    """Read the unique vermagic field from the ELF32 .modinfo section."""
+    offset = struct.unpack_from("<I", data, 32)[0]
+    size, count, strings = struct.unpack_from("<HHH", data, 46)
+    boot.require(size == 40 and 0 < count < 0xff00 and strings < count and
+                 offset >= 52 and offset + size * count <= len(data),
+                 "invalid module section table: " + name)
+    sections = [struct.unpack_from("<10I", data, offset + i * size)
+                for i in range(count)]
+
+    def contents(section):
+        start, length = section[4:6]
+        boot.require(start <= len(data) and length <= len(data) - start,
+                     "module section outside ELF: " + name)
+        return data[start:start + length]
+
+    boot.require(sections[strings][1] == 3, "invalid module string table: " + name)
+    names = contents(sections[strings])
+    matches = []
+    for section in sections:
+        start = section[0]
+        end = names.find(b"\0", start)
+        boot.require(start < len(names) and end >= start,
+                     "invalid module section name: " + name)
+        if names[start:end] == b".modinfo":
+            boot.require(section[1] == 1, "invalid module .modinfo type: " + name)
+            matches.append(contents(section))
+    boot.require(len(matches) == 1 and matches[0].endswith(b"\0"),
+                 "need one terminated module .modinfo section: " + name)
+    values = [field[len(b"vermagic="):] for field in matches[0].split(b"\0")
+              if field.startswith(b"vermagic=")]
+    boot.require(values == [MODULE_VERMAGIC],
+                 "replacement module vermagic mismatch: " + name)
 
 
 def unique_object(items):
@@ -54,8 +90,7 @@ def check_arm(data, name):
                  struct.unpack_from("<H", data, 18)[0] == 40,
                  "replacement is not ELF32 little-endian ARM: " + name)
     if name.endswith(".ko"):
-        boot.require(b"vermagic=7.0.0-rc7-z1+" in data,
-                     "replacement module vermagic mismatch: " + name)
+        check_module_vermagic(data, name)
 
 
 def build(manifest_path, output):
@@ -149,7 +184,7 @@ def build(manifest_path, output):
             "cpio_replacements": {name: {"sha256": boot.sha(data), "bytes": len(data)}
                                   for name, data in payloads.items()},
             "preserved_init_storage_order": True,
-            "persistent_stage_warning": "Existing /data/local/tmp/z1stage/active overrides and kill switches retain precedence; verify runtime hashes before testing.",
+            "persistent_stage_warning": "Active HAL overrides require the current ramdisk candidate identity or its matching pin; unpinned older HALs fall back to ramdisk. Kill switches retain precedence. Verify runtime source and hashes before testing.",
             "builder_sha256": boot.sha(Path(__file__).read_bytes()),
         }
         (work / "boot.img").write_bytes(image)
