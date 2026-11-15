@@ -82,19 +82,27 @@ run_script() {
     _l=$3
     _killed=0
     _rc=0
+    _tmp="${_o}.tmp.$$"
 
-    : > "$_o" 2>/dev/null
-    $CHMOD 0666 "$_o" 2>/dev/null
+    # Keep the published result separate from the command's stdout.  A root
+    # command is allowed to inspect the previous result, and redirecting its
+    # output directly to that same file makes `cat "$OUT"` self-replicate
+    # forever.  Publish only after the command and its trailer have finished.
+    $RM -f "$_tmp" 2>/dev/null
+    : > "$_tmp" 2>/dev/null || {
+        log "ERROR $_l cannot create temporary output $_tmp"
+        return 0
+    }
     _t0=$($DATE +%s 2>/dev/null)
     log "$_l start: ${_f} ($(file_size "$_f") B) at uptime $(uptime_s)s"
 
     if [ -x "$TIMEOUT" ]; then
-        "$TIMEOUT" "$MAX_SECS" "$SH" "$_f" > "$_o" 2>&1
+        "$TIMEOUT" "$MAX_SECS" "$SH" "$_f" > "$_tmp" 2>&1
         _rc=$?
     else
         # No toybox timeout: 1 s watchdog on the child pid.  Grandchildren are
         # not killed (no process-group juggling), so keep commands simple.
-        "$SH" "$_f" > "$_o" 2>&1 &
+        "$SH" "$_f" > "$_tmp" 2>&1 &
         _pid=$!
         _n=0
         while kill -0 "$_pid" 2>/dev/null; do
@@ -114,10 +122,15 @@ run_script() {
         [ "$_killed" = 1 ] && _rc=124
     fi
 
-    printf '###RC=%s ###DONE\n' "$_rc" >> "$_o" 2>/dev/null
+    printf '###RC=%s ###DONE\n' "$_rc" >> "$_tmp" 2>/dev/null
     _t1=$($DATE +%s 2>/dev/null)
-    $CHMOD 0666 "$_o" 2>/dev/null
-    $CHOWN "$SHELL_UID:$SHELL_GID" "$_o" 2>/dev/null
+    $CHMOD 0666 "$_tmp" 2>/dev/null
+    $CHOWN "$SHELL_UID:$SHELL_GID" "$_tmp" 2>/dev/null
+    if ! $MV -f "$_tmp" "$_o" 2>/dev/null; then
+        $RM -f "$_tmp" 2>/dev/null
+        log "ERROR $_l cannot publish output $_o"
+        return 0
+    fi
     log "$_l done: rc=${_rc} elapsed=$((_t1 - _t0))s out=$(file_size "$_o")B"
     return 0
 }
