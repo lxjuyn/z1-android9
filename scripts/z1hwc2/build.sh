@@ -423,17 +423,20 @@ verify_so() {
     # 6/6 composition policy unit test (pure header; host g++, optional)
     if command -v g++ >/dev/null 2>&1 &&
         [ -f "$SCRIPT_DIR/test/z1hwc2_policy_test.cpp" ]; then
-        local ptest=$OUTDIR/z1_policy_test
+        local pdir=${OUTDIR:-${TMPDIR:-/tmp}}
+        local tag=""
+        [ -n "$OUTDIR" ] || tag=".$$"
+        local ptest=$pdir/z1_policy_test$tag
         if g++ -std=c++17 -O1 -Wall -Wextra -o "$ptest" \
             "$SCRIPT_DIR/test/z1hwc2_policy_test.cpp" \
-            >"$OUTDIR/policy_test.build.log" 2>&1 &&
-            "$ptest" >"$OUTDIR/policy_test.log" 2>&1; then
+            >"$pdir/policy_test.build$tag.log" 2>&1 &&
+            "$ptest" >"$pdir/policy_test$tag.log" 2>&1; then
             printf '  [6/%d] %-44s PASS\n' "$total" "composition policy unit test"
             printf '          cases: %s\n' \
-                "$(grep -c '^  PASS' "$OUTDIR/policy_test.log")"
+                "$(grep -c '^  PASS' "$pdir/policy_test$tag.log")"
         else
             printf '  [6/%d] %-44s FAIL\n' "$total" "composition policy unit test"
-            printf '          see %s\n' "$OUTDIR/policy_test.log"
+            printf '          see %s\n' "$pdir/policy_test$tag.log"
             rc=1
         fi
     else
