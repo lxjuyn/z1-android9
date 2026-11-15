@@ -107,7 +107,8 @@ def mock(command, args):
         assert args == ['-u']
         print(state.get('uid', 0))
     elif command == 'mount':
-        assert args == ['-o', 'remount,rw', '/']
+        assert args[:2] == ['-o', 'remount,rw']
+        assert path(args[2]) == root / 'system'
     elif command == 'sleep':
         assert args == ['1']
         if state.get('service_started') and state.get('props', {}).get('init.svc.mnld') == 'running':
@@ -153,7 +154,9 @@ class Fixture:
                    'install_gps.sh': HERE / 'install_gps.sh',
                    'z1_gpsdrv_load.sh': HERE / 'z1_gpsdrv_load.sh'}
         # Single regex substitution prevents rewriting paths inside replacements.
-        pattern = re.compile(r'/(?:data|system|sys|proc|vendor)(?=/)|/dev/(?:kmsg|stpgps|socket)')
+        pattern = re.compile(
+            r'/(?:data|system|sys|proc|vendor)(?=/|[^A-Za-z0-9_.-]|$)'
+            r'|/dev/(?:kmsg|stpgps|socket)')
         wrappers = '\n'.join(
             f'{c}() {{ {shlex.quote(sys.executable)} {shlex.quote(str(Path(__file__).resolve()))} '
             f'--mock {c} "$@"; }}' for c in COMMANDS)
@@ -427,6 +430,8 @@ class GPSRegression(unittest.TestCase):
     def test_installer_happy_path_is_not_location_success(self):
         def check(f):
             self.success(f, 'install_gps.sh', 'A')
+            self.assertEqual(f.calls('mount'),
+                             [['-o', 'remount,rw', str(f.root / 'system')]])
             self.assertEqual(f.calls('start'), [['mnld']])
             message = (f.root / 'dev/kmsg').read_text()
             self.assertIn('no satellite or location verification', message)

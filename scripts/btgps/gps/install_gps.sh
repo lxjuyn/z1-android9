@@ -17,7 +17,7 @@ MODDIR=/system/lib/modules/z1-radio
 [ -f "$BASE/z1_gpsdrv/z1_gpsdrv.ko" ] || die "missing gpsdrv module source"
 [ -f "$BASE/android.hardware.location.gps.xml" ] || die "missing GPS feature declaration"
 [ -f "$BASE/z1_gps_prep.sh.patched" ] || die "missing preparation script"
-mount -o remount,rw / || die "cannot remount installation filesystem writable"
+mount -o remount,rw /system || die "cannot remount /system writable"
 mkdir -p "$MODDIR" || die "cannot create module directory"
 cp "$BASE/z1_gpsdrv/z1_gpsdrv.ko" "$MODDIR/z1_gpsdrv.ko" \
     && chmod 0644 "$MODDIR/z1_gpsdrv.ko" || die "cannot install gpsdrv module"
