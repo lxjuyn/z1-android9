@@ -94,7 +94,7 @@ def unique_json(pairs):
     return result
 
 
-def load_manifest(path):
+def load_manifest(path, *, allowed=ALLOW):
     with regular_open(path) as f:
         m = json.load(f, object_pairs_hook=unique_json)
     require(isinstance(m, dict) and set(m) == {"version", "base", "replacements"}
@@ -110,7 +110,7 @@ def load_manifest(path):
         require(isinstance(r, dict) and set(r) == {"path", "source", "sha256", "original_sha256",
                 "mode", "uid", "gid", "selinux"}, "Invalid replacement schema")
         p = r["path"]
-        require(isinstance(p, str) and ALLOW.fullmatch(p) and p not in seen,
+        require(isinstance(p, str) and allowed.fullmatch(p) and p not in seen,
                 f"Disallowed or duplicate image path: {p!r}")
         seen.add(p)
         digest(r["sha256"])
@@ -243,9 +243,9 @@ def withdraw(directory, output, partial, reportpath, invalidreport, owned_output
         error.add_note("Rollback limitations: " + "; ".join(failures))
 
 
-def execute(manifest, output=None, build=False):
+def execute(manifest, output=None, build=False, *, allowed=ALLOW):
     manifest = host_path(str(manifest), Path.cwd())
-    m = load_manifest(manifest)
+    m = load_manifest(manifest, allowed=allowed)
     require(not build or output is not None, "--build requires --output")
     require(build or output is None, "--output requires explicit --build")
     output = host_path(str(output), Path.cwd()) if output is not None else None
