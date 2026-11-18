@@ -118,12 +118,43 @@ class Backend:
             raise ValueError(f"mtk.py missing in {self.directory}")
         if not os.access(self.python, os.X_OK):
             raise ValueError(f"MTK python is not executable: {self.python}")
+        self.preloader = None
+        self.preloader_sha256 = None
+        self.inputs = {}
+        preloader = os.environ.get("Z1_MTK_PRELOADER", "")
+        expected_sha = os.environ.get("Z1_MTK_PRELOADER_SHA256", "")
+        if preloader or expected_sha:
+            if not preloader or not re.fullmatch(r"[0-9a-fA-F]{64}", expected_sha):
+                raise ValueError("Z1_MTK_PRELOADER requires its pinned Z1_MTK_PRELOADER_SHA256")
+            original = Path(preloader).resolve(strict=True)
+            with original.open("rb") as source:
+                st = os.fstat(source.fileno())
+                if not stat.S_ISREG(st.st_mode) or not 0 < st.st_size <= 4 * 1024 * 1024:
+                    raise ValueError("DRAM preloader input must be a regular file of 1 byte to 4 MiB")
+                data = source.read(4 * 1024 * 1024 + 1)
+            sha = hashlib.sha256(data).hexdigest()
+            if len(data) != st.st_size or sha != expected_sha.lower():
+                raise ValueError("DRAM preloader input size/SHA256 mismatch; refusing device access")
+            self.preloader = logdir / "dram_preloader.bin"
+            self.preloader.write_bytes(data)
+            self.preloader.chmod(0o400)
+            self.preloader_sha256 = sha
+            self.inputs["dram_preloader"] = {
+                "source": str(original), "snapshot": str(self.preloader),
+                "bytes": len(data), "sha256": sha, "purpose": "DRAM configuration input only",
+            }
+            print(f"Pinned DRAM configuration input: {original.name}; SHA256 {sha}", flush=True)
 
     def transfer(self, operation, offset, length, filename):
         self.counter += 1
         logfile = self.logdir / f"{self.counter:04d}_{operation}_{offset:x}_{length:x}.log"
         cmd = [self.python, str(self.directory / "mtk.py"), operation,
                hex(offset), hex(length), str(filename)]
+        if self.preloader is not None:
+            if hashlib.sha256(self.preloader.read_bytes()).hexdigest() != self.preloader_sha256:
+                raise RuntimeError("DRAM preloader snapshot changed; refusing device access")
+            # mtk.py uses this option to extract EMI, not as a flash target.
+            cmd.extend(["--preloader", str(self.preloader)])
         with logfile.open("wb") as log:
             proc = subprocess.Popen(cmd, cwd=self.directory, stdout=log,
                                     stderr=subprocess.STDOUT, start_new_session=True,
@@ -193,7 +224,8 @@ def run(args):
         logs.mkdir(parents=True, exist_ok=True)
         logdir = Path(tempfile.mkdtemp(prefix=time.strftime("%Y%m%d_%H%M%S_") + args.mode + "_", dir=logs))
         backend = Backend(lockfd, logdir)
-        atomic_json(logdir / "manifest.json", {"identity": meta, "image": str(image), "mode": args.mode})
+        atomic_json(logdir / "manifest.json", {"identity": meta, "image": str(image),
+                                              "mode": args.mode, "backend_inputs": backend.inputs})
         print(f"{args.mode}: {args.partition} <- {image}\nSHA256 {sha}\nstate={statefile}\nlogs={logdir}", flush=True)
         if args.mode == "write":
             atomic_json(statefile, state)

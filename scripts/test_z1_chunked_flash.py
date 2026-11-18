@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Fault-injection integration tests; only a temporary fake mtk.py is invoked."""
 import fcntl
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -16,7 +17,10 @@ HERE = Path(__file__).resolve().parent
 FAKE = r'''
 import json, os, pathlib, sys, time
 root = pathlib.Path(__file__).parent
-op, offset, length, name = sys.argv[1:]
+op, offset, length, name, *options = sys.argv[1:]
+if options:
+    assert len(options) == 2 and options[0] == '--preloader'
+    assert pathlib.Path(options[1]).is_file()
 offset, length = int(offset, 0), int(length, 0)
 assert op in ('wo', 'ro')
 countsfile = root / 'counts.json'
@@ -28,7 +32,7 @@ plan = json.loads((root / 'plan.json').read_text())
 actions = plan.get(op, [])
 action = actions[index] if index < len(actions) else 'ok'
 with (root / 'calls.jsonl').open('a') as f:
-    f.write(json.dumps({'op': op, 'offset': offset, 'length': length, 'file': name, 'action': action})+'\n')
+    f.write(json.dumps({'op': op, 'offset': offset, 'length': length, 'file': name, 'action': action, 'options': options})+'\n')
 if action == 'sleep':
     time.sleep(5)
 if action == 'recovered_handshake':
@@ -175,6 +179,44 @@ class ChunkTransfers(unittest.TestCase):
         self.assertTrue(self.state()["complete"])
         self.assertEqual(len(self.state()["verified"]), 2)
         self.assertEqual(len(self.state()["identity"]["image_sha256"]), 64)
+
+    def test_pinned_preloader_is_snapshot_input_for_write_and_readback(self):
+        preloader = self.root / "factory preloader.bin"
+        data = b"test EMI configuration"
+        preloader.write_bytes(data)
+        sha = hashlib.sha256(data).hexdigest()
+        self.env.update(Z1_MTK_PRELOADER=str(preloader), Z1_MTK_PRELOADER_SHA256=sha)
+        result = self.run_transfer()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        calls = self.calls()
+        self.assertEqual([c["op"] for c in calls], ["wo", "ro"])
+        for call in calls:
+            self.assertEqual(call["offset"], 0x2980000)
+            self.assertEqual(call["options"][0], "--preloader")
+            snapshot = Path(call["options"][1])
+            self.assertNotEqual(snapshot, preloader)
+            self.assertEqual(snapshot.read_bytes(), data)
+        manifest_file, = (self.root / "logs").glob("*/manifest.json")
+        meta = json.loads(manifest_file.read_text())["backend_inputs"]["dram_preloader"]
+        self.assertEqual(meta["sha256"], sha)
+        self.assertEqual(meta["source"], str(preloader))
+
+    def test_invalid_or_unpinned_preloader_never_invokes_mtk(self):
+        preloader = self.root / "factory.bin"
+        preloader.write_bytes(b"test EMI")
+        for inputs in (
+            {"Z1_MTK_PRELOADER": str(preloader)},
+            {"Z1_MTK_PRELOADER_SHA256": "0" * 64},
+            {"Z1_MTK_PRELOADER": str(preloader), "Z1_MTK_PRELOADER_SHA256": "0" * 64},
+            {"Z1_MTK_PRELOADER": str(preloader), "Z1_MTK_PRELOADER_SHA256": "not-a-hash"},
+        ):
+            with self.subTest(inputs=inputs):
+                self.env.pop("Z1_MTK_PRELOADER", None)
+                self.env.pop("Z1_MTK_PRELOADER_SHA256", None)
+                self.env.update(inputs)
+                result = self.run_transfer()
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(self.calls(), [])
 
     def test_reject_bad_write_acknowledgements(self):
         for fault in ["rc", "failed", "wrong_marker", "silent"]:
