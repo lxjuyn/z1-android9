@@ -15,12 +15,14 @@ case "${1:-}" in
         schema=z1-r4-runtime/v1
         hwc_sha=35176357f81284ffc11d56d2811cab52c77a0cdcfaf4678866e54bf00d579912
         codec_sha=af3931113c5d96e0768e06ee4b30596a71b5c72fd06233f0ee3cf248388e8945
+        wlan_sha=2cf27905d382fb8ac7e6bd8e000c6db1417c4415b5718086562be11399580e9b
         ;;
     --r5)
         candidate=r5-20261119
         schema=z1-r5-runtime/v1
         hwc_sha=f57ffee670186d5bdfc135043773cfd0576364ae8fac463fb6ef1b65532c20da
         codec_sha=3fa88d5aa0734612aefec8f45de1b4cabc24a86f67a383fb39f85481663f03cc
+        wlan_sha=2cf27905d382fb8ac7e6bd8e000c6db1417c4415b5718086562be11399580e9b
         ;;
     --r6)
         candidate=r6-audio-20261119
@@ -28,6 +30,7 @@ case "${1:-}" in
         hwc_sha=f57ffee670186d5bdfc135043773cfd0576364ae8fac463fb6ef1b65532c20da
         codec_sha=3fa88d5aa0734612aefec8f45de1b4cabc24a86f67a383fb39f85481663f03cc
         audio_sha=73d22b253acce390caecbf6bb1cb8d2b34ea85b07cc982b8c406ce2873f08e2e
+        wlan_sha=2cf27905d382fb8ac7e6bd8e000c6db1417c4415b5718086562be11399580e9b
         ;;
     --r7)
         candidate=r7-combined-20261119
@@ -35,6 +38,7 @@ case "${1:-}" in
         hwc_sha=f57ffee670186d5bdfc135043773cfd0576364ae8fac463fb6ef1b65532c20da
         codec_sha=3fa88d5aa0734612aefec8f45de1b4cabc24a86f67a383fb39f85481663f03cc
         audio_sha=3f1b3a841aea4eedd7cb7ba5c22ebe12e6062b6ec88ec5d28eed6864251e1722
+        wlan_sha=143c5611267eb4c5e20135fffdd39db491753147ef295278c3a69330c1fbf80f
         ;;
     --help)
         printf '%s\n' 'Usage: sh z1_r4_runtime_manifest.sh [--r4|--r5|--r6|--r7]'
@@ -243,7 +247,7 @@ check_hash /system/build.prop \
 check_hash /system/lib/modules/z1-radio/mtk_stp_bt_soc.ko \
     01fbd5706e9c74dc9759d3da60da5e3a5443c5c71c12c0dc1a1464495e45f63e 644
 check_hash /system/lib/modules/z1-radio/wlan_gen2.ko \
-    2cf27905d382fb8ac7e6bd8e000c6db1417c4415b5718086562be11399580e9b 644
+    "$wlan_sha" 644
 check_hash /vendor/lib/egl/libGLES_mesa.so \
     bb0ac77c03e79648db5dc8a480ec478be566b78c6105e9f781fd22100b46f445 644
 check_hash /vendor/lib/libgallium_dri.so \

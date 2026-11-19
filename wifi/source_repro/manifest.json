@@ -1,0 +1,81 @@
+{
+  "schema": "z1-wifi-source-repro/v1",
+  "timestamp": "2026-11-19T21:54:57+08:00",
+  "hardware_access": false,
+  "radio_source": {
+    "repository": "https://github.com/gabin8/mt6572-connsys-modules",
+    "commit": "e9961becdc889266c3a8b5a488ff741159b6ad80",
+    "archive_sha256": "af8bb14c434e2ef78d7367a28f2cd5a3a662adbece6b5c67d1e56f20e954613f"
+  },
+  "kernel_source": {
+    "commit": "c6501138edf2ea6458c7c4370d2fc1033d54f50a",
+    "config_sha256": "8b0e88cd7a301d016a2f144710e044c9adb436a6ea8d97b33bf59dd7df9e7747",
+    "module_symvers_sha256": "9739f305d49c41c98ffaf007622b05c4e8bc1f8e1b5e4056227d0f1187435b34"
+  },
+  "compiler": "arm-linux-gnueabihf-gcc 13.3.0",
+  "strip": "arm-linux-gnueabihf-strip --strip-debug",
+  "original_modules": [
+    {
+      "name": "cfg80211",
+      "file": "original_cfg80211.ko",
+      "bytes": 493468,
+      "sha256": "42b5acca971d720a28bd76a9345a7c6b2b85390a84b10ca0fbba91b262a352e6"
+    },
+    {
+      "name": "mtk_btif_drv",
+      "file": "original_mtk_btif_drv.ko",
+      "bytes": 113540,
+      "sha256": "8ddf37f1869df0ad4066b37f224f041500c0dee434d7f28684f4f3528b98a70a"
+    },
+    {
+      "name": "mtk_stp_wmt_soc",
+      "file": "original_mtk_stp_wmt_soc.ko",
+      "bytes": 368556,
+      "sha256": "786e9ab4d9ba0905be2b98f9d908ba9aeb196e69ebf58ec79a529fd1fc14ae30"
+    },
+    {
+      "name": "mtk_stp_bt_soc",
+      "file": "original_mtk_stp_bt_soc.ko",
+      "bytes": 12292,
+      "sha256": "01fbd5706e9c74dc9759d3da60da5e3a5443c5c71c12c0dc1a1464495e45f63e"
+    },
+    {
+      "name": "mtk_wmt_wifi_soc",
+      "file": "original_mtk_wmt_wifi_soc.ko",
+      "bytes": 14016,
+      "sha256": "d62db30a274fc472d0e819a444c1c91f57be73c60f8ce355071468a3a980a0c1"
+    },
+    {
+      "name": "wlan_gen2",
+      "file": "original_wlan_gen2.ko",
+      "bytes": 956276,
+      "sha256": "2cf27905d382fb8ac7e6bd8e000c6db1417c4415b5718086562be11399580e9b"
+    }
+  ],
+  "fixed_module": {
+    "name": "wlan_gen2",
+    "file": "fixed_wlan_gen2_mac.ko",
+    "bytes": 956328,
+    "sha256": "143c5611267eb4c5e20135fffdd39db491753147ef295278c3a69330c1fbf80f",
+    "depends": [
+      "cfg80211",
+      "mtk_stp_wmt_soc",
+      "mtk_wmt_wifi_soc"
+    ],
+    "dev_addr_mod_relocations": 3
+  },
+  "source_patch": {
+    "file": "wifi_source_all_changes.patch",
+    "sha256": "4ca491d26cf85485aa2510fffaeb1e1f765a4aaca36301559658efd01e10a7dd"
+  },
+  "validation": {
+    "all_six_original_modules_byte_identical": true,
+    "combined_patch_dry_run": "pass",
+    "identity_tool_original_wlan": "MATCH",
+    "identity_tool_fixed_wlan": "MISMATCH_EXPECTED",
+    "identity_unit_tests": "18 passed",
+    "sha256sum_check": "pass"
+  },
+  "runtime_verified": false,
+  "live_images_modified": false
+}

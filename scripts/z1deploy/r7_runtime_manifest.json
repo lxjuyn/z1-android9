@@ -9,7 +9,7 @@
     },
     "android": {
       "bytes": 943718400,
-      "sha256": "4cf37c01a35205e1801b45ff2ff87cd0151824fc8d91bba56135f14fe7b3c905"
+      "sha256": "fed5b8a7823fa01232450305d3e2ad9b0451b22254083fd2af40cb80d2f6562a"
     }
   },
   "runtime_files": [
@@ -57,7 +57,7 @@
     },
     {
       "path": "/system/bin/z1_runtime_manifest",
-      "sha256": "9110d967dc649b804601228bd0a37849fe48c48be4a019cb90775b46782c5afd",
+      "sha256": "142b20afbace8b3c0d611c445e28e9c3f4ccf219f9e180ae0fe998362b43cbcd",
       "mode": "755",
       "role": "installed read-only runtime identity gate"
     },
@@ -129,7 +129,7 @@
     },
     {
       "path": "/system/lib/modules/z1-radio/wlan_gen2.ko",
-      "sha256": "2cf27905d382fb8ac7e6bd8e000c6db1417c4415b5718086562be11399580e9b",
+      "sha256": "143c5611267eb4c5e20135fffdd39db491753147ef295278c3a69330c1fbf80f",
       "mode": "644",
       "role": "R4 WiFi driver"
     },

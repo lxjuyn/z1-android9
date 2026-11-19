@@ -4,7 +4,7 @@ Status: `HOST_VERIFIED_NOT_DEVICE_TESTED`.
 
 The R7 pair combines two independently verified offline candidates:
 
-- the R6 real output audio HAL and runtime identity gate;
+- the R6/R8 real playback and AWB microphone HAL plus runtime identity gate;
 - the GPS Android 9 callback adapter, factory MTK HAL, `mnld` init contract,
   and `gpsdrv` compatibility module.
 
@@ -15,7 +15,7 @@ in the system image.
 | Artifact | Bytes | SHA256 |
 |---|---:|---|
 | `out/r7_combined_candidate_20261119/boot_hsq_control_r7.img` | 5,984,256 | `b2865e43d8be640ae1e9dccbcbc21af60d656cde1a5b9b233264961ae31a3145` |
-| `out/r7_combined_candidate_20261119/system.img` | 943,718,400 | `4cf37c01a35205e1801b45ff2ff87cd0151824fc8d91bba56135f14fe7b3c905` |
+| `out/r7_combined_candidate_20261119/system.img` | 943,718,400 | `fed5b8a7823fa01232450305d3e2ad9b0451b22254083fd2af40cb80d2f6562a` |
 
 ## Host checks
 
@@ -34,6 +34,10 @@ in the system image.
 - The GPS adapter, factory HAL, and `gpsdrv.ko` were read back from the system
   image with matching hashes, `0644 root:root`, and the expected SELinux
   labels.
+- `wlan_gen2.ko` is the MAC API repair rebuilt from pinned source commit
+  `e9961becdc889266c3a8b5a488ff741159b6ad80`. All six original modules
+  reproduce byte-for-byte, and the repaired module carries three
+  `dev_addr_mod` relocations.
 - The boot ramdisk contains exactly one `mnld` service declaration, the
   `gps:system` socket contract, the patched prep script, and the expected
   `initrd-end`.
