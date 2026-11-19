@@ -255,7 +255,7 @@ if [ "$candidate" = r6-audio-20261119 ] ||
 fi
 if [ "$candidate" = r7-combined-20261119 ]; then
     check_hash /vendor/lib/hw/gps.default.so \
-        cf9b0853fb817044b3318e99a3e55c4d30a3e90cffbe9499cd549b4908b576c4 644
+        306e5c5097be5e0a2b12e42a7121a907b2b737021705793611e3c30b851bb18c 644
     check_hash /vendor/lib/hw/gps.z1stock.so \
         5a9f1bb021d7145bbe4e998f3dd6d43dafcd232d21fed0e6b4921483b3a9f257 644
     check_hash /system/lib/modules/z1-radio/z1_gpsdrv.ko \

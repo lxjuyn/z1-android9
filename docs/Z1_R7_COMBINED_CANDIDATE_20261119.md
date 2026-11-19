@@ -15,7 +15,7 @@ in the system image.
 | Artifact | Bytes | SHA256 |
 |---|---:|---|
 | `out/r7_combined_candidate_20261119/boot_hsq_control_r7.img` | 5,984,256 | `b2865e43d8be640ae1e9dccbcbc21af60d656cde1a5b9b233264961ae31a3145` |
-| `out/r7_combined_candidate_20261119/system.img` | 943,718,400 | `25753e641a11be75eca316f2fcabe44c21af3cbd270c7a00d99f3d8d4a72dada` |
+| `out/r7_combined_candidate_20261119/system.img` | 943,718,400 | `9b7d097dcb7b5c84b7b0d0d8bc201bc47c62e239d8ad4c4f7f26f262b4b83ce2` |
 
 ## Host checks
 
@@ -26,7 +26,9 @@ in the system image.
   stream lifecycle, software volume fallback, error pacing, policy closure,
   and explicit unsupported capture.
 - The GPS adapter maps the factory callback order and the actual factory HAL
-  dependency closure loads under ARM qemu without initializing `mnld`.
+  dependency closure loads under ARM qemu without initializing `mnld`. A
+  separate 32-bit ARM host regression also verifies that unadapted factory
+  extension tables are withheld.
 - The GPS adapter, factory HAL, and `gpsdrv.ko` were read back from the system
   image with matching hashes, `0644 root:root`, and the expected SELinux
   labels.
@@ -71,9 +73,10 @@ and a valid repeatable location callback.
 
 ## Boundaries
 
-The archived R7 adapter exposes raw factory GNSS extension tables. Source
-now withholds those tables pending ABI validation. Treat R7 GPS as an
-experimental bring-up artifact and rebuild the adapter before testing GPS.
+R7 withholds the factory GNSS extension tables pending separate ABI adapters.
+The core standalone GPS interface remains active; assisted GPS and other
+proprietary extensions are unavailable until their payload and lifetime
+contracts are adapted.
 
 Audio capture remains unimplemented. The input stream deliberately returns
 `-ENOSYS`, and the audio policy exposes no capture device. A microphone test

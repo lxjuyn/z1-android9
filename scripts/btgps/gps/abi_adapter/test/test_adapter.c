@@ -8,6 +8,14 @@
 #include <hardware/gps.h>
 #include <hardware/hardware.h>
 
+#ifndef Z1_ADAPTER_PATH
+#define Z1_ADAPTER_PATH "/vendor/lib/hw/gps.default.so"
+#endif
+
+#ifndef Z1_STOCK_HAL_PATH
+#define Z1_STOCK_HAL_PATH "/vendor/lib/hw/gps.z1stock.so"
+#endif
+
 static int create_thread_calls;
 static int request_utc_calls;
 
@@ -24,7 +32,7 @@ static void test_request_utc_time(void) {
 }
 
 int main(void) {
-    void *handle = dlopen("/vendor/lib/hw/gps.default.so", RTLD_NOW);
+    void *handle = dlopen(Z1_ADAPTER_PATH, RTLD_NOW);
     if (handle == NULL) {
         fprintf(stderr, "adapter dlopen failed: %s\n", dlerror());
         return 10;
@@ -88,7 +96,7 @@ int main(void) {
         fprintf(stderr, "adapter start failed\n");
         return 18;
     }
-    void *stock = dlopen("/vendor/lib/hw/gps.z1stock.so",
+    void *stock = dlopen(Z1_STOCK_HAL_PATH,
                          RTLD_NOW | RTLD_NOLOAD);
     if (stock == NULL) {
         fprintf(stderr, "factory library was not loaded\n");

@@ -9,7 +9,7 @@
     },
     "android": {
       "bytes": 943718400,
-      "sha256": "25753e641a11be75eca316f2fcabe44c21af3cbd270c7a00d99f3d8d4a72dada"
+      "sha256": "9b7d097dcb7b5c84b7b0d0d8bc201bc47c62e239d8ad4c4f7f26f262b4b83ce2"
     }
   },
   "runtime_files": [
@@ -45,13 +45,13 @@
     },
     {
       "path": "/system/bin/z1_runtime_manifest",
-      "sha256": "994d4478eb34aa6c0ef725176234b242a5475ce973fde3facfec08bc952602e0",
+      "sha256": "f40d553c8612bb93bf0848a12a620b835829eb5cd59b0799c0f9ae07d7b962d6",
       "mode": "755",
       "role": "installed read-only runtime identity gate"
     },
     {
       "path": "/vendor/lib/hw/gps.default.so",
-      "sha256": "cf9b0853fb817044b3318e99a3e55c4d30a3e90cffbe9499cd549b4908b576c4",
+      "sha256": "306e5c5097be5e0a2b12e42a7121a907b2b737021705793611e3c30b851bb18c",
       "mode": "644",
       "role": "Android 9 factory GPS ABI adapter"
     },
