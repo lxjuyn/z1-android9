@@ -2,14 +2,18 @@
 
 Use this runbook with
 [`Z1_R7_COMBINED_CANDIDATE_20261119.md`](Z1_R7_COMBINED_CANDIDATE_20261119.md).
-The candidate is host-verified but has not booted on the device.
+The candidate is host-verified and awaits its first board test. The board is
+currently on R4. When it is available, capture the five ODEX pages against
+that existing system first, then run the HSQ A/B sequence documented in
+[`Z1_R4_FRAMEWORK_READBACK_20261119.md`](Z1_R4_FRAMEWORK_READBACK_20261119.md).
+R7 overwrites the R4 Android partition, so that comparison must precede it.
 
 ## Before flashing
 
 From the workspace:
 
 ```sh
-scripts/z1deploy/z1_flash_r7.sh
+z1a9_gpt/scripts/z1deploy/z1_flash_r7.sh
 ```
 
 The default is a dry run. It checks the exact boot/system hashes, boot magic
