@@ -22,6 +22,7 @@ using `--start-address` and `--stop-address` to select the function.
 | --- | --- |
 | AP CCIF physical base `0x1000c000` | `get_ccif_hw_info` at `0xc05442f8` returns `0xf000c000` in its base fields for modem index 0. `mt_map_io` at `0xc090df40` calls `iotable_init` with eight mappings. The fourth maps `0xf0000000` to `0x10000000` for `0x20000` bytes. |
 | GIC SPI `75`, level low | `get_ccif_hw_info` writes legacy IRQ `107` at structure offset 8. `ccif_create_instance` copies it to offset 20 of the runtime object. `__ccif_v1_reg_intr` passes that IRQ and flag `0x8` (`IRQF_TRIGGER_LOW`) to `request_threaded_irq`. The stock `mt_irq_unmask` at `0xc0019ab4` uses the IRQ number directly to select the bit in the GIC distributor enable array at `0xf0211100`. INTID 107 corresponds to SPI 75. The mainline DTS routes peripheral IRQs through `sysirq`, which handles active-low polarity. |
+| MD1 watchdog MMIO `0x20050000`, GIC SPI `120`, falling edge | `md_init` at `0xc0546d38` maps 64 bytes at `0x20050000` and registers `MD-WDT` with legacy IRQ 152 and flag `0x2` (`IRQF_TRIGGER_FALLING`). The handler literal resolves to `md_wdt_isr`, which checks for IRQ 152. `recover_md_wdt_irq` reads watchdog status at offset `0x0c`. |
 | Modem allocation alignment `0x02000000` | `ccci_md_mem_reserve` at `0xc003c840` passes the computed size in `r0` and 32 MiB alignment in `r1` to `arm_memblock_steal`. The return value supplies the start address. |
 
 `parse_ccci_dfo_setting` at `0xc003c898` reads `MTK_ENABLE_MD1`, `MD1_SIZE`
