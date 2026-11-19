@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import socket
 import subprocess
 import tempfile
 import unittest
@@ -96,6 +97,12 @@ class R4RuntimeManifestTest(unittest.TestCase):
         text = re.sub(
             r'(?<![\w/])/(system|sbin|bin|proc|sys|data|vendor)(?=[/"\s:;])',
             lambda match: str(self.root) + match.group(), text)
+        text = text.replace(
+            "/dev/socket/mnld",
+            str(self.root / "dev/socket/mnld"))
+        text = text.replace(
+            "/dev/stpgps",
+            str(self.root / "dev/stpgps"))
         text = re.sub(
             r'(?<![\w/])/(hwcomposer\.z1\.so)',
             lambda match: str(self.root) + match.group(), text)
@@ -181,6 +188,61 @@ class R4RuntimeManifestTest(unittest.TestCase):
         result = self.run_probe("--r5")
         self.assertEqual(result.returncode, 1)
         self.assertIn("check=backlight-power-gate status=FAIL expected=0 actual=1", result.stdout)
+
+    def test_r6_profile_checks_the_deployed_output_audio_hal(self):
+        self.manifest = json.loads((HERE / "r6_runtime_manifest.json").read_text())
+        self.write_expected_files()
+        self.write_getprop()
+        self.write_tools()
+        self.write("sys/class/leds/lcd-backlight/display_blank", "0\n")
+
+        result = self.run_probe("--r6")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(
+            "schema=z1-r6-runtime/v1 candidate=r6-audio-20261119",
+            result.stdout)
+        self.assertIn("summary pass=43 fail=0 status=PASS", result.stdout)
+
+        self.write_tools({
+            "/vendor/lib/hw/audio.primary.default.so": "5" * 64,
+        })
+        result = self.run_probe("--r6")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(
+            f"check={self.root}/vendor/lib/hw/audio.primary.default.so "
+            "status=FAIL",
+            result.stdout)
+
+    def test_r7_profile_checks_audio_gps_and_transport_readiness(self):
+        self.manifest = json.loads((HERE / "r7_runtime_manifest.json").read_text())
+        self.write("proc/modules", "\n".join(
+            f"{name} 1 0 - Live 0x00000000"
+            for name in self.manifest["loaded_modules"]
+        ) + "\n")
+        self.write_expected_files()
+        self.write_getprop()
+        self.write_tools()
+        self.write("sys/class/leds/lcd-backlight/display_blank", "0\n")
+        socket_dir = self.root / "dev/socket"
+        socket_dir.mkdir(parents=True)
+        server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.addCleanup(server.close)
+        server.bind(str(socket_dir / "mnld"))
+        self.root.joinpath("dev/stpgps").symlink_to("/dev/null")
+
+        result = self.run_probe("--r7")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(
+            "schema=z1-r7-runtime/v1 candidate=r7-combined-20261119",
+            result.stdout)
+        self.assertIn("summary pass=51 fail=0 status=PASS", result.stdout)
+
+        self.root.joinpath("dev/stpgps").unlink()
+        self.write("dev/stpgps", "regular-file\n")
+        result = self.run_probe("--r7")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("char-device:", result.stdout)
+        self.assertIn("status=FAIL", result.stdout)
 
     def test_missing_boot_completion_and_stale_hwc_source_fail(self):
         self.write_tools()

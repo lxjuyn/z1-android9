@@ -22,8 +22,22 @@ case "${1:-}" in
         hwc_sha=f57ffee670186d5bdfc135043773cfd0576364ae8fac463fb6ef1b65532c20da
         codec_sha=3fa88d5aa0734612aefec8f45de1b4cabc24a86f67a383fb39f85481663f03cc
         ;;
+    --r6)
+        candidate=r6-audio-20261119
+        schema=z1-r6-runtime/v1
+        hwc_sha=f57ffee670186d5bdfc135043773cfd0576364ae8fac463fb6ef1b65532c20da
+        codec_sha=3fa88d5aa0734612aefec8f45de1b4cabc24a86f67a383fb39f85481663f03cc
+        audio_sha=73d22b253acce390caecbf6bb1cb8d2b34ea85b07cc982b8c406ce2873f08e2e
+        ;;
+    --r7)
+        candidate=r7-combined-20261119
+        schema=z1-r7-runtime/v1
+        hwc_sha=f57ffee670186d5bdfc135043773cfd0576364ae8fac463fb6ef1b65532c20da
+        codec_sha=3fa88d5aa0734612aefec8f45de1b4cabc24a86f67a383fb39f85481663f03cc
+        audio_sha=73d22b253acce390caecbf6bb1cb8d2b34ea85b07cc982b8c406ce2873f08e2e
+        ;;
     --help)
-        printf '%s\n' 'Usage: sh z1_r4_runtime_manifest.sh [--r4|--r5]'
+        printf '%s\n' 'Usage: sh z1_r4_runtime_manifest.sh [--r4|--r5|--r6|--r7]'
         printf '%s\n' 'Read-only Z1 runtime identity and readiness check.'
         exit 0
         ;;
@@ -172,6 +186,24 @@ check_input_name() {
     fi
 }
 
+check_socket() {
+    _cs_path=$1
+    if [ -S "$_cs_path" ]; then
+        pass "socket:${_cs_path}" UNIX_SOCKET
+    else
+        fail "socket:${_cs_path}" UNIX_SOCKET NOT_A_SOCKET
+    fi
+}
+
+check_char_device() {
+    _ccd_path=$1
+    if [ -c "$_ccd_path" ]; then
+        pass "char-device:${_ccd_path}" CHARACTER_DEVICE
+    else
+        fail "char-device:${_ccd_path}" CHARACTER_DEVICE NOT_A_CHARACTER_DEVICE
+    fi
+}
+
 printf '[r4manifest] BEGIN schema=%s candidate=%s read_only=1\n' "$schema" "$candidate"
 _utc=$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null) || _utc=UNAVAILABLE
 printf '[r4manifest] sampled_utc=%s\n' "$_utc"
@@ -216,6 +248,19 @@ check_hash /vendor/lib/egl/libGLES_mesa.so \
     bb0ac77c03e79648db5dc8a480ec478be566b78c6105e9f781fd22100b46f445 644
 check_hash /vendor/lib/libgallium_dri.so \
     492f0b5e871868f55023351722a609da6b65e186fbf31366a28d7faf981232b9 644
+if [ "$candidate" = r6-audio-20261119 ] ||
+   [ "$candidate" = r7-combined-20261119 ]; then
+    check_hash /vendor/lib/hw/audio.primary.default.so "$audio_sha" 644
+    check_hash /vendor/lib/libaudio.primary.default.so "$audio_sha" 644
+fi
+if [ "$candidate" = r7-combined-20261119 ]; then
+    check_hash /vendor/lib/hw/gps.default.so \
+        cf9b0853fb817044b3318e99a3e55c4d30a3e90cffbe9499cd549b4908b576c4 644
+    check_hash /vendor/lib/hw/gps.z1stock.so \
+        5a9f1bb021d7145bbe4e998f3dd6d43dafcd232d21fed0e6b4921483b3a9f257 644
+    check_hash /system/lib/modules/z1-radio/z1_gpsdrv.ko \
+        5cab8a98e9bad3fc7cfa369af2b850dc9c271cd81678150b77279d22667de717 644
+fi
 check_hash /system/lib/libart.so \
     81226e14966cd9d342a0df36f24c2ad12ecdcc926c0a14bf354c1b373cb2ea94 644
 check_hash /system/framework/arm/boot.oat \
@@ -232,8 +277,12 @@ check_line touch-boundary-320 \
     'write /sys/module/z1_cst836u/parameters/key_y_min 320'
 check_line hide-virtual-navigation /system/build.prop 'qemu.hw.mainkeys=1'
 
-for _module in mt6572_mt6323 mt6572_afe_pcm snd_soc_mt6323 z1_cst836u \
-    wlan_gen2 mtk_stp_bt_soc mtk_stp_wmt_soc mtk_btif_drv; do
+_required_modules="mt6572_mt6323 mt6572_afe_pcm snd_soc_mt6323 z1_cst836u \
+wlan_gen2 mtk_stp_bt_soc mtk_stp_wmt_soc mtk_btif_drv"
+if [ "$candidate" = r7-combined-20261119 ]; then
+    _required_modules="$_required_modules z1_gpsdrv mtk_stp_gps_soc"
+fi
+for _module in $_required_modules; do
     check_loaded_module "$_module"
 done
 
@@ -249,7 +298,9 @@ else
     fail wlan0-present PRESENT INTERFACE_MISSING
 fi
 
-if [ "$candidate" = r5-20261119 ]; then
+if [ "$candidate" = r5-20261119 ] ||
+   [ "$candidate" = r6-audio-20261119 ] ||
+   [ "$candidate" = r7-combined-20261119 ]; then
     backlight_gate=/sys/class/leds/lcd-backlight/display_blank
     blank=$(cat "$backlight_gate" 2>/dev/null) || blank=UNREADABLE
     if [ "$blank" = 0 ]; then
@@ -257,6 +308,12 @@ if [ "$candidate" = r5-20261119 ]; then
     else
         fail backlight-power-gate 0 "${blank:-EMPTY}"
     fi
+fi
+
+if [ "$candidate" = r7-combined-20261119 ]; then
+    check_prop init.svc.mnld running
+    check_socket /dev/socket/mnld
+    check_char_device /dev/stpgps
 fi
 
 if [ "$FAIL_COUNT" -eq 0 ]; then
