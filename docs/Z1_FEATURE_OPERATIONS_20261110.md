@@ -177,9 +177,19 @@ NVRAM 是本机地址/射频校准的一部分。文档不抄任何实际地址�
 
 `contract_tests/test_gps_binary_contract.py` 11项主机检查通过。命令7在固定厂商源码中是 `COMBO_IOC_RTC_FLAG`，读取RTC低功耗标志，命令8才是co-clock。helper在0x2dce调用7后比较1，非1分支记日志后仍汇合到 `mtk_gps_mnl_run`；所以缺命令7不等于退出的直接原因，禁止直接补 `return 1`。
 
-更强阻塞是回调ABI：原厂HAL在初始化中复制44字节回调表，0x41d2从callback+0x24读取创建线程函数；实际HIDL的createThread位于+0x20，+0x24是requestUtcTime。原样接入会误调UTC回调且不启动期望线程。位置/状态/NMEA等部分入口看似相同，也不能替代完整payload与生命周期兼容验证。后续需要显式适配表与数据结构，不能仅比较结构size或将stub换成原厂blob。
+更强阻塞是回调ABI：原厂HAL在初始化中复制44字节回调表，0x41d2从callback+0x24读取创建线程函数；实际HIDL的createThread位于+0x20，+0x24是requestUtcTime。原样接入会误调UTC回调且不启动期望线程。位置/状态/NMEA等部分入口看似相同，也不能替代完整payload与生命周期兼容验证。
 
-离线init改名工具已经修复重复mnld/假成功：11项测试通过，处理的是用户指定的离线rc副本；公共init未改，候选system仍含原stub。工具需要主机Python3，不应当作Android端可直接运行的安装器。
+2026-11-19 新增显式 ABI 适配候选：`scripts/btgps/gps/abi_adapter/` 与
+[`docs/Z1_GPS_OFFLINE_20261119.md`](Z1_GPS_OFFLINE_20261119.md)。适配层只交换
+`request_utc_time_cb`/`create_thread_cb` 并转发真实 `GpsInterface`，原厂库以
+独立 SONAME 保留；候选 boot 同时把服务统一为 `mnld`、socket 设为
+`0660 gps:system`，system 加入 gpsdrv、适配 HAL 与原厂 HAL。Android 9
+回调顺序和真实原厂 ELF 依赖闭包已在 ARM qemu 通过，boot/system 载荷均已
+读回，system `e2fsck -fn` 通过。该候选尚未上板，真实 STP 数据、卫星与位置
+回调仍是设备门禁，不能把 host PASS 写成 GPS 已可用。
+
+离线 init 改名工具已经修复重复 mnld/假成功：11 项测试通过，处理的是离线
+rc 副本。当前 R5 基线仍含原 stub；上述单独 GPS 候选才换入真实链路。
 
 ## 6. 矩阵实体按键：扫描码、Linux keycode 与 Android 动作
 
