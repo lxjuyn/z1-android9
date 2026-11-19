@@ -23,7 +23,7 @@ export PATH
 umask 022
 
 BASE=/data/local/z1diag
-MODE=$1
+MODE=${1:-passive}
 TS=$(date +%Y%m%d_%H%M%S 2>/dev/null)
 [ -n "$TS" ] || TS=$(cut -d. -f1 /proc/uptime 2>/dev/null)
 OUT=$BASE/audio_$TS
@@ -147,10 +147,11 @@ fi
 # 3. trigger - path 2: tinycap
 # ---------------------------------------------------------------------------
 if [ -x /system/bin/tinycap ]; then
-    say "PATH2 tinycap: recording 3s to $OUT/capture.wav"
-    CAPF=$OUT/capture.wav
-    $TI /system/bin/tinycap "$CAPF" -D 0 -d 0 -c 2 -r 44100 -b 16 -n 3 >> "$CUR" 2>&1 || true
-    cap "$CUR" "capture result" "ls -l $CAPF; head -c 16 $CAPF 2>/dev/null | od -A d -t x1"
+    say "PATH2 tinycap: recording 3s from AWB pcmC0D1c"
+    CAPF=$OUT/capture.pcm
+    $TI /system/bin/tinycap "$CAPF" -D 0 -d 1 -c 2 -r 48000 -b 16 -n 3 >> "$CUR" 2>&1 || true
+    cap "$CUR" "capture result" \
+        "ls -l $CAPF; od -A d -t x1 -N 64 $CAPF 2>/dev/null; od -An -v -t u1 $CAPF 2>/dev/null | tr ' ' '\\n' | awk '\$1 != 0 { n++ } END { print \"nonzero_bytes=\" (n+0) }'"
     fact TRIGGER_PATH2 tinycap
 else
     say "PATH2 skipped: no /system/bin/tinycap"
