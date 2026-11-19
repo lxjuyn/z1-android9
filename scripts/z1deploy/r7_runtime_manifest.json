@@ -9,7 +9,7 @@
     },
     "android": {
       "bytes": 943718400,
-      "sha256": "9b7d097dcb7b5c84b7b0d0d8bc201bc47c62e239d8ad4c4f7f26f262b4b83ce2"
+      "sha256": "b71e763a2c6440e2becd78907a87060990451ae5a95c239a733bd2b8bce907e0"
     }
   },
   "runtime_files": [
@@ -33,19 +33,31 @@
     },
     {
       "path": "/vendor/lib/hw/audio.primary.default.so",
-      "sha256": "73d22b253acce390caecbf6bb1cb8d2b34ea85b07cc982b8c406ce2873f08e2e",
+      "sha256": "3f1b3a841aea4eedd7cb7ba5c22ebe12e6062b6ec88ec5d28eed6864251e1722",
       "mode": "644",
-      "role": "active output primary audio HAL"
+      "role": "active playback and AWB capture primary HAL"
     },
     {
       "path": "/vendor/lib/libaudio.primary.default.so",
-      "sha256": "73d22b253acce390caecbf6bb1cb8d2b34ea85b07cc982b8c406ce2873f08e2e",
+      "sha256": "3f1b3a841aea4eedd7cb7ba5c22ebe12e6062b6ec88ec5d28eed6864251e1722",
       "mode": "644",
-      "role": "output primary audio implementation"
+      "role": "playback and capture primary audio implementation"
+    },
+    {
+      "path": "/vendor/etc/primary_audio_policy_configuration.xml",
+      "sha256": "954d41f1838921c3fd4d75ad9660b1c63204806021208afe9cf815cb84424f37",
+      "mode": "644",
+      "role": "closed speaker and built-in microphone policy"
+    },
+    {
+      "path": "/vendor/bin/z1_audio_route.sh",
+      "sha256": "185f255246db59192422f1066c872623021968eed94a01d54bc9e15b0964fb6c",
+      "mode": "755",
+      "role": "DAPM playback and microphone route setup"
     },
     {
       "path": "/system/bin/z1_runtime_manifest",
-      "sha256": "f40d553c8612bb93bf0848a12a620b835829eb5cd59b0799c0f9ae07d7b962d6",
+      "sha256": "ace6c384d90f483721458656b802c9eb009888e56d19eadd336475a9a5ad3b9d",
       "mode": "755",
       "role": "installed read-only runtime identity gate"
     },
@@ -216,6 +228,21 @@
       "id": "hide-virtual-navigation",
       "path": "/system/build.prop",
       "line": "qemu.hw.mainkeys=1"
+    },
+    {
+      "id": "microphone-policy",
+      "path": "/vendor/etc/primary_audio_policy_configuration.xml",
+      "line": "AUDIO_DEVICE_IN_BUILTIN_MIC"
+    },
+    {
+      "id": "microphone-route",
+      "path": "/vendor/bin/z1_audio_route.sh",
+      "line": "set_one \"MIC Route\" On"
+    },
+    {
+      "id": "audio-capture-registered",
+      "path": "/proc/asound/pcm",
+      "line": "AWB Capture"
     }
   ],
   "device_checks": [

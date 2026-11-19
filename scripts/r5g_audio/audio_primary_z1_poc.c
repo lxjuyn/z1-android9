@@ -2,10 +2,9 @@
  * audio_primary_z1_poc.c — minimal A9 (SDK28) audio PRIMARY HAL for Z1 (MT6572 + MT6323)
  * Implementation: AOSP audio_hw_hal.cpp "legacy wrapper" layout, backed by tinyalsa.
  *
- * r5h revision (2026-11-10): retry failed PCM opens with a separate write
- * countdown; report unsupported hardware volume so AudioFlinger retains its
- * software volume handling. Regression tests: tests/run_tests.sh.
- * Capture remains unimplemented; these changes do not establish audible output.
+ * r8 revision (2026-11-19): add the AWB microphone input stream on
+ * pcmC0D1c. Playback and capture use the same lazy-open recovery so the HAL
+ * can load before the ASoC card finishes probing.
  *
  * r5g revision (2026-10-30), derived from scripts/r5d_audio_hal/audio_primary_z1_poc.c
  * (r5d 原版 316 行原样未动)。本轮改动 (依据 2026-10-30 ABI 判定 abi.changes;
@@ -27,7 +26,8 @@
  *           "z1-mt6572-mainline" 是 author 字段 (文件末尾 HAL_MODULE_INFO_SYM),
  *           不参与匹配。
  *
- * NOT a complete HAL: playback path + stubs are real; capture/telephony is stubbed.
+ * The microphone path is real. Telephony, voice-call routing, FM capture and
+ * hardware gain controls remain outside this HAL.
  */
 #include <errno.h>
 #include <stdint.h>
@@ -59,7 +59,8 @@ extern int *__errno(void);
 
 /* ---- tunables (verified against the image's dtb / .ko set) ---- */
 #define Z1_PCM_CARD   0
-#define Z1_PCM_DEV    0
+#define Z1_PCM_PLAYBACK_DEV 0
+#define Z1_PCM_CAPTURE_DEV  1
 #define Z1_DEFAULT_RATE      48000
 #define Z1_DEFAULT_CHANNELS  2
 #define Z1_DEFAULT_PERIOD    1024
@@ -78,6 +79,7 @@ extern int *__errno(void);
 /* Z1 支持集: 上板 tinypcminfo -D 0 -d 0 复核 rates mask 之前保守只认 48k,
  * 其余采样率一律归一到 48k (由 AudioFlinger 重采样), 见 [必改2]。 */
 static const uint32_t z1_supported_rates[] = { Z1_DEFAULT_RATE };
+static const uint32_t z1_input_rates[] = { 8000, 16000, 32000, 48000 };
 
 struct z1_stream_out {
     struct audio_stream_out stream;
@@ -90,6 +92,19 @@ struct z1_stream_out {
     uint64_t        frames_written;   /* 累计写入帧数 (get_presentation_position) */
     uint32_t        open_fails;       /* actual consecutive pcm_open failures */
     uint32_t        open_retry_wait;  /* writes to skip before retrying */
+};
+
+struct z1_stream_in {
+    struct audio_stream_in stream;
+    pthread_mutex_t lock;
+    struct pcm     *pcm;
+    uint32_t        rate;
+    uint32_t        channels;
+    size_t          frame_bytes;
+    audio_devices_t device;
+    uint64_t        frames_read;
+    uint32_t        open_fails;
+    uint32_t        open_retry_wait;
 };
 
 struct z1_audio_device {
@@ -112,8 +127,11 @@ _Static_assert(sizeof(struct hw_module_t)      == 128, "hw_module_t != 128B (lib
 _Static_assert(sizeof(struct audio_stream)     ==  56, "audio_stream != 56B (A9 ABI)");
 _Static_assert(sizeof(struct audio_hw_device)  == 156, "audio_hw_device != 156B (A9 ABI)");
 _Static_assert(sizeof(struct audio_stream_out) == 120, "audio_stream_out != 120B (A9 ABI, 含 4 个 mmap 槽)");
+_Static_assert(sizeof(struct audio_stream_in)  ==  96, "audio_stream_in != 96B (A9 ABI)");
 _Static_assert(offsetof(struct audio_stream_out, get_presentation_position) == 96,
                "get_presentation_position 必须在偏移 96 (wrapper 实调槽)");
+_Static_assert(offsetof(struct audio_stream_in, read) == 60,
+               "capture read callback must remain at offset 60 (A9 ABI)");
 
 /* ============================ helpers ============================ */
 
@@ -138,6 +156,15 @@ static uint32_t z1_normalize_rate(uint32_t req)
             if (z1_supported_rates[i] == req)
                 return req;
     }
+    return Z1_DEFAULT_RATE;
+}
+
+static uint32_t z1_normalize_input_rate(uint32_t req)
+{
+    size_t i;
+    for (i = 0; i < sizeof(z1_input_rates) / sizeof(z1_input_rates[0]); i++)
+        if (z1_input_rates[i] == req)
+            return req;
     return Z1_DEFAULT_RATE;
 }
 
@@ -214,20 +241,21 @@ static int pcm_ensure_open(struct z1_stream_out *o)
     cfg.start_threshold = Z1_DEFAULT_PERIOD;
     cfg.stop_threshold  = Z1_DEFAULT_PERIOD * 4;
     o->frame_bytes = cfg.channels * sizeof(uint16_t);
-    o->pcm = pcm_open(Z1_PCM_CARD, Z1_PCM_DEV, PCM_OUT, &cfg);
+    o->pcm = pcm_open(Z1_PCM_CARD, Z1_PCM_PLAYBACK_DEV, PCM_OUT, &cfg);
     if (!o->pcm || !pcm_is_ready(o->pcm)) {
         o->open_retry_wait = Z1_OPEN_RETRY_EVERY - 1;
         o->open_fails++;
         if (o->open_fails == 1 || (o->open_fails % Z1_OPEN_LOG_EVERY) == 0)
             ALOGE("pcm_open(card%d,dev%d) failed (consecutive=%u): %s", Z1_PCM_CARD,
-                  Z1_PCM_DEV, o->open_fails,
+                  Z1_PCM_PLAYBACK_DEV, o->open_fails,
                   o->pcm ? pcm_get_error(o->pcm) : strerror(errno));
         if (o->pcm) { pcm_close(o->pcm); o->pcm = NULL; }
         return -ENODEV;
     }
     o->open_fails = 0;
     o->open_retry_wait = 0;
-    ALOGI("pcm_open ok card%d dev%d %uHz %uch", Z1_PCM_CARD, Z1_PCM_DEV,
+    ALOGI("pcm_open ok card%d dev%d %uHz %uch", Z1_PCM_CARD,
+          Z1_PCM_PLAYBACK_DEV,
           cfg.rate, cfg.channels);
     return 0;
 }
@@ -306,6 +334,174 @@ static int out_get_presentation_position(const struct audio_stream_out *s,
     return -ENOSYS;
 }
 
+/* ---------------------------- stream in --------------------------- */
+
+static uint32_t in_get_sample_rate(const struct audio_stream *s)
+{ return ((const struct z1_stream_in *)s)->rate; }
+
+static int in_set_sample_rate(struct audio_stream *s, uint32_t rate)
+{
+    ((struct z1_stream_in *)s)->rate = z1_normalize_input_rate(rate);
+    return 0;
+}
+
+static size_t in_get_buffer_size(const struct audio_stream *s)
+{
+    const struct z1_stream_in *in = (const struct z1_stream_in *)s;
+    return in->frame_bytes * Z1_DEFAULT_PERIOD;
+}
+
+static audio_channel_mask_t in_get_channels(const struct audio_stream *s)
+{
+    const struct z1_stream_in *in = (const struct z1_stream_in *)s;
+    return in->channels == 1 ? AUDIO_CHANNEL_IN_MONO : AUDIO_CHANNEL_IN_STEREO;
+}
+
+static audio_format_t in_get_format(const struct audio_stream *s)
+{ (void)s; return AUDIO_FORMAT_PCM_16_BIT; }
+
+static int in_set_format(struct audio_stream *s, audio_format_t format)
+{ (void)s; return format == AUDIO_FORMAT_PCM_16_BIT ? 0 : -EINVAL; }
+
+static int in_standby(struct audio_stream *s)
+{
+    struct z1_stream_in *in = (struct z1_stream_in *)s;
+    pthread_mutex_lock(&in->lock);
+    if (in->pcm) {
+        pcm_close(in->pcm);
+        in->pcm = NULL;
+    }
+    in->open_fails = 0;
+    in->open_retry_wait = 0;
+    pthread_mutex_unlock(&in->lock);
+    return 0;
+}
+
+static int in_dump(const struct audio_stream *s, int fd) { (void)s; (void)fd; return 0; }
+
+static audio_devices_t in_get_device(const struct audio_stream *s)
+{ return ((const struct z1_stream_in *)s)->device; }
+
+static int in_set_device(struct audio_stream *s, audio_devices_t device)
+{ ((struct z1_stream_in *)s)->device = device; return 0; }
+
+static int in_set_parameters(struct audio_stream *s, const char *kv)
+{ (void)s; (void)kv; return 0; }
+
+static char *in_get_parameters(const struct audio_stream *s, const char *keys)
+{ (void)s; (void)keys; return strdup(""); }
+
+static int in_add_audio_effect(const struct audio_stream *s, effect_handle_t effect)
+{ (void)s; (void)effect; return 0; }
+
+static int in_remove_audio_effect(const struct audio_stream *s, effect_handle_t effect)
+{ (void)s; (void)effect; return 0; }
+
+static int pcm_input_ensure_open(struct z1_stream_in *in)
+{
+    struct pcm_config cfg;
+
+    if (in->pcm) {
+        in->open_fails = 0;
+        return 0;
+    }
+    if (in->open_retry_wait != 0) {
+        in->open_retry_wait--;
+        return -ENODEV;
+    }
+
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.channels = in->channels;
+    cfg.rate = in->rate;
+    cfg.period_size = Z1_DEFAULT_PERIOD;
+    cfg.period_count = 4;
+    cfg.format = PCM_FORMAT_S16_LE;
+    cfg.start_threshold = 1;
+    cfg.stop_threshold = Z1_DEFAULT_PERIOD * 4;
+    in->frame_bytes = cfg.channels * sizeof(uint16_t);
+    in->pcm = pcm_open(Z1_PCM_CARD, Z1_PCM_CAPTURE_DEV, PCM_IN, &cfg);
+    if (!in->pcm || !pcm_is_ready(in->pcm)) {
+        in->open_retry_wait = Z1_OPEN_RETRY_EVERY - 1;
+        in->open_fails++;
+        if (in->open_fails == 1 || (in->open_fails % Z1_OPEN_LOG_EVERY) == 0)
+            ALOGE("pcm_open(card%d,dev%d,capture) failed (consecutive=%u): %s",
+                  Z1_PCM_CARD, Z1_PCM_CAPTURE_DEV, in->open_fails,
+                  in->pcm ? pcm_get_error(in->pcm) : strerror(errno));
+        if (in->pcm) {
+            pcm_close(in->pcm);
+            in->pcm = NULL;
+        }
+        return -ENODEV;
+    }
+    in->open_fails = 0;
+    in->open_retry_wait = 0;
+    ALOGI("pcm_open capture ok card%d dev%d %uHz %uch", Z1_PCM_CARD,
+          Z1_PCM_CAPTURE_DEV, cfg.rate, cfg.channels);
+    return 0;
+}
+
+static ssize_t in_read(struct audio_stream_in *stream, void *buffer, size_t bytes)
+{
+    struct z1_stream_in *in = (struct z1_stream_in *)stream;
+    int rc;
+
+    if (buffer == NULL || bytes == 0 || in->frame_bytes == 0 ||
+        bytes % in->frame_bytes != 0)
+        return -EINVAL;
+
+    pthread_mutex_lock(&in->lock);
+    rc = pcm_input_ensure_open(in);
+    if (rc == 0) {
+        rc = pcm_read(in->pcm, buffer, bytes);
+        if (rc != 0) {
+            ALOGE("pcm_read: %s", pcm_get_error(in->pcm));
+            pcm_close(in->pcm);
+            in->pcm = NULL;
+            rc = -EIO;
+        } else {
+            in->frames_read += bytes / in->frame_bytes;
+        }
+    }
+    pthread_mutex_unlock(&in->lock);
+
+    if (rc != 0) {
+        uint64_t bytes_per_sec = (uint64_t)in->rate * in->frame_bytes;
+        uint64_t us = bytes_per_sec ? (bytes * 1000000ull) / bytes_per_sec : 0;
+        if (us > UINT32_MAX)
+            us = UINT32_MAX;
+        usleep((useconds_t)us);
+        return rc;
+    }
+    return (ssize_t)bytes;
+}
+
+static uint32_t in_get_input_frames_lost(struct audio_stream_in *stream)
+{
+    /* tinyalsa exposes open/read failures, not an exact lost-frame counter. */
+    (void)stream;
+    return 0;
+}
+
+static int in_get_capture_position(const struct audio_stream_in *stream,
+                                   int64_t *frames, int64_t *time)
+{
+    (void)stream;
+    if (frames)
+        *frames = 0;
+    if (time)
+        *time = 0;
+    return -ENOSYS;
+}
+
+static int in_set_gain(struct audio_stream_in *stream, float gain)
+{ (void)stream; (void)gain; return -ENOTSUP; }
+
+static int in_start(const struct audio_stream_in *stream)
+{ (void)stream; return -ENOSYS; }
+
+static int in_stop(const struct audio_stream_in *stream)
+{ (void)stream; return -ENOSYS; }
+
 /* ======================== device functions ======================= */
 
 static int adev_init_check(const struct audio_hw_device *dev) { (void)dev; return 0; }
@@ -330,10 +526,14 @@ static char *adev_get_parameters(const struct audio_hw_device *dev, const char *
 
 static size_t adev_get_input_buffer_size(const struct audio_hw_device *dev,
                                         const struct audio_config *cfg)
-{ (void)dev; (void)cfg;
-  /* open_input_stream is still -ENOSYS. Returning a non-zero size advertises
-   * capture support to the HIDL wrapper before the open call rejects it. */
-  return 0; }
+{
+    uint32_t channels;
+    (void)dev;
+    if (cfg == NULL || cfg->format != AUDIO_FORMAT_PCM_16_BIT)
+        return 0;
+    channels = popcount_mask(cfg->channel_mask) == 1 ? 1 : Z1_DEFAULT_CHANNELS;
+    return channels * sizeof(int16_t) * Z1_DEFAULT_PERIOD;
+}
 
 static int adev_open_output_stream(struct audio_hw_device *dev,
                                   audio_io_handle_t handle, audio_devices_t devices,
@@ -400,10 +600,67 @@ static int adev_open_input_stream(struct audio_hw_device *dev, audio_io_handle_t
                                  audio_devices_t d, struct audio_config *cfg,
                                  struct audio_stream_in **si, audio_input_flags_t f,
                                  const char *addr, audio_source_t src)
-{ (void)dev;(void)h;(void)d;(void)cfg;(void)f;(void)addr;(void)src; *si = NULL; return -ENOSYS; }
+{
+    struct z1_stream_in *in;
+    (void)dev;
+    (void)h;
+    (void)f;
+    (void)addr;
+    if (cfg == NULL || si == NULL || d != AUDIO_DEVICE_IN_BUILTIN_MIC ||
+        src != AUDIO_SOURCE_MIC)
+        return -EINVAL;
+    if (cfg->format != AUDIO_FORMAT_PCM_16_BIT)
+        return -EINVAL;
+
+    in = (struct z1_stream_in *)calloc(1, sizeof(*in));
+    if (in == NULL)
+        return -ENOMEM;
+    in->rate = z1_normalize_input_rate(cfg->sample_rate);
+    in->channels = popcount_mask(cfg->channel_mask) == 1 ? 1 : Z1_DEFAULT_CHANNELS;
+    in->frame_bytes = in->channels * sizeof(int16_t);
+    in->device = d;
+    cfg->sample_rate = in->rate;
+    cfg->channel_mask = in->channels == 1 ?
+        AUDIO_CHANNEL_IN_MONO : AUDIO_CHANNEL_IN_STEREO;
+    cfg->format = AUDIO_FORMAT_PCM_16_BIT;
+    pthread_mutex_init(&in->lock, NULL);
+
+    in->stream.common.get_sample_rate = in_get_sample_rate;
+    in->stream.common.set_sample_rate = in_set_sample_rate;
+    in->stream.common.get_buffer_size = in_get_buffer_size;
+    in->stream.common.get_channels = in_get_channels;
+    in->stream.common.get_format = in_get_format;
+    in->stream.common.set_format = in_set_format;
+    in->stream.common.standby = in_standby;
+    in->stream.common.dump = in_dump;
+    in->stream.common.get_device = in_get_device;
+    in->stream.common.set_device = in_set_device;
+    in->stream.common.set_parameters = in_set_parameters;
+    in->stream.common.get_parameters = in_get_parameters;
+    in->stream.common.add_audio_effect = in_add_audio_effect;
+    in->stream.common.remove_audio_effect = in_remove_audio_effect;
+    in->stream.set_gain = in_set_gain;
+    in->stream.read = in_read;
+    in->stream.get_input_frames_lost = in_get_input_frames_lost;
+    in->stream.get_capture_position = in_get_capture_position;
+    in->stream.start = in_start;
+    in->stream.stop = in_stop;
+    *si = &in->stream;
+    ALOGV("open_input_stream devices=0x%x rate=%u channels=%u",
+          d, in->rate, in->channels);
+    return 0;
+}
 
 static void adev_close_input_stream(struct audio_hw_device *dev, struct audio_stream_in *si)
-{ (void)dev; (void)si; }
+{
+    struct z1_stream_in *in = (struct z1_stream_in *)si;
+    (void)dev;
+    if (in == NULL)
+        return;
+    in_standby(&in->stream.common);
+    pthread_mutex_destroy(&in->lock);
+    free(in);
+}
 
 static int adev_dump(const audio_hw_device_t *dev, int fd) { (void)dev; (void)fd; return 0; }
 

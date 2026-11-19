@@ -59,8 +59,29 @@ int main(int argc, char **argv) {
     }
 
     device->close_output_stream(device, stream);
+
+    struct audio_config input_config = {
+        .sample_rate = 16000,
+        .channel_mask = AUDIO_CHANNEL_IN_MONO,
+        .format = AUDIO_FORMAT_PCM_16_BIT,
+    };
+    audio_stream_in_t *input = NULL;
+    status = device->open_input_stream(
+            device, 0, AUDIO_DEVICE_IN_BUILTIN_MIC, &input_config,
+            &input, AUDIO_INPUT_FLAG_NONE, NULL, AUDIO_SOURCE_MIC);
+    if (status != 0 || input == NULL ||
+        input_config.sample_rate != 16000 ||
+        input_config.channel_mask != AUDIO_CHANNEL_IN_MONO ||
+        input->common.get_sample_rate(&input->common) != 16000 ||
+        input->common.get_channels(&input->common) != AUDIO_CHANNEL_IN_MONO ||
+        input->common.get_buffer_size(&input->common) != 2048) {
+        fprintf(stderr, "input stream contract failed: %d\n", status);
+        return 15;
+    }
+    device->close_input_stream(device, input);
+
     device->common.close(&device->common);
     dlclose(handle);
-    puts("PASS: deployed Android 9 HAL loads and negotiates 48 kHz stereo PCM16");
+    puts("PASS: deployed Android 9 HAL negotiates output and AWB microphone");
     return 0;
 }

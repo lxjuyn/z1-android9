@@ -21,11 +21,11 @@ int *__errno(void);
 struct pcm { int ready; };
 static struct pcm mock_pcm;
 static struct pcm_config last_config;
-static unsigned int open_calls, close_calls, write_calls, error_logs;
+static unsigned int open_calls, close_calls, write_calls, read_calls, error_logs;
 static unsigned int slept_calls;
 static useconds_t last_sleep;
 static unsigned int last_card, last_device, last_flags;
-static int device_ready, return_null = 1, write_error, mock_errno;
+static int device_ready, return_null = 1, write_error, read_error, mock_errno;
 static int failures;
 static unsigned char last_data[16];
 static const unsigned char samples[16] = {
@@ -75,6 +75,15 @@ int pcm_write(struct pcm *pcm, const void *data, unsigned int count)
         return -EIO;
     if (count == sizeof(last_data))
         memcpy(last_data, data, count);
+    return 0;
+}
+int pcm_read(struct pcm *pcm, void *data, unsigned int count)
+{
+    CHECK(pcm == &mock_pcm && pcm->ready, "read only from ready PCM");
+    read_calls++;
+    if (read_error)
+        return -EIO;
+    memset(data, 0x5a, count);
     return 0;
 }
 unsigned int pcm_get_buffer_size(struct pcm *pcm)
@@ -359,16 +368,58 @@ static void input_contract_case(struct audio_hw_device *dev)
         .channel_mask = AUDIO_CHANNEL_IN_MONO,
         .format = AUDIO_FORMAT_PCM_16_BIT
     };
-    struct audio_stream_in *input = (struct audio_stream_in *)1;
+    struct audio_stream_in *input = NULL;
+    unsigned char samples[1024];
 
-    CHECK(dev->get_input_buffer_size(dev, &config) == 0,
-          "capture buffer size is zero while capture is unsupported");
+    CHECK(dev->get_input_buffer_size(dev, &config) == 2048,
+          "16k mono capture advertises one 1024-frame PCM16 period");
     int rc = dev->open_input_stream(dev, 0, AUDIO_DEVICE_IN_BUILTIN_MIC, &config,
                                     &input, AUDIO_INPUT_FLAG_NONE, NULL,
                                     AUDIO_SOURCE_MIC);
-    CHECK(rc == -ENOSYS && input == NULL,
-          "capture open fails cleanly and clears the output pointer");
-    printf("input contract: capture explicitly unsupported\n");
+    CHECK(rc == 0 && input != NULL, "built-in microphone capture opens");
+    CHECK(open_calls == 0, "opening capture remains lazy");
+    CHECK(config.sample_rate == 16000 &&
+          config.channel_mask == AUDIO_CHANNEL_IN_MONO &&
+          config.format == AUDIO_FORMAT_PCM_16_BIT,
+          "capture config remains 16k mono PCM16");
+    CHECK(input->common.get_sample_rate(&input->common) == 16000 &&
+          input->common.get_channels(&input->common) == AUDIO_CHANNEL_IN_MONO &&
+          input->common.get_format(&input->common) == AUDIO_FORMAT_PCM_16_BIT &&
+          input->common.get_buffer_size(&input->common) == 2048,
+          "capture stream reports the negotiated format");
+
+    device_ready = 0;
+    return_null = 1;
+    memset(samples, 0, sizeof(samples));
+    CHECK(input->read(input, samples, sizeof(samples)) == -ENODEV,
+          "missing capture device returns an error");
+    CHECK(open_calls == 1 && read_calls == 0,
+          "first capture read attempts one PCM open");
+    device_ready = 1;
+    for (int i = 0; i < 9; i++)
+        CHECK(input->read(input, samples, sizeof(samples)) == -ENODEV,
+              "capture backoff does not spin on pcm_open");
+    CHECK(input->read(input, samples, sizeof(samples)) == sizeof(samples),
+          "capture recovers when the AWB device appears");
+    CHECK(open_calls == 2 && read_calls == 1,
+          "capture opens once and reads once after recovery");
+    CHECK(last_card == 0 && last_device == 1 && last_flags == PCM_IN,
+          "capture targets pcmC0D1c");
+    CHECK(samples[0] == 0x5a && samples[sizeof(samples) - 1] == 0x5a,
+          "capture bytes reach the framework buffer");
+    CHECK(input->get_input_frames_lost(input) == 0,
+          "no fabricated lost-frame count");
+    int64_t frames = 99, time = 99;
+    CHECK(input->get_capture_position(input, &frames, &time) == -ENOSYS &&
+          frames == 0 && time == 0,
+          "capture position is unsupported rather than fabricated");
+    CHECK(input->set_gain(input, 0.5f) == -ENOTSUP &&
+          input->start(input) == -ENOSYS &&
+          input->stop(input) == -ENOSYS,
+          "unsupported capture extensions fail explicitly");
+    dev->close_input_stream(dev, input);
+    CHECK(close_calls == 1, "closing capture releases the PCM");
+    printf("input contract: lazy pcmC0D1c capture, backoff, read and close\n");
 }
 
 static void module_identity_case(struct audio_hw_device *dev)

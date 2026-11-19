@@ -11,17 +11,24 @@
             <profile name="" format="AUDIO_FORMAT_PCM_16_BIT"
                      samplingRates="48000" channelMasks="AUDIO_CHANNEL_OUT_STEREO"/>
         </mixPort>
+        <mixPort name="primary input" role="sink" flags="AUDIO_INPUT_FLAG_PRIMARY">
+            <profile name="" format="AUDIO_FORMAT_PCM_16_BIT"
+                     samplingRates="8000,16000,32000,48000"
+                     channelMasks="AUDIO_CHANNEL_IN_MONO,AUDIO_CHANNEL_IN_STEREO"/>
+        </mixPort>
     </mixPorts>
     <devicePorts>
         <devicePort tagName="Speaker" type="AUDIO_DEVICE_OUT_SPEAKER" role="sink"/>
         <devicePort tagName="Earpiece" type="AUDIO_DEVICE_OUT_EARPIECE" role="sink"/>
         <devicePort tagName="Wired Headset" type="AUDIO_DEVICE_OUT_WIRED_HEADSET" role="sink"/>
         <devicePort tagName="Wired Headphones" type="AUDIO_DEVICE_OUT_WIRED_HEADPHONE" role="sink"/>
+        <devicePort tagName="Built-In Mic" type="AUDIO_DEVICE_IN_BUILTIN_MIC" role="source"/>
     </devicePorts>
     <routes>
         <route type="mix" sink="Speaker" sources="primary output"/>
         <route type="mix" sink="Earpiece" sources="primary output"/>
         <route type="mix" sink="Wired Headset" sources="primary output"/>
         <route type="mix" sink="Wired Headphones" sources="primary output"/>
+        <route type="mix" sink="Built-In Mic" sources="primary input"/>
     </routes>
 </module>

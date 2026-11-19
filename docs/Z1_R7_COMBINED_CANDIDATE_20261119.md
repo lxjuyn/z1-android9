@@ -15,16 +15,18 @@ in the system image.
 | Artifact | Bytes | SHA256 |
 |---|---:|---|
 | `out/r7_combined_candidate_20261119/boot_hsq_control_r7.img` | 5,984,256 | `b2865e43d8be640ae1e9dccbcbc21af60d656cde1a5b9b233264961ae31a3145` |
-| `out/r7_combined_candidate_20261119/system.img` | 943,718,400 | `9b7d097dcb7b5c84b7b0d0d8bc201bc47c62e239d8ad4c4f7f26f262b4b83ce2` |
+| `out/r7_combined_candidate_20261119/system.img` | 943,718,400 | `b71e763a2c6440e2becd78907a87060990451ae5a95c239a733bd2b8bce907e0` |
 
 ## Host checks
 
-- The Android 9 linker loads both installed copies of the output audio HAL and
-  negotiates a 44.1 kHz stereo request to 48 kHz stereo PCM16 without opening
-  a PCM device.
+- Both installed copies carry the same 13,012-byte Android ARM32 audio HAL.
+  Its dynamic imports resolve `HMI`, `pcm_open`, `pcm_read` and `pcm_write`
+  through `libtinyalsa.so`; the ABI suite negotiates playback and microphone
+  streams without opening a PCM device during open.
 - The 12-case audio HAL suite passes, including late sound-card recovery,
   stream lifecycle, software volume fallback, error pacing, policy closure,
-  and explicit unsupported capture.
+  lazy `pcmC0D1c` microphone capture, and explicit failure for unsupported
+  capture extensions.
 - The GPS adapter maps the factory callback order and the actual factory HAL
   dependency closure loads under ARM qemu without initializing `mnld`. A
   separate 32-bit ARM host regression also verifies that unadapted factory
@@ -96,10 +98,11 @@ The core standalone GPS interface remains active; assisted GPS and other
 proprietary extensions are unavailable until their payload and lifetime
 contracts are adapted.
 
-Audio capture remains unimplemented. The input stream deliberately returns
-`-ENOSYS`, and the audio policy exposes no capture device. A microphone test
-therefore belongs to the next input-audio stage and must not be used to reject
-the R7 output path.
+The policy now exposes a built-in microphone and the HAL captures from
+`pcmC0D1c` at 8, 16, 32, or 48 kHz PCM16, mono or stereo. The boot-time route
+script selects the MT6323 MIC1 uplink and the AFE AWB source. Physical
+microphone bias, board MIC1/MIC2 labeling and audible recording quality still
+require board verification.
 
 Bluetooth, Wi-Fi, GPU 3D, storage stability, backlight blanking, physical key
 mapping, and touch navigation boundaries retain their existing board gates.

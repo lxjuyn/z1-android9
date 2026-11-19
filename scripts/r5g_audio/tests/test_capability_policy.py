@@ -41,20 +41,32 @@ class CapabilityPolicyTest(unittest.TestCase):
         self.assertEqual(profile.get("samplingRates"), "48000")
         self.assertEqual(profile.get("channelMasks"), "AUDIO_CHANNEL_OUT_STEREO")
 
-    def test_no_unimplemented_capture_surface(self):
-        self.assertEqual(self.root.findall("./mixPorts/mixPort[@role='sink']"), [])
+    def test_supported_capture_surface(self):
+        inputs = self.root.findall("./mixPorts/mixPort[@role='sink']")
+        self.assertEqual(len(inputs), 1)
+        capture = inputs[0]
+        self.assertEqual(capture.get("name"), "primary input")
+        self.assertEqual(capture.get("flags"), "AUDIO_INPUT_FLAG_PRIMARY")
+        profiles = capture.findall("./profile")
+        self.assertEqual(len(profiles), 1)
+        self.assertEqual(profiles[0].get("format"), "AUDIO_FORMAT_PCM_16_BIT")
         self.assertEqual(
-            [
-                p
-                for p in self.root.findall("./devicePorts/devicePort")
-                if (p.get("type") or "").startswith("AUDIO_DEVICE_IN_")
-            ],
-            [],
+            profiles[0].get("samplingRates"), "8000,16000,32000,48000"
         )
-        self.assertNotIn(
-            "AUDIO_DEVICE_IN_BUILTIN_MIC",
-            {p.get("type") for p in self.root.findall("./devicePorts/devicePort")},
+        self.assertEqual(
+            profiles[0].get("channelMasks"),
+            "AUDIO_CHANNEL_IN_MONO,AUDIO_CHANNEL_IN_STEREO",
         )
+
+        devices = [
+            p
+            for p in self.root.findall("./devicePorts/devicePort")
+            if (p.get("type") or "").startswith("AUDIO_DEVICE_IN_")
+        ]
+        self.assertEqual(len(devices), 1)
+        self.assertEqual(devices[0].get("tagName"), "Built-In Mic")
+        self.assertEqual(devices[0].get("type"), "AUDIO_DEVICE_IN_BUILTIN_MIC")
+        self.assertEqual(devices[0].get("role"), "source")
 
     def test_output_device_set_is_exact(self):
         ports = self.root.findall("./devicePorts/devicePort[@role='sink']")
@@ -96,7 +108,13 @@ class CapabilityPolicyTest(unittest.TestCase):
         for route in routes:
             self.assertEqual(route.get("type"), "mix")
             self.assertIn(route.get("sink"), devices)
-            self.assertEqual(devices[route.get("sink")].get("role"), "sink")
+            sink = devices[route.get("sink")]
+            expected_sink_role = (
+                "source"
+                if (sink.get("type") or "").startswith("AUDIO_DEVICE_IN_")
+                else "sink"
+            )
+            self.assertEqual(sink.get("role"), expected_sink_role)
             sources = [
                 source.strip()
                 for source in (route.get("sources") or "").split(",")
@@ -105,7 +123,12 @@ class CapabilityPolicyTest(unittest.TestCase):
             self.assertTrue(sources)
             for source in sources:
                 self.assertIn(source, mix_ports)
-                self.assertEqual(mix_ports[source].get("role"), "source")
+                expected_source_role = (
+                    "sink"
+                    if mix_ports[source].get("flags") == "AUDIO_INPUT_FLAG_PRIMARY"
+                    else "source"
+                )
+                self.assertEqual(mix_ports[source].get("role"), expected_source_role)
 
 
 if __name__ == "__main__":

@@ -34,7 +34,7 @@ case "${1:-}" in
         schema=z1-r7-runtime/v1
         hwc_sha=f57ffee670186d5bdfc135043773cfd0576364ae8fac463fb6ef1b65532c20da
         codec_sha=3fa88d5aa0734612aefec8f45de1b4cabc24a86f67a383fb39f85481663f03cc
-        audio_sha=73d22b253acce390caecbf6bb1cb8d2b34ea85b07cc982b8c406ce2873f08e2e
+        audio_sha=3f1b3a841aea4eedd7cb7ba5c22ebe12e6062b6ec88ec5d28eed6864251e1722
         ;;
     --help)
         printf '%s\n' 'Usage: sh z1_r4_runtime_manifest.sh [--r4|--r5|--r6|--r7]'
@@ -254,6 +254,16 @@ if [ "$candidate" = r6-audio-20261119 ] ||
     check_hash /vendor/lib/libaudio.primary.default.so "$audio_sha" 644
 fi
 if [ "$candidate" = r7-combined-20261119 ]; then
+    check_hash /vendor/etc/primary_audio_policy_configuration.xml \
+        954d41f1838921c3fd4d75ad9660b1c63204806021208afe9cf815cb84424f37 644
+    check_hash /vendor/bin/z1_audio_route.sh \
+        185f255246db59192422f1066c872623021968eed94a01d54bc9e15b0964fb6c 755
+    check_line microphone-policy \
+        /vendor/etc/primary_audio_policy_configuration.xml \
+        'AUDIO_DEVICE_IN_BUILTIN_MIC'
+    check_line microphone-route /vendor/bin/z1_audio_route.sh \
+        'set_one "MIC Route" On'
+    check_line audio-capture-registered /proc/asound/pcm 'AWB Capture'
     check_hash /vendor/lib/hw/gps.default.so \
         306e5c5097be5e0a2b12e42a7121a907b2b737021705793611e3c30b851bb18c 644
     check_hash /vendor/lib/hw/gps.z1stock.so \
