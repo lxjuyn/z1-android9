@@ -24,8 +24,9 @@ The compressed backup is
 
 - Both installed copies carry the same 13,012-byte Android ARM32 audio HAL.
   Its dynamic imports resolve `HMI`, `pcm_open`, `pcm_read` and `pcm_write`
-  through `libtinyalsa.so`; the ABI suite negotiates playback and microphone
-  streams without opening a PCM device during open.
+  through `libtinyalsa.so`. The deployed copies load through the Android 9
+  bionic linker and negotiate a 48 kHz stereo output plus 16 kHz mono AWB
+  microphone stream without opening a PCM device during stream creation.
 - The 12-case audio HAL suite passes, including late sound-card recovery,
   stream lifecycle, software volume fallback, error pacing, policy closure,
   lazy `pcmC0D1c` microphone capture, and explicit failure for unsupported
