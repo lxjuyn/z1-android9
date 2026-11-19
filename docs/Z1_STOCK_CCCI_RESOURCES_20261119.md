@@ -31,6 +31,14 @@ enabled and either size missing, the error branch at `0xc003ca28` installs
 22 MiB for the modem and 2 MiB for shared memory. The compiled table at
 `0xc0960d58` initializes the enable flag and both sizes to zero. The fallback
 therefore provides a candidate size conditional on the boot-time configuration.
-Capture the factory DFO and reservation logs to learn the actual size and base. The stock kernel has separate hooks for shared-memory remap,
+Capture the factory DFO and reservation logs to learn the actual size and base.
+
+The factory firmware SHA-256 starts with `5264c9c2` and its final 188 bytes
+contain a version 2 `CHECK_HEADER` for `MT6572_S00` bound to MD1. The memory
+size at header offset `0xac` is `0x00800000` (8 MiB). In `check_md_header`,
+`get_resv_mem_size_for_md` supplies the live reservation for comparison.
+The larger reservation branch at `0xc054485c` emits a DFO mismatch warning
+and accepts that size check. The header's 8 MiB is the firmware requirement,
+while the 22 MiB fallback is a kernel allocation rule. The stock kernel has separate hooks for shared-memory remap,
 firmware memory remap, watchdog, and power. Those hooks and the firmware
 verification sequence must be recovered before attempting modem power-on.
