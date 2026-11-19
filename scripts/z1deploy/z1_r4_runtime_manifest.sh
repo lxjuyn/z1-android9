@@ -265,12 +265,12 @@ if [ "$candidate" = r7-combined-20261119 ]; then
     check_hash /vendor/etc/primary_audio_policy_configuration.xml \
         954d41f1838921c3fd4d75ad9660b1c63204806021208afe9cf815cb84424f37 644
     check_hash /vendor/bin/z1_audio_route.sh \
-        185f255246db59192422f1066c872623021968eed94a01d54bc9e15b0964fb6c 755
+        8af73480059626ab6f0e056e4ae7cc3d17f83e77cced0f6be10c3fb6cd7d4f58 755
     check_line microphone-policy \
         /vendor/etc/primary_audio_policy_configuration.xml \
         'AUDIO_DEVICE_IN_BUILTIN_MIC'
     check_line microphone-route /vendor/bin/z1_audio_route.sh \
-        'set_one "MIC Route" On'
+        'set_one "MIC Route" 1'
     check_line audio-capture-registered /proc/asound/pcm 'AWB Capture'
     check_hash /vendor/lib/hw/gps.default.so \
         306e5c5097be5e0a2b12e42a7121a907b2b737021705793611e3c30b851bb18c 644

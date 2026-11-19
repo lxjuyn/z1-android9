@@ -9,7 +9,7 @@
     },
     "android": {
       "bytes": 943718400,
-      "sha256": "4bf875d0da00cda02eddb5ecfdb2f854d08bf29f2b4be6bac20f24fd641d5aad"
+      "sha256": "eed039660a76d9d8816d81e383414e61290cd8cebdc9c2ecaa90b7adea142a81"
     }
   },
   "runtime_files": [
@@ -51,13 +51,13 @@
     },
     {
       "path": "/vendor/bin/z1_audio_route.sh",
-      "sha256": "185f255246db59192422f1066c872623021968eed94a01d54bc9e15b0964fb6c",
+      "sha256": "8af73480059626ab6f0e056e4ae7cc3d17f83e77cced0f6be10c3fb6cd7d4f58",
       "mode": "755",
       "role": "DAPM playback and microphone route setup"
     },
     {
       "path": "/system/bin/z1_runtime_manifest",
-      "sha256": "142b20afbace8b3c0d611c445e28e9c3f4ccf219f9e180ae0fe998362b43cbcd",
+      "sha256": "60aa0137a33281de688b6686fcb6b134a2e3e9cf51038df83b4f96afad135cc8",
       "mode": "755",
       "role": "installed read-only runtime identity gate"
     },
@@ -249,7 +249,7 @@
     {
       "id": "microphone-route",
       "path": "/vendor/bin/z1_audio_route.sh",
-      "line": "set_one \"MIC Route\" On"
+      "line": "set_one \"MIC Route\" 1"
     },
     {
       "id": "audio-capture-registered",
