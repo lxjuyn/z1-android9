@@ -67,9 +67,27 @@ ls /sys/class/gpsdrv/gps
 dmesg | grep -E '\[z1gps\]|mt3326|GPS'
 ```
 
-`mnld` must remain running after the eight-second stabilization window. With
-networking off and an outdoor sky view, require satellite status, NMEA data,
-and a valid repeatable location callback.
+`mnld` must remain running after the eight-second stabilization window.
+Confirm `getprop ro.radio.noril` returns `yes`, and record the absence of a
+running RIL and `/dev/ccci*` nodes. With Wi-Fi off and an outdoor sky view,
+request a fresh GPS fix without using cached location. Record WMT GPS power-on,
+satellite status, NMEA data, and a valid repeatable location callback. A fix
+under these conditions proves standalone GPS works without the cellular modem
+stack. If it fails, record which stage failed before changing the modem state.
+
+The factory ramdisk declares `mnld` and `agpsd` separately. The factory `mnld`
+and `libmnlp_mt6572` binaries reference `/dev/stpgps`. The factory `mtk_agpsd`
+binary contains open success and failure messages for `/dev/ccci_ipc_1220_0`.
+The mainline GPS character device requests `WMTDRV_TYPE_GPS` and reads via
+`GPS_TASK_INDX`. This establishes the transport used by the two paths. The
+factory `WMT_SOC.cfg` sets `co_clock_flag=1`. The physical clock and power
+requirements still need board verification.
+
+The original 2G modem firmware and CCCI/RIL binaries are available in the
+factory system. A functional cellular port also needs the MT6572 CCIF mailbox
+and interrupt, modem power and reset, and verified EMI and shared memory
+ranges. After the modem reaches a stable ready state, test the Android 9
+Radio HAL independently. The R7 GPS test can proceed with `ro.radio.noril=yes`.
 
 ## Boundaries
 
