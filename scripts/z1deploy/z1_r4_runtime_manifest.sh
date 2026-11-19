@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# Read-only R4 runtime identity gate. It hashes installed files and reads fixed
+# Read-only Z1 runtime identity gate. It hashes installed files and reads fixed
 # Android properties; it never writes properties, files, services, or devices.
 
 PATH=/system/bin:/system/xbin:/sbin:/bin
@@ -10,10 +10,21 @@ if [ "$#" -gt 1 ]; then
     exit 2
 fi
 case "${1:-}" in
-    '') ;;
+    ''|--r4)
+        candidate=r4-20261115
+        schema=z1-r4-runtime/v1
+        hwc_sha=35176357f81284ffc11d56d2811cab52c77a0cdcfaf4678866e54bf00d579912
+        codec_sha=af3931113c5d96e0768e06ee4b30596a71b5c72fd06233f0ee3cf248388e8945
+        ;;
+    --r5)
+        candidate=r5-20261119
+        schema=z1-r5-runtime/v1
+        hwc_sha=f57ffee670186d5bdfc135043773cfd0576364ae8fac463fb6ef1b65532c20da
+        codec_sha=3fa88d5aa0734612aefec8f45de1b4cabc24a86f67a383fb39f85481663f03cc
+        ;;
     --help)
-        printf '%s\n' 'Usage: sh z1_r4_runtime_manifest.sh'
-        printf '%s\n' 'Read-only R4 runtime identity and readiness check.'
+        printf '%s\n' 'Usage: sh z1_r4_runtime_manifest.sh [--r4|--r5]'
+        printf '%s\n' 'Read-only Z1 runtime identity and readiness check.'
         exit 0
         ;;
     *)
@@ -161,7 +172,7 @@ check_input_name() {
     fi
 }
 
-printf '%s\n' '[r4manifest] BEGIN schema=z1-r4-runtime/v1 candidate=r4-20261115 read_only=1'
+printf '[r4manifest] BEGIN schema=%s candidate=%s read_only=1\n' "$schema" "$candidate"
 _utc=$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null) || _utc=UNAVAILABLE
 printf '[r4manifest] sampled_utc=%s\n' "$_utc"
 
@@ -176,23 +187,23 @@ check_prop sys.z1.storage_ready 1
 check_prop z1stage.status ready
 check_prop sys.z1.radio.modules_ready 1
 check_prop sys.z1.radio.wifi_modules_ready 1
-check_prop z1stage.hwcomposer.sha 35176357f81284ffc11d56d2811cab52c77a0cdcfaf4678866e54bf00d579912
-check_prop z1stage.hwcomposer.boot 35176357f81284ffc11d56d2811cab52c77a0cdcfaf4678866e54bf00d579912
+check_prop z1stage.hwcomposer.sha "$hwc_sha"
+check_prop z1stage.hwcomposer.boot "$hwc_sha"
 check_prop init.svc.vendor.hwcomposer-2-1 running
 check_hwc_source
 
 check_hash /hwcomposer.z1.so \
-    35176357f81284ffc11d56d2811cab52c77a0cdcfaf4678866e54bf00d579912 644
+    "$hwc_sha" 644
 check_hash /vendor/lib/hw/hwcomposer.z1.so \
-    35176357f81284ffc11d56d2811cab52c77a0cdcfaf4678866e54bf00d579912 644
+    "$hwc_sha" 644
 check_hash /data/local/tmp/z1stage/hwcomposer.z1.so.ramdisk \
-    35176357f81284ffc11d56d2811cab52c77a0cdcfaf4678866e54bf00d579912 644
+    "$hwc_sha" 644
 check_hash /system/usr/keylayout/mt6779-keypad.kl \
     da29948bb71336ccc73f0b05333be610cf18feee3987fddddafd7d44d59c5f55 644
 check_hash /system/lib/modules/z1_cst836u.ko \
     03b0f94c67fab10551ea0085beffff4fb02c87878a2034f184fd28bca8368745 664
 check_hash /system/lib/modules/snd-soc-mt6323.ko \
-    af3931113c5d96e0768e06ee4b30596a71b5c72fd06233f0ee3cf248388e8945 664
+    "$codec_sha" 664
 check_hash /system/etc/init/z1_touch_navigation.rc \
     32b84644e3eeb7bb99af897d1f104ce7518fc87beafe919d0b81de4960b56901 644
 check_hash /system/build.prop \
@@ -236,6 +247,16 @@ if [ -e /sys/class/net/wlan0 ]; then
     pass wlan0-present PRESENT
 else
     fail wlan0-present PRESENT INTERFACE_MISSING
+fi
+
+if [ "$candidate" = r5-20261119 ]; then
+    backlight_gate=/sys/class/leds/lcd-backlight/display_blank
+    blank=$(cat "$backlight_gate" 2>/dev/null) || blank=UNREADABLE
+    if [ "$blank" = 0 ]; then
+        pass backlight-power-gate 0
+    else
+        fail backlight-power-gate 0 "${blank:-EMPTY}"
+    fi
 fi
 
 if [ "$FAIL_COUNT" -eq 0 ]; then

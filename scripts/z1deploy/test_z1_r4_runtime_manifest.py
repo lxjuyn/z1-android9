@@ -69,19 +69,8 @@ class R4RuntimeManifestTest(unittest.TestCase):
             path.write_text(existing + item["line"] + "\n")
 
     def write_getprop(self):
-        values = {
-            "sys.boot_completed": "1",
-            "sys.z1.storage_ready": "1",
-            "z1stage.status": "ready",
-            "sys.z1.radio.modules_ready": "1",
-            "sys.z1.radio.wifi_modules_ready": "1",
-            "z1stage.hwcomposer.sha": (
-                "35176357f81284ffc11d56d2811cab52c77a0cdcfaf4678866e54bf00d579912"),
-            "z1stage.hwcomposer.boot": (
-                "35176357f81284ffc11d56d2811cab52c77a0cdcfaf4678866e54bf00d579912"),
-            "z1stage.hwcomposer.source": "ramdisk",
-            "init.svc.vendor.hwcomposer-2-1": "running",
-        }
+        values = {item["name"]: item["value"] for item in self.manifest["properties"]}
+        values["z1stage.hwcomposer.source"] = "ramdisk"
         cases = "\n".join(
             f' {key}) printf "%s\\n" "{value}" ;;' for key, value in values.items())
         self.command("getprop", f'case "$1" in{cases}\n *) exit 1 ;;\nesac')
@@ -169,6 +158,29 @@ class R4RuntimeManifestTest(unittest.TestCase):
         self.assertIn("summary pass=40 fail=0 status=PASS", result.stdout)
         self.assert_clean_run(result)
         self.assertEqual(before, [(path.read_bytes(), path.stat().st_mtime_ns) for path in files])
+
+    def test_r5_profile_requires_r5_identities_and_an_unblanked_display(self):
+        self.write_tools()
+        old_pair = self.run_probe("--r5")
+        self.assertEqual(old_pair.returncode, 1)
+        self.assertIn("check=z1stage.hwcomposer.boot status=FAIL", old_pair.stdout)
+        self.assertIn("check=backlight-power-gate status=FAIL", old_pair.stdout)
+
+        self.manifest = json.loads((HERE / "r5_runtime_manifest.json").read_text())
+        self.write_expected_files()
+        self.write_getprop()
+        self.write_tools()
+        self.write("sys/class/leds/lcd-backlight/display_blank", "0\n")
+        result = self.run_probe("--r5")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("schema=z1-r5-runtime/v1 candidate=r5-20261119", result.stdout)
+        self.assertIn("summary pass=41 fail=0 status=PASS", result.stdout)
+        self.assertEqual(self.run_probe().returncode, 1)
+
+        self.write("sys/class/leds/lcd-backlight/display_blank", "1\n")
+        result = self.run_probe("--r5")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("check=backlight-power-gate status=FAIL expected=0 actual=1", result.stdout)
 
     def test_missing_boot_completion_and_stale_hwc_source_fail(self):
         self.write_tools()
