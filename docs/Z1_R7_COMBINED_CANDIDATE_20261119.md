@@ -71,6 +71,10 @@ and a valid repeatable location callback.
 
 ## Boundaries
 
+The archived R7 adapter exposes raw factory GNSS extension tables. Source
+now withholds those tables pending ABI validation. Treat R7 GPS as an
+experimental bring-up artifact and rebuild the adapter before testing GPS.
+
 Audio capture remains unimplemented. The input stream deliberately returns
 `-ENOSYS`, and the audio policy exposes no capture device. A microphone test
 therefore belongs to the next input-audio stage and must not be used to reject

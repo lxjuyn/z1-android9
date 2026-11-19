@@ -13,7 +13,8 @@ Android 9's `libhardware` supplies those two callbacks in the opposite order.
 Passing the Android 9 table directly makes the factory HAL call
 `requestUtcTimeCb` as its GPS worker thread constructor. The wrapper copies the
 common callbacks into the factory layout and forwards all normal
-`GpsInterface` operations.
+`GpsInterface` operations. Optional MTK extension tables, including assisted
+GPS, require separate adapters before they can be exposed to Android 9.
 
 The adapter deliberately does not create fake locations. A successful load
 still depends on all of these real components:

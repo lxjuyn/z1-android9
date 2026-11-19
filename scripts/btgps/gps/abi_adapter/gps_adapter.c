@@ -92,8 +92,7 @@ static int load_stock_interface(void) {
     if (stock_interface == NULL || stock_interface->init == NULL ||
         stock_interface->start == NULL || stock_interface->stop == NULL ||
         stock_interface->cleanup == NULL ||
-        stock_interface->set_position_mode == NULL ||
-        stock_interface->get_extension == NULL) {
+        stock_interface->set_position_mode == NULL) {
         ALOG(ANDROID_LOG_ERROR, "factory HAL returned an incomplete interface");
         dlclose(stock_handle);
         stock_handle = NULL;
@@ -186,10 +185,9 @@ static int adapter_set_position_mode(GpsPositionMode mode,
 }
 
 static const void *adapter_get_extension(const char *name) {
-    if (stock_interface == NULL || stock_interface->get_extension == NULL) {
-        return NULL;
-    }
-    return stock_interface->get_extension(name);
+    /* Factory extension tables require their own version and ABI adapters. */
+    (void)name;
+    return NULL;
 }
 
 static const GpsInterface adapter_interface = {

@@ -57,8 +57,8 @@ static int mock_set_position_mode(GpsPositionMode mode,
 }
 
 static const void *mock_get_extension(const char *name) {
-    (void)name;
-    return NULL;
+    static const char unadapted_extension = 1;
+    return strcmp(name, AGPS_INTERFACE) == 0 ? &unadapted_extension : NULL;
 }
 
 static const GpsInterface mock_interface = {

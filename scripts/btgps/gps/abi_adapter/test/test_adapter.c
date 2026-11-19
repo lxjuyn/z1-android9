@@ -101,6 +101,11 @@ int main(void) {
         return 20;
     }
 
+    if (interface->get_extension(AGPS_INTERFACE) != NULL) {
+        fprintf(stderr, "unadapted factory AGPS table crossed the ABI boundary\n");
+        return 21;
+    }
+
     interface->stop();
     interface->cleanup();
     device->common.close(&device->common);
