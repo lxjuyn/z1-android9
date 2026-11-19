@@ -205,6 +205,14 @@ check_hash /vendor/lib/egl/libGLES_mesa.so \
     bb0ac77c03e79648db5dc8a480ec478be566b78c6105e9f781fd22100b46f445 644
 check_hash /vendor/lib/libgallium_dri.so \
     492f0b5e871868f55023351722a609da6b65e186fbf31366a28d7faf981232b9 644
+check_hash /system/lib/libart.so \
+    81226e14966cd9d342a0df36f24c2ad12ecdcc926c0a14bf354c1b373cb2ea94 644
+check_hash /system/framework/arm/boot.oat \
+    baef5ea2e9a91031ae68d0b6ce853ee5b2822a4ed394178a1b97d4167ee2553c 644
+check_hash /system/framework/oat/arm/services.odex \
+    750554a7f8e6b07fe36b4f22562a282a0eabf602ca7f0fcf7e87f1d6af83dc08 644
+check_hash /system/priv-app/SystemUI/SystemUI.apk \
+    edb83b4f626549b9080ad3968ad4b5d1761182ee43298351601d8e8a8e67114d 644
 
 check_line keylayout-158-volume-up \
     /system/usr/keylayout/mt6779-keypad.kl 'key 158   VOLUME_UP'

@@ -166,7 +166,7 @@ class R4RuntimeManifestTest(unittest.TestCase):
         result = self.run_probe()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("read_only=1", result.stdout)
-        self.assertIn("summary pass=36 fail=0 status=PASS", result.stdout)
+        self.assertIn("summary pass=40 fail=0 status=PASS", result.stdout)
         self.assert_clean_run(result)
         self.assertEqual(before, [(path.read_bytes(), path.stat().st_mtime_ns) for path in files])
 
@@ -207,10 +207,12 @@ esac''')
         self.assertIn("check=audio-card-present status=FAIL", result.stdout)
         self.assert_clean_run(result)
 
-    def test_page_cache_corruption_fails_graphics_checks(self):
+    def test_page_cache_corruption_fails_graphics_and_framework_checks(self):
         self.write_tools({
             "/vendor/lib/egl/libGLES_mesa.so": "0" * 64,
             "/vendor/lib/libgallium_dri.so": "f" * 64,
+            "/system/framework/oat/arm/services.odex":
+                "53521bef610b9e914598efcb684435d283b9391d064eedaa88a1867653bc9d1c",
         })
         result = self.run_probe()
         self.assertEqual(result.returncode, 1)
@@ -219,6 +221,9 @@ esac''')
             result.stdout)
         self.assertIn(
             f"check={self.root}/vendor/lib/libgallium_dri.so status=FAIL",
+            result.stdout)
+        self.assertIn(
+            f"check={self.root}/system/framework/oat/arm/services.odex status=FAIL",
             result.stdout)
         self.assert_clean_run(result)
 

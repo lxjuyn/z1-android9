@@ -84,6 +84,30 @@
       "sha256": "492f0b5e871868f55023351722a609da6b65e186fbf31366a28d7faf981232b9",
       "mode": "644",
       "role": "Mesa Gallium driver"
+    },
+    {
+      "path": "/system/lib/libart.so",
+      "sha256": "81226e14966cd9d342a0df36f24c2ad12ecdcc926c0a14bf354c1b373cb2ea94",
+      "mode": "644",
+      "role": "ART runtime"
+    },
+    {
+      "path": "/system/framework/arm/boot.oat",
+      "sha256": "baef5ea2e9a91031ae68d0b6ce853ee5b2822a4ed394178a1b97d4167ee2553c",
+      "mode": "644",
+      "role": "ART boot image code as opened at runtime"
+    },
+    {
+      "path": "/system/framework/oat/arm/services.odex",
+      "sha256": "750554a7f8e6b07fe36b4f22562a282a0eabf602ca7f0fcf7e87f1d6af83dc08",
+      "mode": "644",
+      "role": "Precompiled system server services"
+    },
+    {
+      "path": "/system/priv-app/SystemUI/SystemUI.apk",
+      "sha256": "edb83b4f626549b9080ad3968ad4b5d1761182ee43298351601d8e8a8e67114d",
+      "mode": "644",
+      "role": "SystemUI package"
     }
   ],
   "properties": [

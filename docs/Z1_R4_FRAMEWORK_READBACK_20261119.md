@@ -30,6 +30,11 @@ library matched R4 when sampled. A SHA-verified ARM helper performed a real
 4096 bytes and SHA256 `7aef88f8fa6c493eb2ad625bc5a8d53ee2528c43d17e2674a319ba699c6531e0`,
 matching the verified image (`z1_boot_mainline_20261118_230902.log:37596`).
 The analogous direct comparison for the five ODEX blocks is pending.
+The ARM helper was rebuilt and matched the expected SHA256 `af36ef18…`.
+An emulated ARM build differing only in its input path read all 20,480 bytes
+directly from the host R4 image and matched the five archived pages byte for
+byte. Compare the confirmed board upload against that same 20,480-byte sample
+with SHA256 `60bfb8d0911b1f9a3be899507f4e6cf2e36c44fae4d5413221eacbf77279a49a`.
 
 RescueParty reached `FACTORY_RESET` during earlier framework restarts, then
 reported `Reboot failed (no permissions?)` (same log, line 34342). The live

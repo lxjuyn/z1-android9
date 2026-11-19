@@ -15,11 +15,14 @@ identity fails the gate:
 /vendor/lib/libgallium_dri.so     492f0b5e871868f55023351722a609da6b65e186fbf31366a28d7faf981232b9
 ```
 
-The gate writes no property, file, service, or device state.
+The gate also samples `libart.so`, `boot.oat`, `services.odex`, and
+`SystemUI.apk`. This catches the observed `services.odex` read mismatch even
+after the Gallium hash recovers. Run it before any cache eviction during a
+failure. The gate writes no property, file, service, or device state.
 
 The shipped R4 ext4 image is 943,718,400 bytes with SHA256
 `7806f9153389fe681e7aada3cd8737114b1854132af792dae83ad63f3b66dc75`.
-Read-only `debugfs` extraction of its nine system-resident manifest files
+Read-only `debugfs` extraction of its thirteen system-resident manifest files
 matched every expected hash. The active vendor HWC library is not baked into
 the system image; it is the boot-ramdisk replacement whose source hash
 `35176357…` is recorded in `boot_inputs.json` and becomes active after the
@@ -37,7 +40,7 @@ line is machine-readable:
 ```text
 [r4manifest] BEGIN schema=z1-r4-runtime/v1 candidate=r4-20261115 read_only=1
 [r4manifest] check=/system/lib/modules/z1_cst836u.ko status=PASS expected=03b0...
-[r4manifest] summary pass=36 fail=0 status=PASS
+[r4manifest] summary pass=40 fail=0 status=PASS
 [r4manifest] END
 ```
 
