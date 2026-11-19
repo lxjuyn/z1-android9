@@ -65,7 +65,7 @@
     "dev_addr_mod_relocations": 3
   },
   "source_patch": {
-    "file": "wifi_source_all_changes.patch",
+    "file": "source_compat.patch",
     "sha256": "4ca491d26cf85485aa2510fffaeb1e1f765a4aaca36301559658efd01e10a7dd"
   },
   "validation": {

@@ -87,5 +87,19 @@ The compatibility patch applies cleanly to a fresh copy of the pinned source
 archive. The existing 18 identity-tool tests pass, and all six original
 rebuilt modules match their release hashes byte-for-byte.
 
-Artifacts and manifests are under
+The repository-retained evidence is:
+
+- [`wifi/source_repro/manifest.json`](../wifi/source_repro/manifest.json)
+- [`wifi/source_repro/source_compat.patch`](../wifi/source_repro/source_compat.patch)
+- [`wifi/source_repro/wlan_gen2_mac_fixed.ko`](../wifi/source_repro/wlan_gen2_mac_fixed.ko)
+- [`wifi/test_z1_wifi_mac_source_fix.py`](../wifi/test_z1_wifi_mac_source_fix.py)
+
+Run the focused check from `z1a9_gpt/`:
+
+```sh
+python3 -m unittest -v wifi.test_z1_wifi_mac_source_fix
+```
+
+The larger six-module archive, original modules, exact kernel inputs and
+release manifest are under
 `bridge_backups/products/products_wifi_source_repro_20261119_215457/`.

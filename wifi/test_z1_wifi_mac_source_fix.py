@@ -21,11 +21,50 @@ class WiFiMacSourceFixTest(unittest.TestCase):
             report["radio_source"]["commit"],
             "e9961becdc889266c3a8b5a488ff741159b6ad80",
         )
+        self.assertEqual(
+            report["radio_source"]["archive_sha256"],
+            "af8bb14c434e2ef78d7367a28f2cd5a3a662adbece6b5c67d1e56f20e954613f",
+        )
+        self.assertEqual(
+            report["kernel_source"]["commit"],
+            "c6501138edf2ea6458c7c4370d2fc1033d54f50a",
+        )
+        self.assertEqual(
+            report["kernel_source"]["config_sha256"],
+            "8b0e88cd7a301d016a2f144710e044c9adb436a6ea8d97b33bf59dd7df9e7747",
+        )
         self.assertTrue(report["validation"]["all_six_original_modules_byte_identical"])
         self.assertFalse(report["runtime_verified"])
         self.assertEqual(hashlib.sha256(FIXED.read_bytes()).hexdigest(), FIXED_SHA)
         self.assertEqual(FIXED.stat().st_size, 956328)
         self.assertNotEqual(ORIGINAL_SHA, FIXED_SHA)
+
+    def test_source_patch_identity_and_three_mac_updates(self):
+        report = json.loads(MANIFEST.read_text())
+        patch_record = report["source_patch"]
+        self.assertEqual(patch_record["file"], "source_compat.patch")
+
+        patch = ROOT / patch_record["file"]
+        self.assertEqual(
+            hashlib.sha256(patch.read_bytes()).hexdigest(),
+            patch_record["sha256"],
+        )
+
+        patch_lines = patch.read_text().splitlines()
+        mac_updates = [
+            line
+            for line in patch_lines
+            if line.startswith("+") and "eth_hw_addr_set(" in line
+        ]
+        self.assertEqual(len(mac_updates), 3)
+        self.assertEqual(
+            sum("wakeup_source_register(" in line for line in patch_lines),
+            2,
+        )
+        self.assertEqual(
+            sum("wakeup_source_unregister(" in line for line in patch_lines),
+            2,
+        )
 
     def test_fixed_module_metadata_and_mac_api(self):
         info = subprocess.run(
