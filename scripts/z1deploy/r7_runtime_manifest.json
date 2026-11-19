@@ -9,7 +9,7 @@
     },
     "android": {
       "bytes": 943718400,
-      "sha256": "eed039660a76d9d8816d81e383414e61290cd8cebdc9c2ecaa90b7adea142a81"
+      "sha256": "8060c851075bb053e931376e7965c3c80850a2f5e9d73cdd62e54add83400bf4"
     }
   },
   "runtime_files": [
@@ -57,7 +57,7 @@
     },
     {
       "path": "/system/bin/z1_runtime_manifest",
-      "sha256": "60aa0137a33281de688b6686fcb6b134a2e3e9cf51038df83b4f96afad135cc8",
+      "sha256": "3ad1445e34adde697d1481bac81d9ae8f8c233116ad5cb3d5d3cc2b0c0f5c789",
       "mode": "755",
       "role": "installed read-only runtime identity gate"
     },
@@ -66,6 +66,12 @@
       "sha256": "af36ef18802cd58c5a2ebe830d9633d3971b69dc69095fd3d7bcb05ed0094038",
       "mode": "755",
       "role": "static ARM O_DIRECT five-page reader"
+    },
+    {
+      "path": "/system/bin/z1_linux7_radio_init.sh",
+      "sha256": "abb42410dd534fb264b31ea7146c2752424a6b2877bb17179214e5989f0d2e46",
+      "mode": "755",
+      "role": "identity-gated Bluetooth and Wi-Fi module bring-up"
     },
     {
       "path": "/system/bin/z1_odex_probe",

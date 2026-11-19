@@ -235,7 +235,7 @@ class R4RuntimeManifestTest(unittest.TestCase):
         self.assertIn(
             "schema=z1-r7-runtime/v1 candidate=r7-combined-20261119",
             result.stdout)
-        self.assertIn("summary pass=58 fail=0 status=PASS", result.stdout)
+        self.assertIn("summary pass=59 fail=0 status=PASS", result.stdout)
 
         self.root.joinpath("dev/stpgps").unlink()
         self.write("dev/stpgps", "regular-file\n")
