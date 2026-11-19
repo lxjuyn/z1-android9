@@ -7,8 +7,8 @@
 #
 # Usage:
 #   sh z1_diag_gps.sh            # passive only
-#   sh z1_diag_gps.sh trigger    # enable location, watch the stack try a fix,
-#                                # then restore the previous location_mode
+#   sh z1_diag_gps.sh trigger    # enable location and sample for 60 seconds
+#                                # request GPS from an app during sampling
 #
 # Writes only /data/local/z1diag/gps_<ts>/
 # ---------------------------------------------------------------------------
@@ -43,6 +43,14 @@ pcount() {
     _n=$( ( ps -A 2>/dev/null || ps 2>/dev/null ) | grep -- "$1" 2>/dev/null | grep -v 'grep' 2>/dev/null | wc -l )
     [ -n "$_n" ] || _n=0
     printf '%s' "$_n"
+}
+
+mnld_service_state() {
+    _mnld_state=$(getprop init.svc.mnld 2>/dev/null)
+    if [ -z "$_mnld_state" ]; then
+        _mnld_state=$(getprop init.svc.z1_mnld 2>/dev/null)
+    fi
+    printf '%s' "${_mnld_state:-missing}"
 }
 
 TO=
@@ -97,7 +105,17 @@ fact GPS_VENDOR_DEFAULT_HAL "$DEFAULT_HAL_STATE"
 PRE_LOCMODE=$(settings get secure location_mode 2>/dev/null)
 fact PRE_STPGPS_NODE "$(pc /dev/stpgps)"
 fact PRE_MNLD_PROCS "$(pcount mnld)"
-fact PRE_MNLD_SVC "$(getprop init.svc.z1_mnld 2>/dev/null)"
+fact PRE_MNLD_SVC "$(mnld_service_state)"
+fact GPS_RADIO_NORIL "$(getprop ro.radio.noril 2>/dev/null)"
+fact GPS_LEGACY_RIL_SVC "$(getprop init.svc.ril-daemon 2>/dev/null)"
+CCCI_NODE_PRESENT=no
+for node in /dev/ccci*; do
+    if [ -c "$node" ]; then
+        CCCI_NODE_PRESENT=yes
+        break
+    fi
+done
+fact GPS_CCCI_NODE_PRESENT "$CCCI_NODE_PRESENT"
 fact PRE_GPS_CHIP_CFG "$(ls /data/misc/GPS_CHIP.cfg 2>/dev/null | wc -l)"
 fact PRE_LOCATION_MODE "$PRE_LOCMODE"
 fact GPS_HAL_BINARIES "$(ls /vendor/bin/hw/android.hardware.gnss* /system/bin/hw/android.hardware.gnss* 2>/dev/null | wc -l)"
@@ -123,7 +141,7 @@ fi
 CUR=$OUT/02_trigger.txt
 hdr "GNSS trigger: location on, watch 60s for engineers" "$CUR"
 
-if [ "$(pcount mnld)" -eq 0 ] && [ "$(getprop init.svc.z1_mnld 2>/dev/null)" != "running" ] \
+if [ "$(pcount mnld)" -eq 0 ] && [ "$(mnld_service_state)" != "running" ] \
    && [ "$(ls /system/bin/mnld /vendor/bin/mnld 2>/dev/null | wc -l)" -eq 0 ]; then
     say "TRIGGER NOTE: no mnld binary/process/service -> GPS userspace is NOT deployed on this build."
 fi
@@ -155,12 +173,14 @@ if [ "$PRE_LOCMODE" != 3 ]; then
     fi
 fi
 
-# sample the stack for a while: what starts, what it says
+# A GPS request must come from an app. Enabling location grants access but
+# does not cause GNSS hardware to start by itself.
+say "sampling for 60s; request a GPS fix from an app now"
 i=0
 while [ $i -lt 60 ]; do
     sleep 10
     i=$((i + 10))
-    echo "--- t+${i}s mnld=$(pcount mnld) stpgps=$(pc /dev/stpgps)" >> "$CUR" 2>/dev/null || true
+    echo "--- t+${i}s mnld=$(pcount mnld) service=$(mnld_service_state) stpgps=$(pc /dev/stpgps)" >> "$CUR" 2>/dev/null || true
 done
 
 cap "$CUR" "processes after enable" \
@@ -173,7 +193,7 @@ cap "$CUR" "logcat gnss/gps after enable" \
 cap "$CUR" "avc denials while gnss starts" \
     "dmesg 2>/dev/null | grep -i 'avc:' | grep -i -E 'gps|mnl|nvram' | tail -n 60"
 
-if [ "$(pcount mnld)" -ge 1 ] || [ "$(getprop init.svc.z1_mnld 2>/dev/null)" = "running" ]; then
+if [ "$(pcount mnld)" -ge 1 ] || [ "$(mnld_service_state)" = "running" ]; then
     fact TRIGGER_RESULT mnld_running
 elif [ ! -c /dev/stpgps ]; then
     fact TRIGGER_RESULT stpgps_missing

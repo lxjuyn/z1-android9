@@ -19,7 +19,7 @@ Z1 (MT6572 / Android 9 / arm32) **刷机后立刻取证**用的一套 shell 脚�
 | `z1_diag_all.sh` | 一键全量取证，17 个分节 + `facts.txt` + tar 包 | 无（严格只读） |
 | `z1_diag_wifi.sh` | WiFi/CONNSYS 深挖 | `trigger` 时 `/dev/wmtWifi` func-on + `iw scan`；`insmod` 可加载模块栈 |
 | `z1_diag_bt.sh` | 蓝牙深挖 | `trigger` 时开 BT，观察栈，结束**还原**原状态 |
-| `z1_diag_gps.sh` | GNSS 深挖 | `trigger` 时开定位，观察 60 秒并恢复原定位模式。检测到 vendor 默认 HAL 是 Z1 占位模块时只取证，退出码为 2 |
+| `z1_diag_gps.sh` | GNSS 深挖 | `trigger` 时开放定位，观察 60 秒并恢复原定位模式。采样期间从应用请求 GPS 定位。脚本记录 `mnld` 服务和 CCCI 节点状态。检测到 vendor 默认 HAL 是 Z1 占位模块时只取证，退出码为 2 |
 | `z1_diag_audio.sh` | 音频深挖 | `trigger` 时 tinyplay 噪声 WAV / tinycap / 音量键出声（三路按可用性依次试） |
 | `z1_diag_keys.sh` | 按键逐键抓事件（引导式） | `all` 逐个键提示你按，每键一个窗口 |
 | `z1_diag_onboot.sh` | 开机 90s 后自动跑 `z1_diag_all.sh`（无人值守） | 无 |
