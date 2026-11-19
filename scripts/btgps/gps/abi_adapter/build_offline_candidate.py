@@ -135,7 +135,7 @@ prep:         /z1_gps_prep.sh from the boot ramdisk
 The system image adds:
 
 ```text
-/vendor/lib/hw/gps.default.so    Android 9 adapter (7,440 B)
+/vendor/lib/hw/gps.default.so    Android 9 adapter ({adapter['bytes']:,} B)
 /vendor/lib/hw/gps.z1stock.so    factory HAL, SONAME disambiguated
 /lib/modules/z1-radio/z1_gpsdrv.ko
 ```
@@ -162,10 +162,11 @@ ls /sys/class/gpsdrv/gps
 dmesg | grep -E '\\[z1gps\\]|mt3326|GPS'
 ```
 
-Then enable location, wait outdoors for a cold fix, and verify the framework
-receives satellite status, NMEA data, and a nonzero location callback without
-network access. A running service, loaded module, or discovered satellite is
-not by itself a completed location fix.
+Then enable location with Wi-Fi off. Confirm `ro.radio.noril=yes`, no running
+RIL process, and no `/dev/ccci*` node. Wait outdoors for a cold standalone fix,
+and verify the framework receives satellite status, NMEA data, and a nonzero
+location callback. A running service, loaded module, or discovered satellite
+is not by itself a completed location fix.
 
 Rollback pair: R5 control boot
 `{report['base_boot']['sha256']}` and R5 system
@@ -381,6 +382,7 @@ def build(output):
             "mnld remains running beyond the 8s stabilization window",
             "/dev/stpgps carries real STP traffic",
             "framework receives satellite status and NMEA",
+            "standalone fix is observed with no RIL or CCCI modem stack",
             "framework receives a valid location callback without network",
             "optional AGPS/vendor extensions require separate ABI adapters",
         ],
