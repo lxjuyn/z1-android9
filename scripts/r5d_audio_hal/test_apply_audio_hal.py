@@ -45,9 +45,11 @@ class AudioImageInstallerTest(unittest.TestCase):
                 self.debugfs(source, f"set_inode_field {target} mode 0100640", True)
                 self.debugfs(source, f"set_inode_field {target} uid 12345", True)
                 self.debugfs(source, f"set_inode_field {target} gid 23456", True)
+                label = root / "selinux.label"
+                label.write_bytes(b"u:object_r:vendor_file:s0\0")
                 self.debugfs(
                     source,
-                    f"ea_set {target} security.selinux u:object_r:vendor_file:s0",
+                    f"ea_set -f {label} {target} security.selinux",
                     True,
                 )
 
@@ -67,7 +69,9 @@ class AudioImageInstallerTest(unittest.TestCase):
                 self.assertRegex(stat, r"Mode:\s+0640")
                 self.assertRegex(stat, r"User:\s+12345")
                 self.assertRegex(stat, r"Group:\s+23456")
-                self.assertIn("security.selinux", self.debugfs(output, f"ea_list {target}"))
+                xattr = self.debugfs(output, f"ea_list {target}")
+                self.assertIn("security.selinux", xattr)
+                self.assertIn(r'u:object_r:vendor_file:s0\000"', xattr)
                 dumped = root / target.replace("/", "_")
                 self.debugfs(output, f"dump {target} {dumped}")
                 self.assertEqual(hashlib.sha256(dumped.read_bytes()).hexdigest(), expected_hash)

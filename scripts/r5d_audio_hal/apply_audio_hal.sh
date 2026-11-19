@@ -159,7 +159,10 @@ for t in "${TARGETS[@]}"; do
         die "set gid failed: $t"
     # 回写 SELinux 标签（尽力；失败会告警，需人工 restorecon/补 file_contexts）
     if [ -n "${ORIG_XATTR[$t]:-}" ]; then
-        debugfs -w -R "ea_set $t security.selinux ${ORIG_XATTR[$t]}" "$OUT_IMG" >/dev/null 2>&1 \
+        # security.selinux is a NUL-terminated kernel string. The direct
+        # attr_value form omits that byte even though it is stored by Android.
+        printf '%s\000' "${ORIG_XATTR[$t]}" > "$STAGE/selinux.label"
+        debugfs -w -R "ea_set -f $STAGE/selinux.label $t security.selinux" "$OUT_IMG" >/dev/null 2>&1 \
             && log "   selinux 标签已回写" || log "   !! selinux 标签回写失败，上板前需人工补"
     else
         log "   注意: 未记录到原标签（可能是新文件）—— 首次创建的文件可能缺 SELinux 上下文"
@@ -199,9 +202,11 @@ for t in "${TARGETS[@]}"; do
     printf '%s\n' "$stat_readback" | grep -Eq '^Inode:.*Type: regular' ||
         die "文件类型回读不是 regular: $t"
     if [ -n "${ORIG_XATTR[$t]:-}" ]; then
-        debugfs -R "ea_list $t" "$OUT_IMG" 2>/dev/null |
-            grep -Fq "${ORIG_XATTR[$t]}" ||
+        xattr_readback=$(debugfs -R "ea_list $t" "$OUT_IMG" 2>/dev/null)
+        printf '%s\n' "$xattr_readback" | grep -Fq "${ORIG_XATTR[$t]}" ||
             die "SELinux 标签回读不匹配: $t"
+        printf '%s\n' "$xattr_readback" | grep -Fq '\000"' ||
+            die "SELinux 标签缺少 NUL 终止符: $t"
     fi
 done
 
