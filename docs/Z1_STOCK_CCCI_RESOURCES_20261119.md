@@ -21,7 +21,7 @@ using `--start-address` and `--stop-address` to select the function.
 | Resource | Factory binary evidence |
 | --- | --- |
 | AP CCIF physical base `0x1000c000` | `get_ccif_hw_info` at `0xc05442f8` returns `0xf000c000` in its base fields for modem index 0. `mt_map_io` at `0xc090df40` calls `iotable_init` with eight mappings. The fourth maps `0xf0000000` to `0x10000000` for `0x20000` bytes. |
-| Legacy Linux IRQ `107` | `get_ccif_hw_info` writes `107` at structure offset 8. `ccif_create_instance` copies it to offset 20 of the runtime object, and `__ccif_v1_reg_intr` passes that value to `request_threaded_irq`. Confirm the GIC SPI translation and trigger type before describing it in DT. |
+| GIC SPI `75`, level low | `get_ccif_hw_info` writes legacy IRQ `107` at structure offset 8. `ccif_create_instance` copies it to offset 20 of the runtime object. `__ccif_v1_reg_intr` passes that IRQ and flag `0x8` (`IRQF_TRIGGER_LOW`) to `request_threaded_irq`. The stock `mt_irq_unmask` at `0xc0019ab4` uses the IRQ number directly to select the bit in the GIC distributor enable array at `0xf0211100`. INTID 107 corresponds to SPI 75. The mainline DTS routes peripheral IRQs through `sysirq`, which handles active-low polarity. |
 | Modem allocation alignment `0x02000000` | `ccci_md_mem_reserve` at `0xc003c840` passes the computed size in `r0` and 32 MiB alignment in `r1` to `arm_memblock_steal`. The return value supplies the start address. |
 
 The reservation address and size still need the factory board's boot-time
