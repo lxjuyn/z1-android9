@@ -59,3 +59,37 @@ Confirm on device that the new machine module is active, GPIO140 is owned
 by the sound card and changes with speaker DAPM, and low-volume audio is
 physically audible. Then exercise standby/wake, volume and wired headset
 routing. No physical testing or flashing was performed for this candidate.
+
+## First board pass
+
+Before replacing system, preserve the five R4 ODEX pages and capture the HSQ
+comparison described in [the R4 readback notes](Z1_R4_FRAMEWORK_READBACK_20261119.md).
+Start the CH340 capture at 921600 before flashing or starting the board.
+From the workspace root, use the matching offline preflight:
+
+```sh
+bash z1a9_gpt/scripts/z1deploy/z1_flash_r7.sh --speaker-gpio
+```
+
+On the speaker candidate, from the board shell, check all of the following:
+
+```sh
+/system/bin/z1_runtime_manifest --r7
+sha256sum /system/lib/modules/mt6572-mt6323.ko
+od -An -tx1 /proc/device-tree/sound/speaker-enable-gpios
+cat /proc/asound/cards
+```
+
+The stock R7 manifest does not identify this variant. Match the machine
+module SHA above and expect a 12-byte property with big-endian cells for
+GPIO `140` (`00 00 00 8c`) and the active-high flag (`00 00 00 00`) after
+its phandle. Both checks are needed. The two tested boot ramdisks contain no
+copy of `mt6572-mt6323.ko`; `init.z1.rc` starts the system module loader,
+which loads it from `/system/lib/modules`.
+
+At low media volume, confirm the physical speaker is audible. If it stays
+silent, compare the Speaker DAPM state and GPIO140 state in debugfs before
+playback, during playback, and after standby. Also read
+`/sys/class/leds/lcd-backlight/display_blank` across screen lock and wake;
+expect `0 → 1 → 0` and confirm that the panel actually goes dark and shows
+fresh frames after wake.
