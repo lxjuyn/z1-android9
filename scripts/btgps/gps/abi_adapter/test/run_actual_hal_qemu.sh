@@ -48,4 +48,8 @@ extract /vendor/lib/hw/gps.z1stock.so "$guest/vendor/lib/hw/gps.z1stock.so"
 "$CC" -fPIE -pie -O2 -Wall -Wextra -Werror -I"$SHIM" \
     -o "$guest/probe" "$HERE/probe_actual_hal.c" -ldl
 
-"$QEMU" -L "$guest" "$guest/probe"
+if unshare -Urpf --mount-proc true >/dev/null 2>&1; then
+    unshare -Urpf --mount-proc "$QEMU" -L "$guest" "$guest/probe"
+else
+    "$QEMU" -L "$guest" "$guest/probe"
+fi

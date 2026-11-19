@@ -22,8 +22,10 @@ LocationManager
 ```
 
 It forwards location, status, SV, NMEA, wakelock, time, start, stop, cleanup,
-position mode, aiding-data, location injection, and extension operations. It
-does not generate a synthetic location.
+position mode, aiding-data, and location injection. It does not generate a
+synthetic location. Raw factory extension tables are withheld until each
+payload and lifetime contract has its own ABI adapter; assisted GPS is
+therefore unavailable in this candidate.
 
 ## Candidate
 

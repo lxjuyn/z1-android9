@@ -62,4 +62,8 @@ compiler_common=(
 "$CC" -fPIE -pie -O2 -Wall -Wextra -Werror -I"$SHIM" \
     -o "$guest/test" "$HERE/test_adapter.c" -ldl -llog
 
-"$QEMU" -L "$guest" "$guest/test"
+if unshare -Urpf --mount-proc true >/dev/null 2>&1; then
+    unshare -Urpf --mount-proc "$QEMU" -L "$guest" "$guest/test"
+else
+    "$QEMU" -L "$guest" "$guest/test"
+fi

@@ -120,7 +120,9 @@ This pair keeps the R5 kernel, DTB, system baseline, and HSQ control bootargs.
 It replaces the no-fix GNSS placeholder with an Android 9 ABI adapter around
 the factory MTK HAL. The factory HAL remains the real data path through
 `mnld -> libmnlp_mt6572 -> /dev/stpgps -> WMT GPS`; the adapter only fixes the
-Android 4.4 callback-table order and never fabricates a location.
+Android 4.4 callback-table order and never fabricates a location. Raw factory
+extension tables are withheld until their payload and lifetime contracts have
+separate ABI adapters, so assisted GPS is unavailable in this candidate.
 
 The boot ramdisk now exposes the init contract the factory HAL expects:
 
@@ -369,6 +371,7 @@ def build(output):
         "verification": {
             "android_9_callback_order_qemu": "PASS",
             "actual_factory_hal_load_qemu": "PASS",
+            "unadapted_extension_tables_withheld": "PASS",
             "boot_payload_readback": "PASS",
             "system_payload_readback": "PASS",
             "system_e2fsck": "PASS",
@@ -379,6 +382,7 @@ def build(output):
             "/dev/stpgps carries real STP traffic",
             "framework receives satellite status and NMEA",
             "framework receives a valid location callback without network",
+            "optional AGPS/vendor extensions require separate ABI adapters",
         ],
     }
     (output / "manifest.json").write_text(json.dumps(report, indent=2) + "\n")
