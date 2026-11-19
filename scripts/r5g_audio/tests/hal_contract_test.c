@@ -363,6 +363,10 @@ static void stream_contract_case(struct audio_stream_out *out)
 
 static void input_contract_case(struct audio_hw_device *dev)
 {
+    const uint32_t rates[] = {8000, 16000, 32000, 48000};
+    const audio_channel_mask_t channels[] = {
+        AUDIO_CHANNEL_IN_MONO, AUDIO_CHANNEL_IN_STEREO
+    };
     struct audio_config config = {
         .sample_rate = 16000,
         .channel_mask = AUDIO_CHANNEL_IN_MONO,
@@ -370,6 +374,32 @@ static void input_contract_case(struct audio_hw_device *dev)
     };
     struct audio_stream_in *input = NULL;
     unsigned char samples[1024];
+
+    for (unsigned int r = 0; r < sizeof(rates) / sizeof(rates[0]); r++) {
+        for (unsigned int c = 0;
+             c < sizeof(channels) / sizeof(channels[0]); c++) {
+            struct audio_config negotiated = {
+                .sample_rate = rates[r],
+                .channel_mask = channels[c],
+                .format = AUDIO_FORMAT_PCM_16_BIT
+            };
+            struct audio_stream_in *probe = NULL;
+            CHECK(dev->open_input_stream(
+                      dev, 0, AUDIO_DEVICE_IN_BUILTIN_MIC, &negotiated,
+                      &probe, AUDIO_INPUT_FLAG_NONE, NULL,
+                      AUDIO_SOURCE_MIC) == 0 && probe != NULL,
+                  "all policy microphone rates and channel masks open");
+            CHECK(negotiated.sample_rate == rates[r] &&
+                  negotiated.channel_mask == channels[c],
+                  "supported microphone configuration is preserved");
+            CHECK(dev->get_input_buffer_size(dev, &negotiated) ==
+                  (channels[c] == AUDIO_CHANNEL_IN_MONO ? 2048u : 4096u),
+                  "capture buffer matches channel count");
+            dev->close_input_stream(dev, probe);
+        }
+    }
+    CHECK(open_calls == 0 && close_calls == 0,
+          "opening and closing idle capture streams never touches PCM");
 
     CHECK(dev->get_input_buffer_size(dev, &config) == 2048,
           "16k mono capture advertises one 1024-frame PCM16 period");

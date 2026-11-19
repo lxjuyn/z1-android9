@@ -28,9 +28,10 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+WORKSPACE="$(cd "$HERE/../../.." && pwd)"
 CC="${CROSS_COMPILE_CC:-arm-linux-gnueabihf-gcc}"
 LIBDIR="${Z1_R5G_LIBDIR:-/tmp/r5g_link}"
-BASELINE="${Z1_BASELINE_IMG:-/home/lxj/claude/6572/out/z1_r5_system/system.img.r5f_final}"
+BASELINE="${Z1_BASELINE_IMG:-$WORKSPACE/out/r7_combined_candidate_20261119/system.img}"
 LIBS="libtinyalsa.so liblog.so libm.so libdl.so libc.so"
 SRC="$HERE/audio_primary_z1_poc.c"
 OUT="$HERE/libaudio.primary.z1.so"

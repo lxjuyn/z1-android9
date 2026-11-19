@@ -46,7 +46,7 @@
 | GPIO7、EINT16、Linux IRQ46 是同一个数字空间 | 分别是引脚、硬件中断编号、内核分配 IRQ；不能互换 |
 | 同族板的 TF 引脚能直接启用 | Z1 接线、卡检测、电压和电源轨未证，不可照搬 |
 | GNSS/蓝牙/WiFi 服务 running 就是功能正常 | 服务注册之后仍有 transport、固件、协议、数据和 UI 多层验收 |
-| 录音 PCM 存在就表示 Android 录音可用 | 当前 primary HAL 的输入打开仍返回 `-ENOSYS` |
+| 录音 PCM 存在就表示 Android 录音可用 | R7 已开放 `pcmC0D1c` 输入 HAL 和 MIC1/AWB 路由；真实 MIC 数据仍须上板验收 |
 | `/bin/mtpd` 是 MTP 文件传输 | 该历史程序是 PPP 相关 daemon；不能替代 Android MTP 链路 |
 | `powerux_check.sh` 名称像检查器，所以可直接运行 | 旧脚本会写亮度；`screen_off_test.sh` 会改设置和发按键；两者不属于只读检查 |
 
@@ -71,7 +71,7 @@
 | 矩阵键/触摸条 | 非法 `.kl` flag 与打包缺口已修候选；物理映射未知 | §6–7：按设备分开逐键与坐标采样 |
 | 电源键 | PMIC IRQ46/输入设备有历史注册；读失败防护修复 | §8：按放事件、IRQ 增量、framework 行为 |
 | 电量/health | 瞬时电压查表根因明确；health 独立 bug 已修；采样工具主机测试 | §9：同时测真实端电压；温度目前占位 |
-| 3.5mm/录音 | 播放 HAL 重试修复候选；输入 HAL 缺实现 | §10：ALSA→模拟路由→Android 分层验收 |
+| 3.5mm/录音 | 播放与 AWB 麦克风输入 HAL 已有主机候选；物理 MIC 数据未验 | §10：ALSA→模拟路由→Android 分层验收 |
 | TF | 用户确认卡槽；接线未证；有只读检查工具 | §11：先完成 Z1 专属证据 |
 | USB | 历史 ACM gadget 绑定；ADB opt-in 候选未部署；MTP/OTG 未闭环 | §12：独占 UDC、鉴权与 FunctionFS 时序 |
 | 亮度/睡眠/RTC/FM | 有驱动或接口资产，分别缺物理闭环 | §13–16 |
@@ -294,18 +294,18 @@ Linux `voltage_now`单位µV，`capacity`为0–100%，`temp`一般为0.1°C；`
 |---|---|
 | 用途 | 扬声器/3.5mm耳机播放、音量与插拔路由、麦克风录音；BT SCO和FM各有额外链路 |
 | 实际链 | 应用AudioTrack/AudioRecord → AudioFlinger/AudioPolicy → audio HIDL/legacy primary HAL → tinyalsa/ALSA PCM+mixer → MT6572 AFE/machine → MT6323 codec/ACCDET/放大器 → 耳机、扬声器、麦克风 |
-| 实施状态 | 本轮primary播放HAL改为失败后持续有界重试，硬件master volume返回不支持以保留软件音量。既有6类mock与目标ELF记录；3.5mm听音未验。输入入口仍明确`-ENOSYS`，Android录音未实现 |
+| 实施状态 | primary HAL 支持 48 kHz PCM16 播放及 `pcmC0D1c` 的 8/16/32/48 kHz PCM16 麦克风输入；两者均延迟打开并可从声卡晚注册恢复。policy 只暴露 Speaker/Earpiece/耳机输出与 Built-In Mic 输入，路由脚本选择 MT6323 MIC1 与 AFE AWB Source=MIC。主机 12/12 用例通过；3.5mm 听音和真实 MIC 数据未验 |
 | 已证根因 | 旧open_fails=1后退避分支不再更新导致永不重试；set/get_master_volume假成功影响上层软件增益；这些不是所有无声/耳机/录音问题的总根因 |
 | 具体文件/测试 | `z1a9_gpt/scripts/r5g_audio/audio_primary_z1_poc.c:196–230,310–316,394–398`、`tests/`；`fork_linux/sound/soc/mediatek/mt6572/{mt6572-afe-pcm.c,mt6572-mt6323.c}`、`sound/soc/codecs/{mt6323.c,mt6323-accdet.c}`；E-AUDIO |
 | 故障分支及下一步 | 无声卡→模块/DT/时钟/codec；PCM打开失败→实际card/device/格式；PCM推进无声→mixer/DAPM/放大器/耳机路由；插拔不变→ACCDET/PMICIRQ/input-jack；底层capture有数据但App失败→输入HAL/policy；全零录音→真实采样源/ADC/MICBIAS |
 | 通过门禁 | 实际HAL maps/hash；声卡迟到后能恢复；低音量左右声道/单声道、静音/音量、插拔、播放停止重开；录音单独核ALSA有效样本与Android AudioRecord、时长/采样率/声道/非全零及无泄漏 |
 | 回滚 | audio HAL、tinyalsa依赖、policy、mixer初始路由、内核codec/AFE/machine/ACCDET模块成套恢复；保存用户音量与插拔状态，不能只换一份库 |
 
-新HAL用独立 `open_retry_wait`，一次失败后跳过9次write、在下一轮尝试，不靠失败计数无限停留。候选SHA256 `d037d76ca6ab8231169647fcf39cb46c76ffb098f0059efa7f226a392603813a`；归档记录依赖libtinyalsa/liblog/libm/libdl/libc，19个未定义命名符号不变，ARM softfp、无TEXTREL。该记录显式 `android_runtime_tested=false`、`audio_listening_tested=false`、`capture_implemented=false`。[A-AUDIO]
+新HAL的播放和录音各自使用独立 `open_retry_wait`，一次失败后跳过 9 次 write/read，在下一轮尝试，不靠失败计数无限停留。候选 SHA256 `3f1b3a841aea4eedd7cb7ba5c22ebe12e6062b6ec88ec5d28eed6864251e1722`；依赖 libtinyalsa/liblog/libm/libdl/libc，ARM softfp、无 TEXTREL。`input-contract` 用例验证 card0/device1、PCM_IN、10 次重试恢复、读入字节、teardown 和不伪造 capture position。[A-AUDIO]
 
 **3.5mm不是一个布尔开关**：耳机输出、插拔检测、耳机麦克风、按键、插头标准可能分别成功/失败。先确定本机插座触点/支持范围，不把某个ALSA Jack注册当作全部支持。设备无指示灯是用户事实，不列为故障。
 
-内核已有AWB capture/mic/FM相关代码和源选择，但当前HAL不开放输入。不能因有 `pcmC*D*c` 节点就称“录音完成”。录音前置检查工具现已完成，主会话补修O_PATH固定inode后39项测试通过；它不执行录音。codec缺MIC Route→AIF1 Capture信号边、capture对AUDCLK依赖不足，须先核实再修生产路由。MIC实际支持8000/16000/32000/48000Hz、S16_LE、1–2声道，policy中额外频率不能视为已支持。
+内核已有 AWB capture/mic/FM 代码和源选择。R7 HAL 与 policy 已打开 AWB 输入；不能因有 `pcmC*D*c` 节点或 HAL 能构造流就称“录音完成”。必须继续验证 MIC Route/MIC UL/AIF1 Capture 与 AUDCLK 的 DAPM 状态、`pcmC0D1c` 是否持续产生非全零样本、Android AudioRecord 的时长/采样率/声道，以及麦克风偏置和物理 MIC1 接线。
 
 未来只读起点是 `/proc/asound/cards`、`/proc/asound/pcm`、`/dev/snd`和 `dumpsys media.audio_flinger`/policy。`tinymix`无参数列控件与带参数写控件应严格区分；历史不存在的 `tinymix set/controls` 用法不要复用。播放/录音、路由切换均属主动测试，不在本文自动执行。
 
@@ -666,7 +666,7 @@ python3 -B scripts/display_check/test_inspector.py
 | ADB | 独立opt-in候选与34fixture | 实际基线缺service且secure配置不满足；未接入开机 |
 | 亮度 | dash/BusyBox各37fixture | 无物理亮度/息屏恢复测试 |
 | 休眠/RTC/看门狗 | 27fixture离线检查器与证据 | 全部硬件行为未验；不能释放诊断锁冒险验证 |
-| 录音 | 39fixture前提工具与HAL/codec契约方案 | 输入HAL仍ENOSYS，MIC路由/时钟/接线未完成 |
+| 录音 | 39fixture前提工具；输入HAL、policy、MIC1/AWB路由及12用例主机候选 | 真实MIC样本、偏置、接线和Android端到端录音未验 |
 | FM | 有真实驱动/控制资产与明确ABI/固件/路由缺口 | 未集成配套app/JNI，未听音/搜台/RDS |
 | MTP/OTG | 详细缺口/前提已列 | 未实施，不能通过翻属性/DR_mode宣称完成 |
 | 指示灯 | 用户明确没有 | 不适用，不列故障 |
