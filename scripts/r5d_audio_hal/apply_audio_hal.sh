@@ -51,9 +51,9 @@ TARGETS=(
     "/vendor/lib/libaudio.primary.default.so"
     "/vendor/lib/hw/audio.primary.default.so"
 )
-VENDOR_UID=0
-VENDOR_GID=2000
-MODE=0100644
+DEFAULT_UID=0
+DEFAULT_GID=0
+DEFAULT_MODE=0100644
 
 log()  { printf '[apply_audio_hal] %s\n' "$*"; }
 die()  { printf '[apply_audio_hal][FATAL] %s\n' "$*" >&2; exit 1; }
@@ -107,12 +107,33 @@ cp --reflink=auto --sparse=always "$IN_IMG" "$BK"
 log "复制 -> $OUT_IMG"
 cp --reflink=auto --sparse=always "$IN_IMG" "$OUT_IMG"
 
-# ---------- 2. 记录原文件的 SELinux xattr（尽力而为） ----------
-declare -A ORIG_XATTR
+# ---------- 2. 记录原文件的 metadata ----------
+declare -A ORIG_XATTR ORIG_UID ORIG_GID ORIG_MODE
 for t in "${TARGETS[@]}"; do
-    if debugfs -R "ea_list $t" "$IN_IMG" 2>/dev/null | grep -qi 'security.selinux\|selinux'; then
-        ORIG_XATTR["$t"]="$(debugfs -R "ea_get $t security.selinux" "$IN_IMG" 2>/dev/null | head -1 || true)"
-        log "原 $t 有 security.selinux 标签，已记录（将尝试回写）"
+    ORIG_UID["$t"]=$DEFAULT_UID
+    ORIG_GID["$t"]=$DEFAULT_GID
+    ORIG_MODE["$t"]=$DEFAULT_MODE
+    stat_out=$(debugfs -R "stat $t" "$IN_IMG" 2>/dev/null || true)
+    if [ -n "$stat_out" ]; then
+        mode=$(printf '%s\n' "$stat_out" | sed -nE 's/^Inode:.*Mode:[[:space:]]+0?([0-7]{3}).*/\1/p' | head -1)
+        uid=$(printf '%s\n' "$stat_out" | sed -nE 's/^User:[[:space:]]+([0-9]+).*/\1/p' | head -1)
+        gid=$(printf '%s\n' "$stat_out" | sed -nE 's/.*Group:[[:space:]]+([0-9]+).*/\1/p' | head -1)
+        [ -z "$mode" ] || ORIG_MODE["$t"]="0100$mode"
+        [ -z "$uid" ] || ORIG_UID["$t"]="$uid"
+        [ -z "$gid" ] || ORIG_GID["$t"]="$gid"
+        log "原 $t metadata: mode=${ORIG_MODE[$t]} uid=${ORIG_UID[$t]} gid=${ORIG_GID[$t]}"
+    fi
+
+    xattr_line=$(debugfs -R "ea_list $t" "$IN_IMG" 2>/dev/null |
+        grep -F 'security.selinux' | head -1 || true)
+    if [ -n "$xattr_line" ]; then
+        xattr_value=$(printf '%s\n' "$xattr_line" |
+            sed -nE 's/^[[:space:]]*security\.selinux[[:space:]]*\([0-9]+\)[[:space:]]*=[[:space:]]*"(.*)"[[:space:]]*$/\1/p')
+        xattr_value=${xattr_value%\\000}
+        if [ -n "$xattr_value" ]; then
+            ORIG_XATTR["$t"]="$xattr_value"
+            log "原 $t SELinux 标签: ${ORIG_XATTR[$t]}"
+        fi
     fi
 done
 
@@ -130,9 +151,12 @@ for t in "${TARGETS[@]}"; do
     debugfs -R "stat $d" "$OUT_IMG" >/dev/null 2>&1 || { log "mkdir $d"; debugfs -w -R "mkdir $d" "$OUT_IMG" >/dev/null 2>&1 || true; }
     log "write $t"
     debugfs -w -R "write $STAGE/hal.so $t" "$OUT_IMG" >/dev/null
-    debugfs -w -R "set_inode_field $t mode $MODE"          "$OUT_IMG" >/dev/null 2>&1 || true
-    debugfs -w -R "set_inode_field $t uid $VENDOR_UID"     "$OUT_IMG" >/dev/null 2>&1 || true
-    debugfs -w -R "set_inode_field $t gid $VENDOR_GID"     "$OUT_IMG" >/dev/null 2>&1 || true
+    debugfs -w -R "set_inode_field $t mode ${ORIG_MODE[$t]}" "$OUT_IMG" >/dev/null ||
+        die "set mode failed: $t"
+    debugfs -w -R "set_inode_field $t uid ${ORIG_UID[$t]}" "$OUT_IMG" >/dev/null ||
+        die "set uid failed: $t"
+    debugfs -w -R "set_inode_field $t gid ${ORIG_GID[$t]}" "$OUT_IMG" >/dev/null ||
+        die "set gid failed: $t"
     # 回写 SELinux 标签（尽力；失败会告警，需人工 restorecon/补 file_contexts）
     if [ -n "${ORIG_XATTR[$t]:-}" ]; then
         debugfs -w -R "ea_set $t security.selinux ${ORIG_XATTR[$t]}" "$OUT_IMG" >/dev/null 2>&1 \
@@ -166,6 +190,18 @@ for t in "${TARGETS[@]}"; do
     if command -v arm-linux-gnueabihf-nm >/dev/null; then
         arm-linux-gnueabihf-nm -D --defined-only "$o" | grep -q ' HMI$' \
             && log "   $t  HMI 存在 ✓" || die "   $t  回读后无 HMI!"
+    fi
+    stat_readback=$(debugfs -R "stat $t" "$OUT_IMG" 2>/dev/null)
+    printf '%s\n' "$stat_readback" | grep -Eq "^User:[[:space:]]+${ORIG_UID[$t]}([[:space:]]|$)" ||
+        die "uid 回读不匹配: $t"
+    printf '%s\n' "$stat_readback" | grep -Eq ".*Group:[[:space:]]+${ORIG_GID[$t]}([[:space:]]|$)" ||
+        die "gid 回读不匹配: $t"
+    printf '%s\n' "$stat_readback" | grep -Eq '^Inode:.*Type: regular' ||
+        die "文件类型回读不是 regular: $t"
+    if [ -n "${ORIG_XATTR[$t]:-}" ]; then
+        debugfs -R "ea_list $t" "$OUT_IMG" 2>/dev/null |
+            grep -Fq "${ORIG_XATTR[$t]}" ||
+            die "SELinux 标签回读不匹配: $t"
     fi
 done
 
