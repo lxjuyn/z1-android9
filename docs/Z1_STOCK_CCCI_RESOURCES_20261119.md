@@ -24,7 +24,12 @@ using `--start-address` and `--stop-address` to select the function.
 | GIC SPI `75`, level low | `get_ccif_hw_info` writes legacy IRQ `107` at structure offset 8. `ccif_create_instance` copies it to offset 20 of the runtime object. `__ccif_v1_reg_intr` passes that IRQ and flag `0x8` (`IRQF_TRIGGER_LOW`) to `request_threaded_irq`. The stock `mt_irq_unmask` at `0xc0019ab4` uses the IRQ number directly to select the bit in the GIC distributor enable array at `0xf0211100`. INTID 107 corresponds to SPI 75. The mainline DTS routes peripheral IRQs through `sysirq`, which handles active-low polarity. |
 | Modem allocation alignment `0x02000000` | `ccci_md_mem_reserve` at `0xc003c840` passes the computed size in `r0` and 32 MiB alignment in `r1` to `arm_memblock_steal`. The return value supplies the start address. |
 
-The reservation address and size still need the factory board's boot-time
-configuration. The stock kernel has separate hooks for shared-memory remap,
+`parse_ccci_dfo_setting` at `0xc003c898` reads `MTK_ENABLE_MD1`, `MD1_SIZE`
+and `MD1_SMEM_SIZE`. It rounds both sizes up to 2 MiB boundaries. With MD1
+enabled and either size missing, the error branch at `0xc003ca28` installs
+22 MiB for the modem and 2 MiB for shared memory. The compiled table at
+`0xc0960d58` initializes the enable flag and both sizes to zero. The fallback
+therefore provides a candidate size conditional on the boot-time configuration.
+Capture the factory DFO and reservation logs to learn the actual size and base. The stock kernel has separate hooks for shared-memory remap,
 firmware memory remap, watchdog, and power. Those hooks and the firmware
 verification sequence must be recovered before attempting modem power-on.
