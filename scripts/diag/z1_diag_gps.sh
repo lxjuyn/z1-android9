@@ -18,7 +18,7 @@ export PATH
 umask 022
 
 BASE=/data/local/z1diag
-MODE=$1
+MODE=${1:-passive}
 TS=$(date +%Y%m%d_%H%M%S 2>/dev/null)
 [ -n "$TS" ] || TS=$(cut -d. -f1 /proc/uptime 2>/dev/null)
 OUT=$BASE/gps_$TS
@@ -83,6 +83,17 @@ cap "$CUR" "dumpsys location head" "$TO dumpsys location | head -n 150"
 cap "$CUR" "dmesg gps lines" \
     "dmesg 2>/dev/null | grep -i -E 'gps|gnss|stp_gps' | tail -n 200"
 
+# The shipped Z1 placeholder embeds this module name in its ELF data.
+DEFAULT_HAL=/vendor/lib/hw/gps.default.so
+DEFAULT_HAL_STATE=missing
+if [ -f "$DEFAULT_HAL" ]; then
+    DEFAULT_HAL_STATE=unidentified
+    if grep -aqF 'Z1 GPS stub' "$DEFAULT_HAL"; then
+        DEFAULT_HAL_STATE=stub
+    fi
+fi
+fact GPS_VENDOR_DEFAULT_HAL "$DEFAULT_HAL_STATE"
+
 PRE_LOCMODE=$(settings get secure location_mode 2>/dev/null)
 fact PRE_STPGPS_NODE "$(pc /dev/stpgps)"
 fact PRE_MNLD_PROCS "$(pcount mnld)"
@@ -92,6 +103,13 @@ fact PRE_LOCATION_MODE "$PRE_LOCMODE"
 fact GPS_HAL_BINARIES "$(ls /vendor/bin/hw/android.hardware.gnss* /system/bin/hw/android.hardware.gnss* 2>/dev/null | wc -l)"
 fact GPS_HAL_LIBS "$(ls /vendor/lib/hw/gps*.so /system/lib/hw/gps*.so 2>/dev/null | wc -l)"
 fact GPS_MNLD_BINARY "$(ls /system/bin/mnld /vendor/bin/mnld 2>/dev/null | wc -l)"
+
+if [ "$MODE" = "trigger" ] && [ "$DEFAULT_HAL_STATE" = stub ]; then
+    fact TRIGGER_RESULT skipped_vendor_default_hal_stub
+    say "skipped trigger: vendor default HAL is a Z1 GPS stub"
+    cat "$FACTS" 2>/dev/null
+    exit 2
+fi
 
 if [ "$MODE" != "trigger" ]; then
     say "passive mode done: $OUT"
@@ -108,12 +126,34 @@ hdr "GNSS trigger: location on, watch 60s for engineers" "$CUR"
 if [ "$(pcount mnld)" -eq 0 ] && [ "$(getprop init.svc.z1_mnld 2>/dev/null)" != "running" ] \
    && [ "$(ls /system/bin/mnld /vendor/bin/mnld 2>/dev/null | wc -l)" -eq 0 ]; then
     say "TRIGGER NOTE: no mnld binary/process/service -> GPS userspace is NOT deployed on this build."
-    fact TRIGGER_RESULT gps_userspace_absent
 fi
 
-say "setting location_mode=3"
-cap "$CUR" "enable location" \
-    "settings put secure location_mode 3; settings put secure location_providers_allowed +gps,+network 2>/dev/null; settings get secure location_mode"
+case "$PRE_LOCMODE" in
+    0|1|2|3) ;;
+    *)
+        fact TRIGGER_RESULT skipped_invalid_initial_location_mode
+        cat "$FACTS" 2>/dev/null
+        exit 2
+        ;;
+esac
+
+restore_location_mode() {
+    settings put secure location_mode "$PRE_LOCMODE" &&
+        [ "$(settings get secure location_mode)" = "$PRE_LOCMODE" ]
+}
+if [ "$PRE_LOCMODE" != 3 ]; then
+    trap 'restore_location_mode || say "failed to restore location mode"' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    trap 'exit 129' HUP
+    say "setting location_mode=3"
+    if ! settings put secure location_mode 3 ||
+       [ "$(settings get secure location_mode)" != 3 ]; then
+        fact TRIGGER_RESULT could_not_enable_location
+        cat "$FACTS" 2>/dev/null
+        exit 1
+    fi
+fi
 
 # sample the stack for a while: what starts, what it says
 i=0
@@ -135,16 +175,22 @@ cap "$CUR" "avc denials while gnss starts" \
 
 if [ "$(pcount mnld)" -ge 1 ] || [ "$(getprop init.svc.z1_mnld 2>/dev/null)" = "running" ]; then
     fact TRIGGER_RESULT mnld_running
-elif [ -z "$(pc /dev/stpgps)" ]; then
+elif [ ! -c /dev/stpgps ]; then
     fact TRIGGER_RESULT stpgps_missing
 else
     fact TRIGGER_RESULT mnld_absent
 fi
 
-# restore
-if [ -n "$PRE_LOCMODE" ] && [ "$PRE_LOCMODE" != "3" ]; then
+fact FIX_STATUS not_measured
+if [ "$PRE_LOCMODE" != 3 ]; then
     say "restoring location_mode=$PRE_LOCMODE"
-    settings put secure location_mode "$PRE_LOCMODE" >/dev/null 2>&1 || true
+    if ! restore_location_mode; then
+        fact RESTORE_LOCATION_MODE failed
+        cat "$FACTS" 2>/dev/null
+        exit 1
+    fi
+    trap - EXIT INT TERM HUP
+    fact RESTORE_LOCATION_MODE restored
 fi
 
 say "done: $OUT"
