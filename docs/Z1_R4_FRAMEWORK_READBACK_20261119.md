@@ -58,3 +58,19 @@ and warm hashes for Gallium and services.odex while tracking SurfaceFlinger and
 system_server PIDs and fresh crash logs. Re-run with the HSQ control when
 needed to isolate the variable. The comparison addresses the Linux storage
 path. The source of the original wrong bytes and the board result remain open.
+
+The first board run uses the two existing images in
+`out/r4_hsq_diagnostic_20261118/manifest.json`. Bring up the CH340 UART
+capture at 921600 before the flash and power-on sequence. Write and read back
+only `bootimg`, then disconnect the download cable before normal power-on.
+Capture the file hashes and five-page direct read before dropping caches.
+The rebuilt helper and expected bytes are under
+`bridge_backups/products/products_r4_odex_direct_probe_20261119_203544/`.
+
+A separate kernel change, `b09fdd195`, fixes the recovery order in
+`msdc_request_done()`. HSQ finalization can synchronously dispatch the next
+request, whose setup clears `host->error`. The driver now recovers the
+controller before finalization. The ARM driver and zImage build passed.
+The two diagnostic images predate this fix and remain the first A/B pair.
+The order fix has no board result yet, and the original five zero pages
+have not been attributed to this path.
