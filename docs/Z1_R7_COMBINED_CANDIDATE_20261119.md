@@ -17,6 +17,9 @@ in the system image.
 | `out/r7_combined_candidate_20261119/boot_hsq_control_r7.img` | 5,984,256 | `b2865e43d8be640ae1e9dccbcbc21af60d656cde1a5b9b233264961ae31a3145` |
 | `out/r7_combined_candidate_20261119/system.img` | 943,718,400 | `8060c851075bb053e931376e7965c3c80850a2f5e9d73cdd62e54add83400bf4` |
 
+The compressed backup is
+`bridge_backups/products/products_r7_combined_20261119_221718/`.
+
 ## Host checks
 
 - Both installed copies carry the same 13,012-byte Android ARM32 audio HAL.
