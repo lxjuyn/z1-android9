@@ -1992,30 +1992,28 @@ static int32_t z1_set_power_mode(hwc2_device_t *d, hwc2_display_t display,
 	if (mode != HWC2_POWER_MODE_ON && mode != HWC2_POWER_MODE_OFF)
 		return HWC2_ERROR_BAD_PARAMETER;
 
-	/* Route B must retain LK's DSI state. Stopping presents alone leaves the
-	 * last frame illuminated: blank the MT6323 ISINK instead of modesetting.
-	 * The light HAL shares brightness, so preserve its newer nonzero value
-	 * on wake. A concurrent positive write after OFF still needs coordination
-	 * in that HAL; this callback cannot provide a separate hardware blank gate.
+	/* Route B retains LK's DSI state. Blank the MT6323 backlight while
+	 * the LED driver tracks the level requested by the light HAL. Older
+	 * kernels need a saved brightness because OFF writes brightness=0.
 	 */
 	if (mode == HWC2_POWER_MODE_OFF) {
-		if (!h->backlight_blank_applied) {
-			if (!z1_backlight_read(Z1_BACKLIGHT_PATH, &current) && current > 0)
-				h->backlight_saved = current;
-			/* The light HAL may already have requested zero before OFF. */
-			if (h->backlight_saved <= 0) {
-				error = z1_backlight_read(Z1_BACKLIGHT_MAX_PATH, &current);
-				if (!error && current > 0)
-					h->backlight_saved = current;
-				else if (!error)
-					error = -EINVAL;
-			}
-		}
+		error = z1_display_blank_write(1);
 		if (!error) {
-			error = z1_display_blank_write(1);
+			h->backlight_gate_applied = true;
+		} else if (error == -ENOENT) {
+			error = 0;
+			if (!h->backlight_blank_applied) {
+				if (!z1_backlight_read(Z1_BACKLIGHT_PATH, &current) && current > 0)
+					h->backlight_saved = current;
+				if (h->backlight_saved <= 0) {
+					error = z1_backlight_read(Z1_BACKLIGHT_MAX_PATH, &current);
+					if (!error && current > 0)
+						h->backlight_saved = current;
+					else if (!error)
+						error = -EINVAL;
+				}
+			}
 			if (!error)
-				h->backlight_gate_applied = true;
-			else if (error == -ENOENT)
 				error = z1_backlight_write(0);
 		}
 		if (!error)

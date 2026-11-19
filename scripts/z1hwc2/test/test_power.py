@@ -106,7 +106,7 @@ static void reset() {
 static void valid_power_cycle() {
     z1_hwc2 h;
     CHECK(power(h, HWC2_POWER_MODE_OFF) == HWC2_ERROR_NONE);
-    CHECK(h.backlight_saved == 2 && h.backlight_blank_applied && !h.powered_on);
+    CHECK(h.backlight_blank_applied && !h.powered_on);
     CHECK(h.backlight_gate_applied && blank == "1\n" && level == "2\n");
     CHECK(power(h, HWC2_POWER_MODE_ON) == HWC2_ERROR_NONE);
     CHECK(h.powered_on && !h.backlight_blank_applied && level == "2\n");
@@ -131,7 +131,7 @@ static void repeated_off_keeps_restore_level() {
     z1_hwc2 h; CHECK(power(h, HWC2_POWER_MODE_OFF) == HWC2_ERROR_NONE);
     blank = "1\n"; // the gate remains latched across repeated OFF
     CHECK(power(h, HWC2_POWER_MODE_OFF) == HWC2_ERROR_NONE);
-    CHECK(h.backlight_saved == 2 && blank == "1\n");
+    CHECK(blank == "1\n");
     CHECK(power(h, HWC2_POWER_MODE_ON) == HWC2_ERROR_NONE);
     CHECK(blank == "0\n");
 }
@@ -147,19 +147,19 @@ static void light_hal_cleared_before_off() {
     CHECK(power(h, HWC2_POWER_MODE_ON) == HWC2_ERROR_NONE);
     CHECK(blank == "0\n" && level == "0\n");
 }
-static void zero_without_cache_uses_maximum() {
-    z1_hwc2 h; level = "0\n";
+static void old_kernel_zero_without_cache_uses_maximum() {
+    z1_hwc2 h; level = "0\n"; blank_missing = 1;
     CHECK(power(h, HWC2_POWER_MODE_OFF) == HWC2_ERROR_NONE);
     CHECK(h.backlight_saved == 6);
     CHECK(power(h, HWC2_POWER_MODE_ON) == HWC2_ERROR_NONE &&
-          blank == "0\n" && level == "0\n");
+          level == "6\n");
 }
 static void off_permission_failure_and_retry() {
     z1_hwc2 h; blank_write_error = EACCES;
     CHECK(power(h, HWC2_POWER_MODE_OFF) == HWC2_ERROR_NO_RESOURCES);
     CHECK(h.powered_on && !h.backlight_blank_applied && level == "2\n");
     blank_write_error = 0; CHECK(power(h, HWC2_POWER_MODE_OFF) == HWC2_ERROR_NONE);
-    CHECK(!h.powered_on && h.backlight_saved == 2);
+    CHECK(!h.powered_on && blank == "1\n");
 }
 static void wake_permission_failure_and_retry() {
     z1_hwc2 h; CHECK(power(h, HWC2_POWER_MODE_OFF) == HWC2_ERROR_NONE);
@@ -169,8 +169,15 @@ static void wake_permission_failure_and_retry() {
     blank_write_error = 0; CHECK(power(h, HWC2_POWER_MODE_ON) == HWC2_ERROR_NONE);
     CHECK(blank == "0\n" && h.powered_on);
 }
-static void no_restore_source_refuses_off() {
+static void gate_works_without_brightness_files() {
     z1_hwc2 h; read_error = ENOENT; max_error = ENOENT;
+    CHECK(power(h, HWC2_POWER_MODE_OFF) == HWC2_ERROR_NONE);
+    CHECK(!h.powered_on && blank == "1\n");
+    CHECK(power(h, HWC2_POWER_MODE_ON) == HWC2_ERROR_NONE);
+    CHECK(h.powered_on && blank == "0\n" && writes.empty());
+}
+static void no_restore_source_refuses_off() {
+    z1_hwc2 h; read_error = ENOENT; max_error = ENOENT; blank_missing = 1;
     CHECK(power(h, HWC2_POWER_MODE_OFF) == HWC2_ERROR_NO_RESOURCES);
     CHECK(h.powered_on && !h.backlight_blank_applied && writes.empty());
 }
@@ -213,8 +220,9 @@ int main() {
     Test cases[] = {CASE(valid_power_cycle), CASE(invalid_display_and_modes),
         CASE(repeated_on_preserves_user_level), CASE(repeated_off_keeps_restore_level),
         CASE(wake_preserves_new_light_hal_level), CASE(light_hal_cleared_before_off),
-        CASE(zero_without_cache_uses_maximum), CASE(off_permission_failure_and_retry),
-        CASE(wake_permission_failure_and_retry), CASE(no_restore_source_refuses_off),
+        CASE(old_kernel_zero_without_cache_uses_maximum), CASE(off_permission_failure_and_retry),
+        CASE(wake_permission_failure_and_retry), CASE(gate_works_without_brightness_files),
+        CASE(no_restore_source_refuses_off),
         CASE(short_write_does_not_claim_success), CASE(hardware_readback_mismatch),
         CASE(interrupted_io_retries), CASE(old_kernel_brightness_fallback),
         CASE(malformed_sysfs_values)};

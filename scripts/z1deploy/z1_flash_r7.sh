@@ -9,25 +9,29 @@ BOOT="$CANDIDATE/boot_hsq_control_r7.img"
 SYSTEM="$CANDIDATE/system.img"
 BOOT_ROLLBACK="$ROOT/out/r5_offline_candidate_20261119/boot_hsq_control_r5.img"
 BOOT_SHA=b2865e43d8be640ae1e9dccbcbc21af60d656cde1a5b9b233264961ae31a3145
+R7_BASE_BOOT_SHA=$BOOT_SHA
 SYSTEM_SHA=8060c851075bb053e931376e7965c3c80850a2f5e9d73cdd62e54add83400bf4
 EXECUTE=0
+HWC_BLANK=0
 CHUNK_MB=48
 TRIES=4
 
 usage() {
     cat <<'EOF'
-Usage: z1_flash_r7.sh [--execute] [--chunk-mb N] [--tries N]
+Usage: z1_flash_r7.sh [--execute] [--hwc-blank] [--chunk-mb N] [--tries N]
 
 Without --execute this validates hashes, boot capacity, system filesystem,
 and the read-only runtime manifest. --execute writes bootimg first, then the
 android partition with checked chunk transfers. No cache or usrdata write is
 performed.
+--hwc-blank selects the verified alternate boot with the backlight gate fix.
 EOF
 }
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --execute) EXECUTE=1 ;;
+        --hwc-blank) HWC_BLANK=1 ;;
         --chunk-mb) CHUNK_MB=${2:?missing chunk size}; shift ;;
         --tries) TRIES=${2:?missing retry count}; shift ;;
         -h|--help) usage; exit 0 ;;
@@ -38,6 +42,12 @@ done
 
 case "$CHUNK_MB" in ''|*[!0-9]*|0) echo "invalid chunk size" >&2; exit 2 ;; esac
 case "$TRIES" in ''|*[!0-9]*|0) echo "invalid retry count" >&2; exit 2 ;; esac
+
+if [ "$HWC_BLANK" -eq 1 ]; then
+    BOOT_ROLLBACK=$BOOT
+    BOOT="$ROOT/out/r7_hwc_blank_candidate_20261119/boot.img"
+    BOOT_SHA=bb6b1b6711036146607018dec27d04538bbe54e0d5696f72b0f110ba31cbebed
+fi
 
 for path in "$BOOT" "$SYSTEM" "$BOOT_ROLLBACK" \
     "$ROOT/tools/flash_with_retry.sh" "$ROOT/tools/z1_flash_chunked.sh"; do
@@ -56,6 +66,9 @@ check_sha() {
 
 check_sha "$BOOT" "$BOOT_SHA"
 check_sha "$SYSTEM" "$SYSTEM_SHA"
+if [ "$HWC_BLANK" -eq 1 ]; then
+    check_sha "$BOOT_ROLLBACK" "$R7_BASE_BOOT_SHA"
+fi
 (cd "$CANDIDATE" && sha256sum -c SHA256SUMS >/dev/null) ||
     { echo "candidate SHA256SUMS failed" >&2; exit 3; }
 
@@ -88,7 +101,7 @@ echo "  boot:   $BOOT ($boot_size bytes, sha256 $BOOT_SHA)"
 echo "  system: $SYSTEM (sha256 $SYSTEM_SHA)"
 echo "  target: bootimg then android; rollback boot $BOOT_ROLLBACK"
 if [ "$EXECUTE" -ne 1 ]; then
-    echo "dry-run only; rerun with --execute when the device is ready"
+    echo "dry-run only; add --execute to this command when the device is ready"
     exit 0
 fi
 
