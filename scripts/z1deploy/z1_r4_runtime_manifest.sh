@@ -254,6 +254,10 @@ if [ "$candidate" = r6-audio-20261119 ] ||
     check_hash /vendor/lib/libaudio.primary.default.so "$audio_sha" 644
 fi
 if [ "$candidate" = r7-combined-20261119 ]; then
+    check_hash /system/bin/z1_odex_direct \
+        af36ef18802cd58c5a2ebe830d9633d3971b69dc69095fd3d7bcb05ed0094038 755
+    check_hash /system/bin/z1_odex_probe \
+        c5c85e68f1016f1ba543d3450a5cf51528af4762df3cd120e188a81fe7ec6d0b 755
     check_hash /vendor/etc/primary_audio_policy_configuration.xml \
         954d41f1838921c3fd4d75ad9660b1c63204806021208afe9cf815cb84424f37 644
     check_hash /vendor/bin/z1_audio_route.sh \

@@ -9,7 +9,7 @@
     },
     "android": {
       "bytes": 943718400,
-      "sha256": "b71e763a2c6440e2becd78907a87060990451ae5a95c239a733bd2b8bce907e0"
+      "sha256": "b815095031a01198f68f6e7b18e82fbafdc1cf51aebd2bedc70e7fabe419bf9b"
     }
   },
   "runtime_files": [
@@ -57,9 +57,21 @@
     },
     {
       "path": "/system/bin/z1_runtime_manifest",
-      "sha256": "ace6c384d90f483721458656b802c9eb009888e56d19eadd336475a9a5ad3b9d",
+      "sha256": "9110d967dc649b804601228bd0a37849fe48c48be4a019cb90775b46782c5afd",
       "mode": "755",
       "role": "installed read-only runtime identity gate"
+    },
+    {
+      "path": "/system/bin/z1_odex_direct",
+      "sha256": "af36ef18802cd58c5a2ebe830d9633d3971b69dc69095fd3d7bcb05ed0094038",
+      "mode": "755",
+      "role": "static ARM O_DIRECT five-page reader"
+    },
+    {
+      "path": "/system/bin/z1_odex_probe",
+      "sha256": "c5c85e68f1016f1ba543d3450a5cf51528af4762df3cd120e188a81fe7ec6d0b",
+      "mode": "755",
+      "role": "cached and direct services.odex comparison"
     },
     {
       "path": "/vendor/lib/hw/gps.default.so",

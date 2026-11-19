@@ -15,7 +15,7 @@ in the system image.
 | Artifact | Bytes | SHA256 |
 |---|---:|---|
 | `out/r7_combined_candidate_20261119/boot_hsq_control_r7.img` | 5,984,256 | `b2865e43d8be640ae1e9dccbcbc21af60d656cde1a5b9b233264961ae31a3145` |
-| `out/r7_combined_candidate_20261119/system.img` | 943,718,400 | `b71e763a2c6440e2becd78907a87060990451ae5a95c239a733bd2b8bce907e0` |
+| `out/r7_combined_candidate_20261119/system.img` | 943,718,400 | `b815095031a01198f68f6e7b18e82fbafdc1cf51aebd2bedc70e7fabe419bf9b` |
 
 ## Host checks
 
@@ -37,6 +37,9 @@ in the system image.
 - The boot ramdisk contains exactly one `mnld` service declaration, the
   `gps:system` socket contract, the patched prep script, and the expected
   `initrd-end`.
+- A static ARM helper and root wrapper are installed for the five known
+  `services.odex` blocks. The wrapper records cached and `O_DIRECT` hashes
+  before any cache cleanup.
 - `e2fsck -fn` passes.
 
 ## Board sequence
@@ -59,6 +62,19 @@ tinymix
 
 Play a known PCM signal through Android. Require audible physical-speaker
 output and an observable response to volume changes.
+Record a short built-in microphone sample and require a non-silent result with
+the requested 8/16/32/48 kHz mono or stereo format.
+
+Before dropping caches or restarting framework processes after a suspected
+storage fault, run:
+
+```sh
+/system/bin/z1_odex_probe
+```
+
+`DIRECT_MATCH_IMAGE` with a mismatching cached hash identifies page-cache
+corruption. A direct mismatch requires a cold partition read before attributing
+it to the storage device.
 
 Test GPS independently:
 
