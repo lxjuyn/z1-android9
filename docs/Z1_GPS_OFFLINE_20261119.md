@@ -99,8 +99,9 @@ dmesg | grep -E '\[z1gps\]|mt3326|GPS'
 `gps`, `/dev/stpgps` must remain present, and dmesg/logcat must show factory
 HAL initialization rather than the `Z1 GPS stub` path.
 
-Enable location outdoors with networking off. Offline GPS is accepted only
-after the framework receives:
+Enable location outdoors with Wi-Fi off. Confirm `ro.radio.noril=yes`, no
+running RIL process, and no `/dev/ccci*` node so the modem stack is absent from
+the test. Offline GPS is accepted only after the framework receives:
 
 ```text
 satellite status
