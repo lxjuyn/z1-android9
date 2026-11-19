@@ -102,8 +102,12 @@ Require a live `/dev/stpbt`, `BT_open` success, HCI command/event traffic,
 adapter ON, discovery, pairing, disconnect, and reconnect. A2DP audio is
 a separate gate. The current adapter intentionally reports SCO unsupported.
 
-Previous sessions reached `BT_open` but timed out in WMT power-on, so capture
-the first `WMT`/`STP` errors together with `6620_launcher` process state.
+Record the first WMT power-on result and `6620_launcher` process state. In
+`z1_boot_r14_verify.log`, lines 231021–231038 record a separate failure where
+`BT_open` was reached, the factory driver failed to obtain NVRAM readiness,
+and the adapter returned no HCI descriptor. Capture `getprop nvram_init`
+and the first `bt_read_nvram` error in the same attempt. Keep the factory
+configuration untouched during evidence capture.
 
 ## Wi-Fi
 
@@ -129,7 +133,12 @@ static frame reuse.
 
 Lock and unlock the screen repeatedly. Require the panel to turn physically
 black and recover the current frame. A retained previous frame is a display
-power failure even if SurfaceFlinger reports display OFF.
+power failure even if SurfaceFlinger reports display OFF. Sample both
+`/sys/class/leds/lcd-backlight/display_blank` and `brightness` while awake,
+locked and awake again. The gate should read `0`, `1`, then `0`. If it stays
+at `0` while locked, trace the HWC power callback and its sysfs write. If it
+reaches `1` while the screen still visibly retains the frame, check physical
+backlight output and panel blanking separately.
 
 ## Keys, touch, and navigation
 

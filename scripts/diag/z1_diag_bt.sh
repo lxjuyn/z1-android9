@@ -66,6 +66,8 @@ cap "$CUR" "nodes major:minor (expect stpbt 192:0)" \
 cap "$CUR" "bt kernel modules" "grep -i -E 'stp_bt|btif|bluetooth|stp_uart|stp_wmt' /proc/modules"
 cap "$CUR" "bt processes" "(ps -A 2>/dev/null || ps) | grep -i -E 'bluetooth|btif|hci' | grep -v grep"
 cap "$CUR" "init service states" "getprop | grep -E 'init\.svc\.(bt|bluetooth)'"
+cap "$CUR" "factory NVRAM and WMT readiness" \
+    "getprop nvram_init; getprop init.svc.nvram_daemon; (ps -A 2>/dev/null || ps) | grep -E '[6]620_launcher|[n]vram_daemon'; if [ -e /data/BT_Addr ]; then wc -c < /data/BT_Addr; fi"
 cap "$CUR" "hciconfig -a" "hciconfig -a"
 cap "$CUR" "rfkill" "rfkill list"
 cap "$CUR" "/sys/class/bluetooth" "ls -l /sys/class/bluetooth"
@@ -81,6 +83,7 @@ cap "$CUR" "dmesg bt lines" \
     "dmesg 2>/dev/null | grep -i -E 'btif|stpbt|bluetooth|stp_bt|hci' | tail -n 300"
 
 PRE_BT_ON=$(settings get global bluetooth_on 2>/dev/null)
+fact PRE_NVRAM_INIT "$(getprop nvram_init 2>/dev/null)"
 fact PRE_STPBT_NODE "$(pc /dev/stpbt)"
 fact PRE_BT_ON_SETTING "$PRE_BT_ON"
 fact PRE_BT_STACK_PROCS "$(pcount com.android.bluetooth)"
@@ -132,7 +135,7 @@ cap "$CUR" "dumpsys bluetooth_manager after enable" "$TO dumpsys bluetooth_manag
 cap "$CUR" "dmesg during enable" \
     "dmesg 2>/dev/null | grep -i -E 'btif|stpbt|bluetooth|hci|stp_bt' | tail -n 200"
 cap "$CUR" "logcat during enable" \
-    "logcat -d 2>/dev/null | grep -i -E 'bluetooth|btif|bt_vendor|hci|libbluetoothdrv' | tail -n 400"
+    "logcat -d 2>/dev/null | grep -i -E 'bluetooth|btif|bt_vendor|hci|libbluetoothdrv|bt_read_nvram|nvram_init|WMT turn on BT|STP is ready' | tail -n 400"
 
 if [ -n "$seen" ]; then
     fact TRIGGER_RESULT stack_started
