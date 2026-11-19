@@ -90,10 +90,9 @@ class RepairR9BootTests(unittest.TestCase):
         _, new_fields, rc = self.after["init.z1.rc"]
         self.assertEqual(old_fields[:6], new_fields[:6])
         self.assertEqual(old_fields[7:11], new_fields[7:11])
-        command = (b"exec u:r:init:s0 root root -- "
-                   b"/system/bin/sh /z1_display_takeover.sh")
-        action = rc.split(b"on post-fs-data\n", 1)[1].split(b"\non ", 1)[0]
-        self.assertEqual(action.count(command), 1)
+        self.assertTrue(rc.endswith(repair.TAKEOVER_APPENDIX))
+        action = repair.TAKEOVER_APPENDIX
+        self.assertEqual(action.count(repair.TAKEOVER_COMMAND), 1)
         self.assertNotIn(b"dexopt", rc)
         self.assertNotIn(b"wallpaper", rc)
         for name in repair.SCRIPT_NAMES:
@@ -136,7 +135,8 @@ class RepairR9BootTests(unittest.TestCase):
             manifest = repair.repair(R9, output, EXPECTED_R9, restorecon_etc=True)
             candidate = repair.parse_boot((output / "boot.img").read_bytes())
             index = ramdisk_index([(r.name, r.fields, r.data) for r in repair.records(gzip.decompress(candidate.ramdisk[512:]))])
-            self.assertIn(b"    restorecon_recursive /system/etc\n    exec u:r:init:s0 root root -- /system/bin/sh /z1_display_takeover.sh\n", index["init.z1.rc"][2])
+            self.assertIn(b"    restorecon_recursive /system/etc\n", index["init.z1.rc"][2])
+            self.assertTrue(index["init.z1.rc"][2].endswith(repair.TAKEOVER_APPENDIX))
             self.assertNotIn(b"selinux.restorecon_recursive", index["default.prop"][2])
             self.assertEqual(manifest["ramdisk_changes"]["modified"], ["init.z1.rc"])
             self.assertEqual(manifest["preserved"]["selinux_restorecon_recursive"], "/system/etc")
@@ -161,8 +161,8 @@ class RepairR9BootTests(unittest.TestCase):
             repair.add_takeover_command(self.after["init.z1.rc"][2])
         before = self.before["init.z1.rc"][2]
         updated = repair.add_takeover_command(before)
-        marker = b"    exec u:r:init:s0 root root -- /system/bin/sh /z1_display_takeover.sh\n"
-        self.assertEqual(updated.replace(marker, b"", 1), before)
+        self.assertTrue(updated.endswith(repair.TAKEOVER_APPENDIX))
+        self.assertEqual(updated[:-len(repair.TAKEOVER_APPENDIX)], before)
 
 
 if __name__ == "__main__":

@@ -36,6 +36,11 @@ TAKEOVER_COMMAND = (
     b"    exec u:r:init:s0 root root -- "
     b"/system/bin/sh /z1_display_takeover.sh"
 )
+TAKEOVER_APPENDIX = (
+    b"\n# Display takeover after Android is fully up; avoids racing /system mount.\n"
+    b"on property:sys.boot_completed=1\n"
+    + TAKEOVER_COMMAND + b"\n"
+)
 SCRIPT_NAMES = ("z1_display_takeover.sh", "z1_fbcon_takeover.sh")
 
 
@@ -156,10 +161,7 @@ def add_takeover_command(rc):
     # The old post-fs-data insertion was too early and could race with /system mount.
     if not rc.endswith(b"\n"):
         rc += b"\n"
-    block = (b"\n# Display takeover after Android is fully up; avoids racing /system mount.\n"
-             b"on property:sys.boot_completed=1\n"
-             b"    exec u:r:init:s0 root root -- /system/bin/sh /z1_display_takeover.sh\n")
-    updated = rc + block
+    updated = rc + TAKEOVER_APPENDIX
     if updated.count(b"/z1_display_takeover.sh") != 1:
         raise ValueError("failed to insert the takeover command")
     return updated
