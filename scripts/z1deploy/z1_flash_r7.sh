@@ -70,18 +70,17 @@ e2fsck -fn "$SYSTEM" >/dev/null ||
     { echo "system e2fsck failed" >&2; exit 3; }
 
 debugfs -R 'cat /bin/z1_runtime_manifest' "$SYSTEM" 2>/dev/null |
-    grep -Fq 'r7-combined-20261119' ||
+    grep -F 'r7-combined-20261119' >/dev/null ||
     { echo "R7 runtime manifest is not installed" >&2; exit 3; }
 for pair in \
     "/lib/modules/z1-radio/wlan_gen2.ko 143c5611267eb4c5e20135fffdd39db491753147ef295278c3a69330c1fbf80f" \
     "/lib/modules/z1-radio/z1_gpsdrv.ko 5cab8a98e9bad3fc7cfa369af2b850dc9c271cd81678150b77279d22667de717" \
     "/vendor/lib/hw/audio.primary.default.so 3f1b3a841aea4eedd7cb7ba5c22ebe12e6062b6ec88ec5d28eed6864251e1722"; do
-    set -- $pair
-    debugfs -R "dump $1 /tmp/z1-r7-preflight.$$" "$SYSTEM" >/dev/null 2>&1
-    actual=$(sha256sum /tmp/z1-r7-preflight.$$ | awk '{print $1}')
-    rm -f /tmp/z1-r7-preflight.$$
-    [ "$actual" = "$2" ] ||
-        { echo "image payload mismatch: $1 expected=$2 actual=$actual" >&2; exit 3; }
+    read -r payload expected <<< "$pair"
+    actual=$(debugfs -R "cat $payload" "$SYSTEM" 2>/dev/null | sha256sum)
+    actual=${actual%% *}
+    [ "$actual" = "$expected" ] ||
+        { echo "image payload mismatch: $payload expected=$expected actual=$actual" >&2; exit 3; }
 done
 
 echo "R7 preflight PASS"
@@ -101,4 +100,4 @@ echo "=== Flash 2/2: android (verified chunks) ==="
 "$ROOT/tools/z1_flash_chunked.sh" android "$SYSTEM" "$CHUNK_MB" "$TRIES"
 
 echo "R7 flash and readback verification completed"
-echo "Unplug the download cable, power on, then start UART capture before boot."
+echo "Unplug the download cable and start UART capture before powering on."
