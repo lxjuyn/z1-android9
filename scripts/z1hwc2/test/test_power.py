@@ -31,20 +31,27 @@ using hwc2_display_t = uint64_t;
 struct hwc2_device_t {};
 struct z1_hwc2 : hwc2_device_t {
     bool powered_on = true, backlight_blank_applied = false;
+    bool backlight_gate_applied = false;
     int backlight_saved = 0;
 };
 static z1_hwc2 *H(hwc2_device_t *d) { return static_cast<z1_hwc2 *>(d); }
 static void klogf(int, const char *, ...) {}
 /* DEFINITIONS */
 #define CHECK(x) do { if (!(x)) throw std::runtime_error(std::string(__func__) + ": " #x); } while (0)
-static std::string level, maximum;
+static std::string level, maximum, blank = "0\n";
 static int read_error, max_error, write_error, short_write, read_eintr, write_eintr;
+static int blank_missing, blank_write_error, blank_short_write, blank_write_eintr;
 static bool ignore_write;
 static int opens, closes;
 static std::vector<int> writes;
 static int mock_open(const char *path, int flags) {
     ++opens;
     CHECK(flags & O_CLOEXEC);
+    if (!strcmp(path, Z1_DISPLAY_BLANK_PATH)) {
+        if (blank_missing) { errno = ENOENT; return -1; }
+        if (blank_write_error) { errno = blank_write_error; return -1; }
+        return 13;
+    }
     if (!strcmp(path, Z1_BACKLIGHT_MAX_PATH)) {
         if (max_error) { errno = max_error; return -1; }
         return 12;
@@ -65,7 +72,13 @@ static ssize_t mock_read(int fd, void *buf, size_t size) {
     memcpy(buf, s.data(), n); return n;
 }
 static ssize_t mock_write(int fd, const void *buf, size_t size) {
-    CHECK(fd == 11);
+    CHECK(fd == 11 || fd == 13);
+    if (fd == 13) {
+        if (blank_write_eintr) { --blank_write_eintr; errno = EINTR; return -1; }
+        if (blank_short_write) return size - 1;
+        blank = std::string(static_cast<const char *>(buf), size);
+        return size;
+    }
     if (write_eintr) { --write_eintr; errno = EINTR; return -1; }
     if (short_write) return size - 1;
     std::string s(static_cast<const char *>(buf), size);
@@ -73,7 +86,7 @@ static ssize_t mock_write(int fd, const void *buf, size_t size) {
     if (!ignore_write) level = s;
     return size;
 }
-static int mock_close(int fd) { CHECK(fd >= 10 && fd <= 12); ++closes; return 0; }
+static int mock_close(int fd) { CHECK(fd >= 10 && fd <= 13); ++closes; return 0; }
 #define open mock_open
 #define read mock_read
 #define write mock_write
@@ -85,18 +98,20 @@ static int mock_close(int fd) { CHECK(fd >= 10 && fd <= 12); ++closes; return 0;
 #undef close
 static int power(z1_hwc2 &h, int mode) { return z1_set_power_mode(&h, 0, mode); }
 static void reset() {
-    level = "2\n"; maximum = "6\n";
+    level = "2\n"; maximum = "6\n"; blank = "0\n";
     read_error = max_error = write_error = short_write = read_eintr = write_eintr = 0;
+    blank_missing = blank_write_error = blank_short_write = blank_write_eintr = 0;
     opens = closes = 0; ignore_write = false; writes.clear();
 }
 static void valid_power_cycle() {
     z1_hwc2 h;
     CHECK(power(h, HWC2_POWER_MODE_OFF) == HWC2_ERROR_NONE);
     CHECK(h.backlight_saved == 2 && h.backlight_blank_applied && !h.powered_on);
-    CHECK(level == "0\n");
+    CHECK(h.backlight_gate_applied && blank == "1\n" && level == "2\n");
     CHECK(power(h, HWC2_POWER_MODE_ON) == HWC2_ERROR_NONE);
     CHECK(h.powered_on && !h.backlight_blank_applied && level == "2\n");
-    CHECK(writes == (std::vector<int>{0, 2})); CHECK(opens == closes);
+    CHECK(!h.backlight_gate_applied && blank == "0\n");
+    CHECK(writes.empty()); CHECK(opens == closes);
 }
 static void invalid_display_and_modes() {
     z1_hwc2 h;
@@ -114,44 +129,45 @@ static void repeated_on_preserves_user_level() {
 }
 static void repeated_off_keeps_restore_level() {
     z1_hwc2 h; CHECK(power(h, HWC2_POWER_MODE_OFF) == HWC2_ERROR_NONE);
-    level = "5\n"; // a light-HAL write while already off
+    blank = "1\n"; // the gate remains latched across repeated OFF
     CHECK(power(h, HWC2_POWER_MODE_OFF) == HWC2_ERROR_NONE);
-    CHECK(h.backlight_saved == 2 && level == "0\n");
+    CHECK(h.backlight_saved == 2 && blank == "1\n");
     CHECK(power(h, HWC2_POWER_MODE_ON) == HWC2_ERROR_NONE);
-    CHECK(level == "2\n");
+    CHECK(blank == "0\n");
 }
 static void wake_preserves_new_light_hal_level() {
     z1_hwc2 h; CHECK(power(h, HWC2_POWER_MODE_OFF) == HWC2_ERROR_NONE);
-    level = "4\n"; size_t before = writes.size();
+    level = "4\n"; // the LED driver keeps this level for wake while blanked
     CHECK(power(h, HWC2_POWER_MODE_ON) == HWC2_ERROR_NONE);
-    CHECK(writes.size() == before && level == "4\n" && h.powered_on);
+    CHECK(level == "4\n" && blank == "0\n" && h.powered_on);
 }
 static void light_hal_cleared_before_off() {
     z1_hwc2 h; h.backlight_saved = 2; level = "0\n";
     CHECK(power(h, HWC2_POWER_MODE_OFF) == HWC2_ERROR_NONE);
     CHECK(power(h, HWC2_POWER_MODE_ON) == HWC2_ERROR_NONE);
-    CHECK(level == "2\n");
+    CHECK(blank == "0\n" && level == "0\n");
 }
 static void zero_without_cache_uses_maximum() {
     z1_hwc2 h; level = "0\n";
     CHECK(power(h, HWC2_POWER_MODE_OFF) == HWC2_ERROR_NONE);
     CHECK(h.backlight_saved == 6);
-    CHECK(power(h, HWC2_POWER_MODE_ON) == HWC2_ERROR_NONE && level == "6\n");
+    CHECK(power(h, HWC2_POWER_MODE_ON) == HWC2_ERROR_NONE &&
+          blank == "0\n" && level == "0\n");
 }
 static void off_permission_failure_and_retry() {
-    z1_hwc2 h; write_error = EACCES;
+    z1_hwc2 h; blank_write_error = EACCES;
     CHECK(power(h, HWC2_POWER_MODE_OFF) == HWC2_ERROR_NO_RESOURCES);
     CHECK(h.powered_on && !h.backlight_blank_applied && level == "2\n");
-    write_error = 0; CHECK(power(h, HWC2_POWER_MODE_OFF) == HWC2_ERROR_NONE);
+    blank_write_error = 0; CHECK(power(h, HWC2_POWER_MODE_OFF) == HWC2_ERROR_NONE);
     CHECK(!h.powered_on && h.backlight_saved == 2);
 }
 static void wake_permission_failure_and_retry() {
     z1_hwc2 h; CHECK(power(h, HWC2_POWER_MODE_OFF) == HWC2_ERROR_NONE);
-    write_error = EACCES;
+    blank_write_error = EACCES;
     CHECK(power(h, HWC2_POWER_MODE_ON) == HWC2_ERROR_NO_RESOURCES);
     CHECK(!h.powered_on && h.backlight_blank_applied);
-    write_error = 0; CHECK(power(h, HWC2_POWER_MODE_ON) == HWC2_ERROR_NONE);
-    CHECK(level == "2\n" && h.powered_on);
+    blank_write_error = 0; CHECK(power(h, HWC2_POWER_MODE_ON) == HWC2_ERROR_NONE);
+    CHECK(blank == "0\n" && h.powered_on);
 }
 static void no_restore_source_refuses_off() {
     z1_hwc2 h; read_error = ENOENT; max_error = ENOENT;
@@ -159,27 +175,35 @@ static void no_restore_source_refuses_off() {
     CHECK(h.powered_on && !h.backlight_blank_applied && writes.empty());
 }
 static void short_write_does_not_claim_success() {
-    z1_hwc2 h; short_write = 1;
+    z1_hwc2 h; blank_short_write = 1;
     CHECK(power(h, HWC2_POWER_MODE_OFF) == HWC2_ERROR_NO_RESOURCES);
-    CHECK(h.powered_on && !h.backlight_blank_applied && level == "2\n");
+    CHECK(h.powered_on && !h.backlight_blank_applied && blank == "0\n");
     CHECK(opens == closes);
 }
 static void hardware_readback_mismatch() {
-    z1_hwc2 h; ignore_write = true;
+    z1_hwc2 h; blank_missing = 1; ignore_write = true;
     CHECK(power(h, HWC2_POWER_MODE_OFF) == HWC2_ERROR_NO_RESOURCES);
     CHECK(h.powered_on && !h.backlight_blank_applied && level == "2\n");
 }
 static void interrupted_io_retries() {
-    z1_hwc2 h; read_eintr = write_eintr = 1;
+    z1_hwc2 h; read_eintr = write_eintr = blank_write_eintr = 1;
     CHECK(power(h, HWC2_POWER_MODE_OFF) == HWC2_ERROR_NONE);
-    CHECK(!h.powered_on && level == "0\n" && opens == closes);
+    CHECK(!h.powered_on && blank == "1\n" && opens == closes);
+}
+static void old_kernel_brightness_fallback() {
+    z1_hwc2 h; blank_missing = 1;
+    CHECK(power(h, HWC2_POWER_MODE_OFF) == HWC2_ERROR_NONE);
+    CHECK(level == "0\n" && !h.backlight_gate_applied &&
+          h.backlight_blank_applied && !h.powered_on);
+    CHECK(power(h, HWC2_POWER_MODE_ON) == HWC2_ERROR_NONE);
+    CHECK(level == "2\n" && h.powered_on);
 }
 static void malformed_sysfs_values() {
     for (const char *bad : {"", "-1\n", "abc", "2oops", "99999999999999999999999999999999", "2147483648"}) {
         level = bad; int v = 71;
         CHECK(z1_backlight_read(Z1_BACKLIGHT_PATH, &v) < 0 && v == 71);
     }
-    maximum = "0\n"; level = "0\n"; z1_hwc2 h;
+    maximum = "0\n"; level = "0\n"; blank_missing = 1; z1_hwc2 h;
     CHECK(power(h, HWC2_POWER_MODE_OFF) == HWC2_ERROR_NO_RESOURCES);
     CHECK(h.powered_on && writes.empty());
 }
@@ -192,7 +216,8 @@ int main() {
         CASE(zero_without_cache_uses_maximum), CASE(off_permission_failure_and_retry),
         CASE(wake_permission_failure_and_retry), CASE(no_restore_source_refuses_off),
         CASE(short_write_does_not_claim_success), CASE(hardware_readback_mismatch),
-        CASE(interrupted_io_retries), CASE(malformed_sysfs_values)};
+        CASE(interrupted_io_retries), CASE(old_kernel_brightness_fallback),
+        CASE(malformed_sysfs_values)};
     int failures = 0;
     for (auto &test : cases) { reset(); try { test.fn(); printf("PASS %s\n", test.name); }
         catch (const std::exception &e) { ++failures; printf("FAIL %s: %s\n", test.name, e.what()); } }
@@ -216,10 +241,12 @@ def main():
     definitions = []
     for name in ('hwc2_error_t', 'hwc2_power_mode_t'):
         definitions.append(re.search(r'typedef enum \{[^}]*\}\s*' + name + ';', hdr, re.S).group(0))
-    for name in ('Z1_BACKLIGHT_PATH', 'Z1_BACKLIGHT_MAX_PATH'):
+    for name in ('Z1_BACKLIGHT_PATH', 'Z1_BACKLIGHT_MAX_PATH',
+                 'Z1_DISPLAY_BLANK_PATH'):
         definitions.append(re.search(r'^#define ' + name + r'\s+[^\n]+', src, re.M).group(0))
     bodies = '\n\n'.join(function(src, name) for name in
-                         ('z1_backlight_read', 'z1_backlight_write', 'z1_set_power_mode'))
+                         ('z1_backlight_read', 'z1_backlight_write',
+                          'z1_display_blank_write', 'z1_set_power_mode'))
     generated = MOCK.replace('/* DEFINITIONS */', '\n'.join(definitions))
     generated = generated.replace('/* FUNCTIONS */', bodies)
     cpp = out / 'power.cpp'

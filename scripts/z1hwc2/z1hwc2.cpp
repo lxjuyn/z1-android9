@@ -113,6 +113,7 @@ extern "C" int __android_log_write(int prio, const char *tag, const char *text);
 #define Z1_HWC_VERSION "2026-11-15-r18"
 #define Z1_BACKLIGHT_PATH "/sys/class/leds/lcd-backlight/brightness"
 #define Z1_BACKLIGHT_MAX_PATH "/sys/class/leds/lcd-backlight/max_brightness"
+#define Z1_DISPLAY_BLANK_PATH "/sys/class/leds/lcd-backlight/display_blank"
 
 /* ------------------------------------------------------------ constants --- */
 
@@ -450,6 +451,7 @@ struct z1_hwc2 : public hwc2_device_t {
 	bool modeset_done;
 	bool powered_on;
 	bool backlight_blank_applied;
+	bool backlight_gate_applied;
 	int backlight_saved;
 	bool validated;
 	bool client_expected;	/* SurfaceFlinger will supply a client target */
@@ -1960,6 +1962,23 @@ static int z1_backlight_write(int value)
 	return error ? error : actual != value ? -EIO : 0;
 }
 
+static int z1_display_blank_write(int value)
+{
+	char buf[8];
+	int length = snprintf(buf, sizeof(buf), "%d\n", value);
+	int fd = open(Z1_DISPLAY_BLANK_PATH, O_WRONLY | O_CLOEXEC);
+
+	if (fd < 0)
+		return -errno;
+	ssize_t n;
+	do {
+		n = write(fd, buf, (size_t)length);
+	} while (n < 0 && errno == EINTR);
+	int error = n < 0 ? -errno : n != length ? -EIO : 0;
+	close(fd);
+	return error;
+}
+
 static int32_t z1_set_power_mode(hwc2_device_t *d, hwc2_display_t display,
 				 int32_t mode)
 {
@@ -1992,16 +2011,27 @@ static int32_t z1_set_power_mode(hwc2_device_t *d, hwc2_display_t display,
 					error = -EINVAL;
 			}
 		}
-		if (!error)
-			error = z1_backlight_write(0);
+		if (!error) {
+			error = z1_display_blank_write(1);
+			if (!error)
+				h->backlight_gate_applied = true;
+			else if (error == -ENOENT)
+				error = z1_backlight_write(0);
+		}
 		if (!error)
 			h->backlight_blank_applied = true;
 	} else if (h->backlight_blank_applied) {
-		/* Do not replace a newer brightness chosen by the framework. */
-		if (z1_backlight_read(Z1_BACKLIGHT_PATH, &current) || current == 0)
-			error = z1_backlight_write(h->backlight_saved);
+		if (h->backlight_gate_applied) {
+			error = z1_display_blank_write(0);
+		} else {
+			/* Do not replace a newer brightness chosen by the framework. */
+			if (z1_backlight_read(Z1_BACKLIGHT_PATH, &current) || current == 0)
+				error = z1_backlight_write(h->backlight_saved);
+		}
 		if (!error)
 			h->backlight_blank_applied = false;
+		if (!error)
+			h->backlight_gate_applied = false;
 	}
 	if (error) {
 		klogf(0, "z1hwc2: setPowerMode %d backlight failed: %s\n",
