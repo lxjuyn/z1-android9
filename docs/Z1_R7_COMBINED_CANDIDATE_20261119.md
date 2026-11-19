@@ -15,7 +15,7 @@ in the system image.
 | Artifact | Bytes | SHA256 |
 |---|---:|---|
 | `out/r7_combined_candidate_20261119/boot_hsq_control_r7.img` | 5,984,256 | `b2865e43d8be640ae1e9dccbcbc21af60d656cde1a5b9b233264961ae31a3145` |
-| `out/r7_combined_candidate_20261119/system.img` | 943,718,400 | `b815095031a01198f68f6e7b18e82fbafdc1cf51aebd2bedc70e7fabe419bf9b` |
+| `out/r7_combined_candidate_20261119/system.img` | 943,718,400 | `4cf37c01a35205e1801b45ff2ff87cd0151824fc8d91bba56135f14fe7b3c905` |
 
 ## Host checks
 
