@@ -125,7 +125,13 @@ static void repeated_on_preserves_user_level() {
     z1_hwc2 h; level = "1\n";
     CHECK(power(h, HWC2_POWER_MODE_ON) == HWC2_ERROR_NONE);
     CHECK(power(h, HWC2_POWER_MODE_ON) == HWC2_ERROR_NONE);
-    CHECK(opens == 0 && writes.empty() && level == "1\n");
+    CHECK(opens == 2 && closes == 2 && writes.empty() && level == "1\n");
+}
+static void new_hwc_instance_clears_latched_gate() {
+    z1_hwc2 h; blank = "1\n";
+    CHECK(power(h, HWC2_POWER_MODE_ON) == HWC2_ERROR_NONE);
+    CHECK(h.powered_on && blank == "0\n" && writes.empty());
+    CHECK(opens == 1 && closes == 1);
 }
 static void repeated_off_keeps_restore_level() {
     z1_hwc2 h; CHECK(power(h, HWC2_POWER_MODE_OFF) == HWC2_ERROR_NONE);
@@ -218,7 +224,8 @@ int main() {
     struct Test { const char *name; void (*fn)(); };
 #define CASE(x) {#x, x}
     Test cases[] = {CASE(valid_power_cycle), CASE(invalid_display_and_modes),
-        CASE(repeated_on_preserves_user_level), CASE(repeated_off_keeps_restore_level),
+        CASE(repeated_on_preserves_user_level), CASE(new_hwc_instance_clears_latched_gate),
+        CASE(repeated_off_keeps_restore_level),
         CASE(wake_preserves_new_light_hal_level), CASE(light_hal_cleared_before_off),
         CASE(old_kernel_zero_without_cache_uses_maximum), CASE(off_permission_failure_and_retry),
         CASE(wake_permission_failure_and_retry), CASE(gate_works_without_brightness_files),

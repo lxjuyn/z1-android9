@@ -10,8 +10,10 @@ SYSTEM="$CANDIDATE/system.img"
 BOOT_ROLLBACK="$ROOT/out/r5_offline_candidate_20261119/boot_hsq_control_r5.img"
 BOOT_SHA=b2865e43d8be640ae1e9dccbcbc21af60d656cde1a5b9b233264961ae31a3145
 R7_BASE_BOOT_SHA=$BOOT_SHA
-HWC_BLANK_BOOT="$ROOT/out/r7_hwc_blank_candidate_20261119/boot.img"
-HWC_BLANK_SHA=bb6b1b6711036146607018dec27d04538bbe54e0d5696f72b0f110ba31cbebed
+HWC_BLANK_BOOT="$ROOT/out/r7_lockscreen_restart_20261120/boot.img"
+HWC_BLANK_SHA=a7e5b0bbc33f13a35c676f84f1a103a9a7d3b5e0e77c65e8f6f25108305115e7
+HWC_BLANK_ROLLBACK="$ROOT/out/r7_hwc_blank_candidate_20261119/boot.img"
+HWC_BLANK_ROLLBACK_SHA=bb6b1b6711036146607018dec27d04538bbe54e0d5696f72b0f110ba31cbebed
 SYSTEM_SHA=8060c851075bb053e931376e7965c3c80850a2f5e9d73cdd62e54add83400bf4
 EXECUTE=0
 HWC_BLANK=0
@@ -27,7 +29,7 @@ Without --execute this validates hashes, boot capacity, system filesystem,
 and the read-only runtime manifest. --execute writes bootimg first, then the
 android partition with checked chunk transfers. No cache or usrdata write is
 performed.
---hwc-blank selects the verified alternate boot with the backlight gate fix.
+--hwc-blank selects the verified boot with the restart-safe backlight gate fix.
 --speaker-gpio selects the paired R7 system with the GPIO140 speaker-enable
 machine module and matching appended DTB.
 EOF
@@ -64,7 +66,7 @@ if [ "$SPEAKER_GPIO" -eq 1 ]; then
 fi
 
 if [ "$HWC_BLANK" -eq 1 ]; then
-    BOOT_ROLLBACK=$BOOT
+    BOOT_ROLLBACK=$HWC_BLANK_ROLLBACK
     BOOT=$HWC_BLANK_BOOT
     BOOT_SHA=$HWC_BLANK_SHA
 fi
@@ -87,7 +89,7 @@ check_sha() {
 check_sha "$BOOT" "$BOOT_SHA"
 check_sha "$SYSTEM" "$SYSTEM_SHA"
 if [ "$HWC_BLANK" -eq 1 ]; then
-    check_sha "$BOOT_ROLLBACK" "$R7_BASE_BOOT_SHA"
+    check_sha "$BOOT_ROLLBACK" "$HWC_BLANK_ROLLBACK_SHA"
 elif [ "$SPEAKER_GPIO" -eq 1 ]; then
     check_sha "$BOOT_ROLLBACK" "$HWC_BLANK_SHA"
 fi

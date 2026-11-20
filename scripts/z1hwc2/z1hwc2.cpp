@@ -110,7 +110,7 @@ extern "C" int __android_log_write(int prio, const char *tag, const char *text);
 #define LOG_TAG "z1hwc2"
 #include <log/log.h>
 
-#define Z1_HWC_VERSION "2026-11-15-r18"
+#define Z1_HWC_VERSION "2026-11-20-r19"
 #define Z1_BACKLIGHT_PATH "/sys/class/leds/lcd-backlight/brightness"
 #define Z1_BACKLIGHT_MAX_PATH "/sys/class/leds/lcd-backlight/max_brightness"
 #define Z1_DISPLAY_BLANK_PATH "/sys/class/leds/lcd-backlight/display_blank"
@@ -2018,18 +2018,23 @@ static int32_t z1_set_power_mode(hwc2_device_t *d, hwc2_display_t display,
 		}
 		if (!error)
 			h->backlight_blank_applied = true;
-	} else if (h->backlight_blank_applied) {
-		if (h->backlight_gate_applied) {
-			error = z1_display_blank_write(0);
-		} else {
-			/* Do not replace a newer brightness chosen by the framework. */
-			if (z1_backlight_read(Z1_BACKLIGHT_PATH, &current) || current == 0)
-				error = z1_backlight_write(h->backlight_saved);
+	} else {
+		/* The kernel gate survives a SurfaceFlinger/HWC restart. Always clear
+		 * it on ON, even if this HWC instance did not apply OFF itself.
+		 */
+		error = z1_display_blank_write(0);
+		if (error == -ENOENT) {
+			error = 0;
+			if (h->backlight_blank_applied) {
+				/* Do not replace a newer brightness chosen by the framework. */
+				if (z1_backlight_read(Z1_BACKLIGHT_PATH, &current) || current == 0)
+					error = z1_backlight_write(h->backlight_saved);
+			}
 		}
-		if (!error)
+		if (!error) {
 			h->backlight_blank_applied = false;
-		if (!error)
 			h->backlight_gate_applied = false;
+		}
 	}
 	if (error) {
 		klogf(0, "z1hwc2: setPowerMode %d backlight failed: %s\n",

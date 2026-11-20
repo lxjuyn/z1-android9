@@ -32,6 +32,23 @@ class FlashR7Test(unittest.TestCase):
         self.assertIn("select different boots", result.stderr)
 
     @unittest.skipUnless(
+        (ROOT / "out/r7_lockscreen_restart_20261120/boot.img").is_file()
+        and (ROOT / "out/r7_combined_candidate_20261119/system.img").is_file(),
+        "HWC lock-screen candidate artifacts are not present",
+    )
+    def test_hwc_blank_variant_dry_run_passes(self):
+        result = subprocess.run(
+            ["bash", SCRIPT, "--hwc-blank"],
+            text=True,
+            capture_output=True,
+            timeout=60,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("R7 preflight PASS", result.stdout)
+        self.assertIn("r7_lockscreen_restart_20261120/boot.img", result.stdout)
+        self.assertIn("dry-run only", result.stdout)
+
+    @unittest.skipUnless(
         (ROOT / "out/r7_speaker_gpio_candidate_20261119/boot.img").is_file()
         and (ROOT / "out/r7_speaker_gpio_candidate_20261119/system.img").is_file(),
         "speaker candidate artifacts are not present",
