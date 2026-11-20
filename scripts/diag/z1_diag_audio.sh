@@ -126,9 +126,6 @@ wav_bytes=$(wc -c < "$WAV" 2>/dev/null) || wav_bytes=0
 
 cap "$CUR" "generated wav" "ls -l $WAV"
 
-TI=""
-have timeout && TI="timeout 20"
-
 if [ -x /system/bin/tinyplay ] && [ "$wav_bytes" -eq 576044 ] && have timeout; then
     say "PATH1 tinyplay: playing $WAV"
     PLAY=$OUT/03_playback.txt
@@ -164,15 +161,27 @@ fi
 # ---------------------------------------------------------------------------
 # 3. trigger - path 2: tinycap
 # ---------------------------------------------------------------------------
-if [ -x /system/bin/tinycap ]; then
+if [ -x /system/bin/tinycap ] && have timeout; then
     say "PATH2 tinycap: recording 3s from AWB pcmC0D1c"
-    CAPF=$OUT/capture.pcm
-    $TI /system/bin/tinycap "$CAPF" -D 0 -d 1 -c 2 -r 48000 -b 16 -n 3 >> "$CUR" 2>&1 || true
-    cap "$CUR" "capture result" \
-        "ls -l $CAPF; od -A d -t x1 -N 64 $CAPF 2>/dev/null; od -An -v -t u1 $CAPF 2>/dev/null | tr ' ' '\\n' | awk '\$1 != 0 { n++ } END { print \"nonzero_bytes=\" (n+0) }'"
+    CAPF=$OUT/capture.wav
+    timeout 12 /system/bin/tinycap "$CAPF" -D 0 -d 1 -c 2 -r 48000 -b 16 -T 3 >> "$CUR" 2>&1
+    capture_rc=$?
+    fact TRIGGER_PATH2_RC "$capture_rc"
+    cap "$CUR" "capture result" "ls -l $CAPF 2>/dev/null; od -A d -t x1 -N 44 $CAPF 2>/dev/null"
+    if [ "$capture_rc" -eq 0 ] && [ -r "$CAPF" ]; then
+        # This tinycap writes a fixed 44-byte WAV header before the PCM.
+        capture_bytes=$(wc -c < "$CAPF")
+        if [ "$capture_bytes" -gt 44 ]; then
+            nonzero=$(od -An -v -t u1 -j 44 "$CAPF" | awk '{ for (i=1;i<=NF;i++) if ($i != 0) n++ } END { print n+0 }')
+            fact CAPTURE_PCM_BYTES "$((capture_bytes - 44))"
+            fact CAPTURE_NONZERO_PCM_BYTES "$nonzero"
+        else
+            say "PATH2 produced no PCM payload"
+        fi
+    fi
     fact TRIGGER_PATH2 tinycap
 else
-    say "PATH2 skipped: no /system/bin/tinycap"
+    say "PATH2 skipped: tinycap and timeout are required"
     fact TRIGGER_PATH2 absent
 fi
 
