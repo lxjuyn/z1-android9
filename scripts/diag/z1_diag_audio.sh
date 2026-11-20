@@ -10,11 +10,11 @@
 #   sh z1_diag_audio.sh           # passive only (mixer dump + state)
 #   sh z1_diag_audio.sh trigger   # also try a real playback + capture
 #
-# The trigger is best-effort and tries three paths in order, recording which
-# one worked:
-#   1. tinyplay  + a locally generated 1s noise WAV  (kernel PCM path)
+# The trigger records independent direct PCM playback, capture, and Android
+# audio service state:
+#   1. tinyplay  + a locally generated low-level PCM tone  (kernel PCM path)
 #   2. tinycap   (capture path)
-#   3. input keyevent 24            (AudioFlinger path via the volume UI)
+#   3. dumpsys media.audio_flinger  (passive; use a real app for playback)
 # Nothing outside /data/local/z1diag is written.
 # ---------------------------------------------------------------------------
 
@@ -108,22 +108,32 @@ CUR=$OUT/02_trigger.txt
 hdr "Audio trigger attempts" "$CUR"
 WAV=$OUT/tone.wav
 
-# 1.0 s, 44100 Hz, stereo, 16-bit PCM, white noise (44-byte header + 176400 B)
+# 3 s, 48 kHz, stereo PCM16, 500 Hz, peak 1024/32768 (-30 dBFS).
+# This bypasses AudioFlinger and tests the kernel/codec/speaker path only.
 if [ -w "$OUT" ]; then
-    : > "$WAV" 2>/dev/null || true
-    printf 'RIFF\064\061\053\000WAVEfmt \020\000\000\000\001\000\002\000\104\254\000\000\020\021\053\000\004\000\020\000data\020\021\053\000' >> "$WAV" 2>/dev/null || true
-    dd if=/dev/urandom bs=176400 count=1 >> "$WAV" 2>/dev/null || true
+    {
+        printf 'RIFF$\312\010\000WAVEfmt \020\000\000\000\001\000\002\000\200\273\000\000\000\356\002\000\004\000\020\000data\000\312\010\000'
+        LC_ALL=C awk 'BEGIN {
+            for (i = 0; i < 144000; i++) {
+                hi = (i % 96 < 48) ? 4 : 252
+                printf "%c%c%c%c", 0, hi, 0, hi
+            }
+        }'
+    } > "$WAV"
 fi
+wav_bytes=$(wc -c < "$WAV" 2>/dev/null) || wav_bytes=0
+[ "$wav_bytes" -eq 576044 ] || say "invalid test PCM size ($wav_bytes); skip playback"
+
 cap "$CUR" "generated wav" "ls -l $WAV"
 
 TI=""
 have timeout && TI="timeout 20"
 
-if [ -x /system/bin/tinyplay ]; then
+if [ -x /system/bin/tinyplay ] && [ "$wav_bytes" -eq 576044 ] && have timeout; then
     say "PATH1 tinyplay: playing $WAV"
     PLAY=$OUT/03_playback.txt
     : > "$PLAY" 2>/dev/null || true
-    /system/bin/tinyplay "$WAV" > "$PLAY" 2>&1 &
+    timeout 12 /system/bin/tinyplay "$WAV" -D 0 -d 0 > "$PLAY" 2>&1 &
     ppid=$!
     i=0
     while [ $i -lt 12 ]; do
@@ -131,15 +141,23 @@ if [ -x /system/bin/tinyplay ]; then
         for s in /proc/asound/card*/pcm*p/sub0/status; do
             [ -r "$s" ] && printf '%s: %s\n' "$s" "$(head -n 1 "$s" 2>/dev/null)" >> "$PLAY" 2>/dev/null
         done
+        for w in /sys/kernel/debug/asoc/*/dapm/Speaker; do
+            [ -r "$w" ] && head -n 1 "$w" >> "$PLAY"
+        done
+        if [ -r /sys/kernel/debug/gpio ]; then
+            grep -E 'gpio-140([[:space:]]|$)|speaker-enable' /sys/kernel/debug/gpio >> "$PLAY" || true
+        fi
         sleep 1
         i=$((i + 1))
     done
-    wait "$ppid" 2>/dev/null || true
+    wait "$ppid" 2>/dev/null
+    play_rc=$?
+    fact TRIGGER_PATH1_RC "$play_rc"
     cap "$CUR" "tinyplay exit + dmesg during playback" \
         "tail -n 20 $PLAY; echo ---; dmesg 2>/dev/null | grep -i -E 'snd|afe|dai|pcm|under|mt6323' | tail -n 80"
     fact TRIGGER_PATH1 tinyplay
 else
-    say "PATH1 skipped: no /system/bin/tinyplay on this build"
+    say "PATH1 skipped: usable WAV, tinyplay and timeout are all required"
     fact TRIGGER_PATH1 absent
 fi
 
@@ -159,26 +177,10 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 4. trigger - path 3: AudioFlinger path via the volume UI beep
+# 4. AudioFlinger inspection. Volume key events are not a playback test.
 # ---------------------------------------------------------------------------
-say "PATH3: input keyevent 24 (volume up) to make AudioFlinger emit a sound"
-: > "$OUT/04_audioflinger.txt" 2>/dev/null || true
-if [ -x /system/bin/input ]; then
-    # No logcat -c: the ring buffer may hold the only evidence of earlier
-    # failures. We only take the tail after the key events below.
-    /system/bin/input keyevent 24 >> "$OUT/04_audioflinger.txt" 2>&1 || true
-    sleep 2
-    /system/bin/input keyevent 25 >> "$OUT/04_audioflinger.txt" 2>&1 || true
-    sleep 3
-    cap "$OUT/04_audioflinger.txt" "AudioFlinger after volume keys" \
-        "$TO dumpsys media.audio_flinger | head -n 120"
-    cap "$OUT/04_audioflinger.txt" "logcat after volume keys" \
-        "logcat -d 2>/dev/null | grep -i -E 'audio|AudioFlinger|AudioPolicy|Track|out_write' | tail -n 200"
-    fact TRIGGER_PATH3 input_keyevent
-else
-    say "PATH3 skipped: no /system/bin/input"
-    fact TRIGGER_PATH3 absent
-fi
+say "PATH3: use a media app to play the tone; service dumps alone do not prove playback"
+fact TRIGGER_PATH3 manual_playback_required
 
 cap "$CUR" "final dmesg audio lines" \
     "dmesg 2>/dev/null | grep -i -E 'snd|afe|pcm|mt6323|dai' | tail -n 200"
