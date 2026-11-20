@@ -21,9 +21,13 @@ RC = '/vendor/etc/init/android.hardware.gnss@1.0-service.rc'
 FEATURE = '/vendor/etc/permissions/android.hardware.location.gps.xml'
 ROUTE = '/vendor/bin/z1_audio_route.sh'
 IMPL = '/vendor/lib/hw/android.hardware.gnss@1.0-impl.so'
+RADIO = '/bin/z1_linux7_radio_init.sh'
+BT_ACTION = (b'\non property:ro.persistent_properties.ready=true\n'
+             b'    exec_background u:r:init:s0 root root -- /system/bin/sh '
+             b'/system/bin/z1_linux7_radio_init.sh --bt-identity-only\n')
 DEFAULT_CC = HERE.parents[1] / ('android-ndk-r26d/toolchains/llvm/prebuilt/linux-x86_64/bin/'
                                 'armv7a-linux-androideabi28-clang')
-ALLOW = re.compile('|'.join(re.escape(p) for p in (VINTF, RC, FEATURE, ROUTE, IMPL)))
+ALLOW = re.compile('|'.join(re.escape(p) for p in (VINTF, RC, FEATURE, ROUTE, IMPL, RADIO)))
 
 
 def remove_one(data, pattern):
@@ -39,7 +43,7 @@ def no_gnss_manifest(data):
     return result
 
 
-def prepare(base, out, cc):
+def prepare(base, out, cc, bt_late):
     src = out / 'inputs'
     src.mkdir()
 
@@ -71,6 +75,9 @@ def prepare(base, out, cc):
         (ROUTE, '8af73480059626ab6f0e056e4ae7cc3d17f83e77cced0f6be10c3fb6cd7d4f58',
          lambda old: (HERE / 'r8_audio/z1_audio_route.sh').read_bytes()),
     ]
+    if bt_late:
+        data.append((RADIO, 'abb42410dd534fb264b31ea7146c2752424a6b2877bb17179214e5989f0d2e46',
+                     lambda old: (HERE / 'z1_linux7_radio_init.sh').read_bytes()))
     for path, expected, transform in data:
         original = extract(path)
         system.require(sha(original) == expected, f'Unexpected base content: {path}')
@@ -82,11 +89,16 @@ def prepare(base, out, cc):
         if path == ROUTE:
             system.require(payload == original.replace(b'"MIC Route"', b'"MIC Route Switch"'),
                            'Unexpected audio route change')
+        if path == RADIO:
+            system.require(b'--bt-identity-only' in payload and b'ro.persistent_properties.ready' in payload,
+                           'Missing Bluetooth late identity action')
+            subprocess.run(['sh', '-n'], input=payload, check=True)
         source = src / Path(path).name
         source.write_bytes(payload)
         replacements.append(dict(path=path, source=str(source), original_sha256=expected,
-                                 sha256=sha(payload), uid=0, gid=0, mode='0755' if path == ROUTE else '0644',
-                                 selinux=f'u:object_r:{"vendor_file" if path in (ROUTE, IMPL) else "vendor_configs_file"}:s0'))
+                                 sha256=sha(payload), uid=0, gid=0, mode='0755' if path in (ROUTE, RADIO) else '0644',
+                                 selinux='u:object_r:' + {ROUTE: 'vendor_file', IMPL: 'vendor_file',
+                                                         RADIO: 'system_file'}.get(path, 'vendor_configs_file') + ':s0'))
     spec = out / 'system-inputs.json'
     spec.write_text(json.dumps(dict(version=1, base=dict(path=str(base / 'system.img'), sha256=SYSTEM),
                                    replacements=replacements), indent=2) + '\n')
@@ -98,10 +110,11 @@ def main():
     parser.add_argument('base', type=Path)
     parser.add_argument('output', type=Path)
     parser.add_argument('--cc', default=os.environ.get('Z1_ANDROID_CC', str(DEFAULT_CC)))
+    parser.add_argument('--bt-late', action='store_true', help='Add BT identity prep after persistent properties load')
     args = parser.parse_args()
     base, out = args.base.resolve(), args.output.resolve()
     out.mkdir()
-    spec = prepare(base, out, args.cc)
+    spec = prepare(base, out, args.cc, args.bt_late)
     raw = (base / 'boot.img').read_bytes()
     system.require(sha(raw) == BOOT, 'Unexpected R7 boot identity')
     _, _, kernel, dtb, rootfs = split_boot(raw)
@@ -109,6 +122,9 @@ def main():
     old = records['init.z1.network.rc']
     new = remove_one(old, rb'^on property:sys\.z1\.radio\.modules_ready=1\n    exec_background [^\n]* /z1_gps_prep\.sh\n')
     system.require(b'/z1_gps_prep.sh' not in new, 'Active GPS prep remains')
+    if args.bt_late:
+        system.require(b'--bt-identity-only' not in new, 'Duplicate Bluetooth identity action')
+        new += BT_ACTION
 
     def boot_source(name, payload):
         p = out / 'inputs' / name

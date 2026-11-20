@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
+import os
 from pathlib import Path
 import subprocess
+import tempfile
 import unittest
 
 
@@ -44,6 +46,44 @@ class RadioInitIdentityTest(unittest.TestCase):
         self.assertLess(setprop, verify)
         self.assertLess(verify, bt_modules)
         self.assertIn("combo_chip_id=0x6572", text)
+
+    def test_bt_only_reapplies_loaded_chip_identity_without_touching_wifi(self):
+        text = SCRIPT.read_text()
+        late = text[text.index("publish_bt_identity() {"):text.index("# Keep the initial publication")]
+        late = late.replace("/system/bin/", "").replace("/data/nvram/APCFG/APRDEB/", "$CASE_DIR/")
+        fake = """
+mode=--bt-identity-only
+getprop() {
+    case "$1" in
+        ro.persistent_properties.ready) printf '%s\\n' "$PERSIST_READY" ;;
+        persist.mtk.wcn.combo.chipid) cat "$CASE_DIR/chip" ;;
+        nvram_init) cat "$CASE_DIR/nvram" ;;
+    esac
+}
+setprop() {
+    printf '%s=%s\\n' "$1" "$2" >> "$CASE_DIR/writes"
+    case "$1" in
+        persist.mtk.wcn.combo.chipid) printf '%s\\n' "$2" > "$CASE_DIR/chip" ;;
+        nvram_init) printf '%s\\n' "$2" > "$CASE_DIR/nvram" ;;
+    esac
+}
+say() { :; }
+"""
+        with tempfile.TemporaryDirectory() as td:
+            fixture = Path(td)
+            (fixture / 'chip').write_text('-1\n')
+            (fixture / 'nvram').write_text('\n')
+            (fixture / 'BT_Addr').write_bytes(bytes([1]) + bytes(63))
+            (fixture / 'WIFI').write_bytes(bytes(512))
+            for ready, expected_rc in [('false', 1), ('true', 0)]:
+                result = subprocess.run(['sh', '-c', fake + late], capture_output=True,
+                                        env=dict(os.environ, CASE_DIR=td, PERSIST_READY=ready))
+                self.assertEqual(expected_rc, result.returncode, result.stderr)
+                if ready == 'false':
+                    self.assertFalse((fixture / 'writes').exists())
+            self.assertEqual((fixture / 'writes').read_text().splitlines(), [
+                'persist.mtk.wcn.combo.chipid=0x6572', 'nvram_init=Ready',
+                'sys.z1.radio.bt_nvram_ready=1'])
 
     def test_bt_nvram_readiness_requires_shape_before_setting_factory_gate(self):
         text = SCRIPT.read_text()

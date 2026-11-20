@@ -86,3 +86,33 @@ the screen, display size, battery/thermal state and applied HWC build for
 both runs unless one of those is the variable being tested. This measures the
 app's reported rendering statistics; use SurfaceFlinger and display timing
 separately to identify a scanout or compositor bottleneck.
+
+## Bluetooth comparison on the stability system
+
+The standalone Bluetooth package (`7345bcd`) identified two missing contracts:
+factory combo chip ID `0x6572` and `nvram_init=Ready` with valid per-device NVRAM.
+R7's radio init ran at 21.8 s; Android loaded persistent properties around
+37.5 s. An older stored chip ID may overwrite the early value. The optional
+`--bt-late` stability profile adds an init action after persistent properties
+are loaded, repeats only Bluetooth identity preparation, and keeps module
+insertion and Wi-Fi handling independent from property failures. GNSS remains
+isolated and the microphone spelling correction is preserved.
+
+Build with `z1_r7_stability_profile.py --bt-late` using the same original R7
+base above. The locally archived candidate
+`out/r7_stability_bt_late_candidate/` contains boot SHA `74b699f7…` and a
+12-block system delta from the verified no-GNSS system (`1ef07da1…`) to
+`638e86df43bb449180f5f3b82dd83894f10fe229df04e1c84633a5a2234615c9`.
+Use `z1_image_block_delta.py apply` with the no-GNSS `system.img` as `--base`,
+`system_from_stability.z1delta` as `--delta` and a new `system.img` alongside
+the copied boot and scatter as `--output`. SHA and e2fsck passed; an independent
+apply reproduced the same system bytes. The H4 probe lives beside the package
+for explicit serial deployment. The first board gate remains the original
+stability build; use this candidate for the Bluetooth comparison without
+bringing the known GNSS stall back into the test.
+
+After boot read the three properties `persist.mtk.wcn.combo.chipid`,
+`nvram_init`, and `sys.z1.radio.bt_nvram_ready`. If the controller still times
+out when all three gates pass, collect WMT, BTIF, and H4 results before changing
+kernel transport. If the readiness gate fails, preserve the unit's existing
+NVRAM and diagnose the expected paths and sizes before writing any record.
