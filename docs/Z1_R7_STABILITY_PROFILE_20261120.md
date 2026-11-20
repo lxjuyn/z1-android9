@@ -173,3 +173,20 @@ Board gate for this combined pair:
 
 Status: host verified, not flashed. This does not establish Bluetooth link,
 physical speaker output, or panel behavior on a board.
+
+With `Z1LOG` pointing to the active serial capture, upload and run the
+stability probe after boot. Leave the device awake, and exercise the physical
+screen during the run. Do lock/wake testing after this probe finishes.
+
+```sh
+z1a9_gpt/scripts/z1deploy/z1push.sh \
+    z1a9_gpt/scripts/diag/z1_diag_stability.sh z1_diag_stability.sh
+z1a9_gpt/scripts/z1deploy/z1push.sh --wait 650 --cmd \
+    'sh /data/local/tmp/z1stage/z1_diag_stability.sh 600'
+```
+
+Require `Z1_STABILITY_END status=PASS` and operator confirmation of swipes.
+The probe compares both PID and process start time, checks a bounded live input
+dispatcher dump every 15 seconds, and checks the init states of `mnld`,
+`z1_mnld`, and `vendor.gnss_service`. A serial timeout, failed dump, missing
+completion marker, or visible touch freeze does not pass the board gate.
