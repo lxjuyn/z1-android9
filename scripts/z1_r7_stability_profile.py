@@ -2,6 +2,7 @@
 """Build an R7 test pair with optional GNSS deferred and the corrected mic route."""
 import argparse
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -9,6 +10,7 @@ import xml.etree.ElementTree as ET
 
 from release import z1_build_driver_candidate as system
 import z1_build_adaptation_boot as boot
+from z1_build_adaptation_boot import check_arm
 from z1_prepare_recovery_boot import split_boot, cpio, contents, sha
 
 HERE = Path(__file__).resolve().parent
@@ -18,7 +20,10 @@ VINTF = '/vendor/etc/vintf/manifest.xml'
 RC = '/vendor/etc/init/android.hardware.gnss@1.0-service.rc'
 FEATURE = '/vendor/etc/permissions/android.hardware.location.gps.xml'
 ROUTE = '/vendor/bin/z1_audio_route.sh'
-ALLOW = re.compile('|'.join(re.escape(p) for p in (VINTF, RC, FEATURE, ROUTE)))
+IMPL = '/vendor/lib/hw/android.hardware.gnss@1.0-impl.so'
+DEFAULT_CC = HERE.parents[1] / ('android-ndk-r26d/toolchains/llvm/prebuilt/linux-x86_64/bin/'
+                                'armv7a-linux-androideabi28-clang')
+ALLOW = re.compile('|'.join(re.escape(p) for p in (VINTF, RC, FEATURE, ROUTE, IMPL)))
 
 
 def remove_one(data, pattern):
@@ -34,7 +39,7 @@ def no_gnss_manifest(data):
     return result
 
 
-def prepare(base, out):
+def prepare(base, out, cc):
     src = out / 'inputs'
     src.mkdir()
 
@@ -47,8 +52,17 @@ def prepare(base, out):
                    if e.findtext('name') == 'android.hardware.gnss']
         system.require(len(entries) == 1 and entries[0].get('optional') == 'true',
                        'Cannot defer mandatory GNSS')
+    # Legacy libhidl can load a passthrough implementation even when no
+    # transport was declared. Supply a factory that returns no interface.
+    stub = src / 'gnss-unavailable.so'
+    subprocess.run([cc, '-shared', '-nostdlib', '-x', 'c', '-', '-o', str(stub)],
+                   input=b'void *HIDL_FETCH_IGnss(const char *name) { (void)name; return (void *)0; }\n',
+                   check=True)
+    check_arm(stub.read_bytes(), IMPL)
     replacements = []
     data = [
+        (IMPL, 'd6c0bf6488912095716f4741472fdad20ffccbbe49b977abd4c3c0b892fbd8b9',
+         lambda old: stub.read_bytes()),
         (VINTF, '554e08cdbca31343e79e4647449877849c818b0889e4955bafb11ba2cc855a08', no_gnss_manifest),
         (RC, '5d2f1d3c8fa0349b50207a84ad51dd8da1288f5fe8589d303206925568deca71',
          lambda old: b'# Optional hardware GNSS is deferred in this profile.\n'),
@@ -72,7 +86,7 @@ def prepare(base, out):
         source.write_bytes(payload)
         replacements.append(dict(path=path, source=str(source), original_sha256=expected,
                                  sha256=sha(payload), uid=0, gid=0, mode='0755' if path == ROUTE else '0644',
-                                 selinux=f'u:object_r:{"vendor_file" if path == ROUTE else "vendor_configs_file"}:s0'))
+                                 selinux=f'u:object_r:{"vendor_file" if path in (ROUTE, IMPL) else "vendor_configs_file"}:s0'))
     spec = out / 'system-inputs.json'
     spec.write_text(json.dumps(dict(version=1, base=dict(path=str(base / 'system.img'), sha256=SYSTEM),
                                    replacements=replacements), indent=2) + '\n')
@@ -83,10 +97,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('base', type=Path)
     parser.add_argument('output', type=Path)
+    parser.add_argument('--cc', default=os.environ.get('Z1_ANDROID_CC', str(DEFAULT_CC)))
     args = parser.parse_args()
     base, out = args.base.resolve(), args.output.resolve()
     out.mkdir()
-    spec = prepare(base, out)
+    spec = prepare(base, out, args.cc)
     raw = (base / 'boot.img').read_bytes()
     system.require(sha(raw) == BOOT, 'Unexpected R7 boot identity')
     _, _, kernel, dtb, rootfs = split_boot(raw)

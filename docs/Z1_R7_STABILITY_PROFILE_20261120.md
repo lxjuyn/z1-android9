@@ -8,8 +8,10 @@ listed as `/dev/input/event2`; the input service was gone. See board capture
 
 The stability profile omits the optional vendor GNSS service and VINTF entry,
 removes the GPS feature declaration while retaining network location, and removes
-the automatic ramdisk GPS prep trigger. The stock libraries and firmware remain
-available to a future GPS build. The original Android 9 service initializes GNSS
+the automatic ramdisk GPS prep trigger. Android 9 libhidl also allows a legacy
+passthrough fallback when the transport is empty, so the profile replaces only
+the GNSS implementation's factory with an ARM shared object that returns null.
+The original R7 image retains the full HAL and firmware for future GPS work. The original Android 9 service initializes GNSS
 only when `GnssLocationProvider.isSupported()` is true; network location is
 created independently. The shipped framework compatibility matrices 1, 2, and 3
 all mark GNSS optional. HAL and framework behavior still need board verification.
@@ -18,21 +20,22 @@ The only other system change is `MIC Route` → `MIC Route Switch`, as named by
 the live MT6323 controls. This correction enables the microphone route and does
 not prove physical playback. The kernel and display HAL are unchanged. The
 boot builder verified the new ramdisk and recomputed `linux,initrd-end`. The
-system builder verified the four changed files, inode metadata, SELinux xattrs,
+system builder verified the five changed files, inode metadata, SELinux xattrs,
 and both original and final filesystems with read-only `e2fsck`.
 
 Local build:
 
 ```sh
 python3 z1a9_gpt/scripts/z1_r7_stability_profile.py \
-    out/r7_speaker_no_hsq_candidate out/r7_stability_nognss_stage
+    out/r7_speaker_no_hsq_candidate out/r7_stability_nognss_v2
 ```
 
 The local staged package includes `MT6572_Z1_R7_STABILITY_scatter.txt` copied
 from the hash-pinned R7 base layout, with only `bootimg` and `android` selected.
 Its `boot.img` refers to `boot-package/boot.img`. Verify `SHA256SUMS` before
 Download Only. Supersedes the unflashed `r7_mnld_first_start_candidate` for
-this priority round.
+this priority round. The first stability stage without the passthrough guard
+is superseded as well.
 
 Acceptance order:
 
