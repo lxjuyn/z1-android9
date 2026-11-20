@@ -39,6 +39,20 @@ candidate. During repeated lock and wake cycles,
 confirm the panel physically goes dark, the current frame appears after wake,
 and `display_blank` reads `0`, `1`, `0` across the transition.
 
+The read-only-to-framework probe automates the gate check without requiring a
+system rebuild:
+
+```sh
+z1a9_gpt/scripts/z1deploy/z1push.sh --mode 0755 \
+    z1a9_gpt/scripts/z1deploy/z1_lockscreen_probe.sh z1_lockscreen_probe.sh
+z1a9_gpt/scripts/z1deploy/z1push.sh --cmd \
+    '/data/local/tmp/z1stage/z1_lockscreen_probe.sh 3'
+```
+
+It restores the original screen timeout and stay-awake settings after the
+run. A passing sysfs sequence does not prove that the panel went physically
+dark; record that observation separately.
+
 R7 audio has passed ARM linker and HAL negotiation tests. The speaker and
 microphone remain board tests. Bluetooth still needs controller verification
 with `scripts/btgps/bt/HCI_PROBE.md`.
