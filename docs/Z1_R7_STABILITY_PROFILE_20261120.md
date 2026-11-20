@@ -37,6 +37,17 @@ Download Only. Supersedes the unflashed `r7_mnld_first_start_candidate` for
 this priority round. The first stability stage without the passthrough guard
 is superseded as well.
 
+Once the stability system is on the board, the separate package
+`out/r7_stability_r19_boot_only/` tests the `7908d35` lock-screen change with
+that exact system, without restoring the old GNSS implementation. Its SHA256
+is `59465663f397726d2ffac23e622fba3dfc9f7cd52c6108c4418c8caf68d636a1`.
+The only ramdisk change from the stability boot is `hwcomposer.z1.so`; the
+only DT change is `linux,initrd-end`. The manifest in that directory can be
+rebuilt with `scripts/z1_build_adaptation_boot.py`. Use the `BOOT_ONLY`
+scatter only after validating the paired stability system. Do not use the
+standalone R7 r19 pair to test this stability profile because that system
+still contains the live GNSS HAL.
+
 Acceptance order:
 
 1. Cold boot with serial capture; verify input service and one `system_server`
