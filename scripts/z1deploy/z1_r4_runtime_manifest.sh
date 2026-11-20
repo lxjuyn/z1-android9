@@ -40,8 +40,19 @@ case "${1:-}" in
         audio_sha=3f1b3a841aea4eedd7cb7ba5c22ebe12e6062b6ec88ec5d28eed6864251e1722
         wlan_sha=143c5611267eb4c5e20135fffdd39db491753147ef295278c3a69330c1fbf80f
         ;;
+    --r7-bt)
+        candidate=r7-bt-20261120
+        schema=z1-r7-bt-runtime/v1
+        hwc_sha=f57ffee670186d5bdfc135043773cfd0576364ae8fac463fb6ef1b65532c20da
+        codec_sha=3fa88d5aa0734612aefec8f45de1b4cabc24a86f67a383fb39f85481663f03cc
+        audio_sha=3f1b3a841aea4eedd7cb7ba5c22ebe12e6062b6ec88ec5d28eed6864251e1722
+        wlan_sha=143c5611267eb4c5e20135fffdd39db491753147ef295278c3a69330c1fbf80f
+        radio_sha=dff768b4846765f462abbc6bca6b3c041ccc1d1e8458172bc4289f99354872a5
+        probe_sha=b0f783c0f295e183ec78454a4b410d7cc33fdb331f3e434384e443389096940e
+        diag_sha=96201f608e633b4da2a3877cecbeeabc4428f8369af10f63c2bf0f18ccbebbe6
+        ;;
     --help)
-        printf '%s\n' 'Usage: sh z1_r4_runtime_manifest.sh [--r4|--r5|--r6|--r7]'
+        printf '%s\n' 'Usage: sh z1_r4_runtime_manifest.sh [--r4|--r5|--r6|--r7|--r7-bt]'
         printf '%s\n' 'Read-only Z1 runtime identity and readiness check.'
         exit 0
         ;;
@@ -208,6 +219,23 @@ check_char_device() {
     fi
 }
 
+check_regular_size() {
+    _crs_id=$1
+    _crs_path=$2
+    _crs_expected=$3
+    if [ -L "$_crs_path" ] || [ ! -f "$_crs_path" ] || [ ! -r "$_crs_path" ]; then
+        fail "$_crs_id" "${_crs_expected}_BYTE_REGULAR_FILE" FILE_MISSING_OR_NOT_READABLE
+        return
+    fi
+    _crs_actual=$(wc -c < "$_crs_path" 2>/dev/null) ||
+        _crs_actual=READ_FAILED
+    if [ "$_crs_actual" = "$_crs_expected" ]; then
+        pass "$_crs_id" "${_crs_expected}_BYTE_REGULAR_FILE"
+    else
+        fail "$_crs_id" "${_crs_expected}_BYTE_REGULAR_FILE" "$_crs_actual"
+    fi
+}
+
 printf '[r4manifest] BEGIN schema=%s candidate=%s read_only=1\n' "$schema" "$candidate"
 _utc=$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null) || _utc=UNAVAILABLE
 printf '[r4manifest] sampled_utc=%s\n' "$_utc"
@@ -253,13 +281,21 @@ check_hash /vendor/lib/egl/libGLES_mesa.so \
 check_hash /vendor/lib/libgallium_dri.so \
     492f0b5e871868f55023351722a609da6b65e186fbf31366a28d7faf981232b9 644
 if [ "$candidate" = r6-audio-20261119 ] ||
-   [ "$candidate" = r7-combined-20261119 ]; then
+   [ "$candidate" = r7-combined-20261119 ] ||
+   [ "$candidate" = r7-bt-20261120 ]; then
     check_hash /vendor/lib/hw/audio.primary.default.so "$audio_sha" 644
     check_hash /vendor/lib/libaudio.primary.default.so "$audio_sha" 644
 fi
-if [ "$candidate" = r7-combined-20261119 ]; then
+if [ "$candidate" = r7-combined-20261119 ] ||
+   [ "$candidate" = r7-bt-20261120 ]; then
+    if [ "$candidate" = r7-bt-20261120 ]; then
+        check_hash /system/bin/z1_linux7_radio_init.sh "$radio_sha" 755
+        check_hash /system/bin/z1_bt_hci_probe "$probe_sha" 755
+        check_hash /system/bin/z1diag/z1_diag_bt.sh "$diag_sha" 755
+    else
     check_hash /system/bin/z1_linux7_radio_init.sh \
         abb42410dd534fb264b31ea7146c2752424a6b2877bb17179214e5989f0d2e46 755
+    fi
     check_hash /system/bin/z1_odex_direct \
         af36ef18802cd58c5a2ebe830d9633d3971b69dc69095fd3d7bcb05ed0094038 755
     check_hash /system/bin/z1_odex_probe \
@@ -301,6 +337,8 @@ _required_modules="mt6572_mt6323 mt6572_afe_pcm snd_soc_mt6323 z1_cst836u \
 wlan_gen2 mtk_stp_bt_soc mtk_stp_wmt_soc mtk_btif_drv"
 if [ "$candidate" = r7-combined-20261119 ]; then
     _required_modules="$_required_modules z1_gpsdrv mtk_stp_gps_soc"
+elif [ "$candidate" = r7-bt-20261120 ]; then
+    _required_modules="$_required_modules z1_gpsdrv mtk_stp_gps_soc"
 fi
 for _module in $_required_modules; do
     check_loaded_module "$_module"
@@ -320,7 +358,8 @@ fi
 
 if [ "$candidate" = r5-20261119 ] ||
    [ "$candidate" = r6-audio-20261119 ] ||
-   [ "$candidate" = r7-combined-20261119 ]; then
+   [ "$candidate" = r7-combined-20261119 ] ||
+   [ "$candidate" = r7-bt-20261120 ]; then
     backlight_gate=/sys/class/leds/lcd-backlight/display_blank
     blank=$(cat "$backlight_gate" 2>/dev/null) || blank=UNREADABLE
     if [ "$blank" = 0 ]; then
@@ -330,10 +369,21 @@ if [ "$candidate" = r5-20261119 ] ||
     fi
 fi
 
-if [ "$candidate" = r7-combined-20261119 ]; then
+if [ "$candidate" = r7-combined-20261119 ] ||
+   [ "$candidate" = r7-bt-20261120 ]; then
     check_prop init.svc.mnld running
     check_socket /dev/socket/mnld
     check_char_device /dev/stpgps
+fi
+
+if [ "$candidate" = r7-bt-20261120 ]; then
+    check_prop persist.mtk.wcn.combo.chipid 0x6572
+    check_prop nvram_init Ready
+    check_prop sys.z1.radio.bt_nvram_ready 1
+    check_regular_size bt-nvram-record \
+        /data/nvram/APCFG/APRDEB/BT_Addr 64
+    check_regular_size wifi-nvram-record \
+        /data/nvram/APCFG/APRDEB/WIFI 512
 fi
 
 if [ "$FAIL_COUNT" -eq 0 ]; then

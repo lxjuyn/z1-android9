@@ -1,0 +1,348 @@
+{
+  "schema": "z1-r7-bt-runtime/v1",
+  "candidate": "r7-bt-20261120",
+  "mode": "read-only",
+  "package": {
+    "bootimg": {
+      "bytes": 5984256,
+      "sha256": "4fde12b18f2f0ee7423d63a0165847a0075f2c67148100e77c09d01de08b33bd"
+    },
+    "android": {
+      "bytes": 943718400,
+      "sha256": "650d2c4146162e49469454871eb3aa1ed607058d3e41dfa0aad8bcb772227449"
+    }
+  },
+  "runtime_files": [
+    {
+      "path": "/hwcomposer.z1.so",
+      "sha256": "f57ffee670186d5bdfc135043773cfd0576364ae8fac463fb6ef1b65532c20da",
+      "mode": "644",
+      "role": "ramdisk HWC candidate"
+    },
+    {
+      "path": "/vendor/lib/hw/hwcomposer.z1.so",
+      "sha256": "f57ffee670186d5bdfc135043773cfd0576364ae8fac463fb6ef1b65532c20da",
+      "mode": "644",
+      "role": "active HWC module"
+    },
+    {
+      "path": "/data/local/tmp/z1stage/hwcomposer.z1.so.ramdisk",
+      "sha256": "f57ffee670186d5bdfc135043773cfd0576364ae8fac463fb6ef1b65532c20da",
+      "mode": "644",
+      "role": "boot-seeded HWC identity"
+    },
+    {
+      "path": "/vendor/lib/hw/audio.primary.default.so",
+      "sha256": "3f1b3a841aea4eedd7cb7ba5c22ebe12e6062b6ec88ec5d28eed6864251e1722",
+      "mode": "644",
+      "role": "active playback and AWB capture primary HAL"
+    },
+    {
+      "path": "/vendor/lib/libaudio.primary.default.so",
+      "sha256": "3f1b3a841aea4eedd7cb7ba5c22ebe12e6062b6ec88ec5d28eed6864251e1722",
+      "mode": "644",
+      "role": "playback and capture primary audio implementation"
+    },
+    {
+      "path": "/vendor/etc/primary_audio_policy_configuration.xml",
+      "sha256": "954d41f1838921c3fd4d75ad9660b1c63204806021208afe9cf815cb84424f37",
+      "mode": "644",
+      "role": "closed speaker and built-in microphone policy"
+    },
+    {
+      "path": "/vendor/bin/z1_audio_route.sh",
+      "sha256": "8af73480059626ab6f0e056e4ae7cc3d17f83e77cced0f6be10c3fb6cd7d4f58",
+      "mode": "755",
+      "role": "DAPM playback and microphone route setup"
+    },
+    {
+      "path": "/system/bin/z1_runtime_manifest",
+      "sha256": "c23f3bac57985757541d305859989383bc29a49e58f48aa2b268809c77f62075",
+      "mode": "755",
+      "role": "installed read-only runtime identity gate"
+    },
+    {
+      "path": "/system/bin/z1_odex_direct",
+      "sha256": "af36ef18802cd58c5a2ebe830d9633d3971b69dc69095fd3d7bcb05ed0094038",
+      "mode": "755",
+      "role": "static ARM O_DIRECT five-page reader"
+    },
+    {
+      "path": "/system/bin/z1_linux7_radio_init.sh",
+      "sha256": "dff768b4846765f462abbc6bca6b3c041ccc1d1e8458172bc4289f99354872a5",
+      "mode": "755",
+      "role": "identity-gated Bluetooth/Wi-Fi bring-up with factory combo and NVRAM gates"
+    },
+    {
+      "path": "/system/bin/z1_bt_hci_probe",
+      "sha256": "b0f783c0f295e183ec78454a4b410d7cc33fdb331f3e434384e443389096940e",
+      "mode": "755",
+      "role": "standalone H4 Reset and Read Local Version probe"
+    },
+    {
+      "path": "/system/bin/z1diag/z1_diag_bt.sh",
+      "sha256": "96201f608e633b4da2a3877cecbeeabc4428f8369af10f63c2bf0f18ccbebbe6",
+      "mode": "755",
+      "role": "bounded Bluetooth NVRAM, HCI, and framework diagnostics"
+    },
+    {
+      "path": "/system/bin/z1_odex_probe",
+      "sha256": "c5c85e68f1016f1ba543d3450a5cf51528af4762df3cd120e188a81fe7ec6d0b",
+      "mode": "755",
+      "role": "cached and direct services.odex comparison"
+    },
+    {
+      "path": "/vendor/lib/hw/gps.default.so",
+      "sha256": "306e5c5097be5e0a2b12e42a7121a907b2b737021705793611e3c30b851bb18c",
+      "mode": "644",
+      "role": "Android 9 factory GPS ABI adapter"
+    },
+    {
+      "path": "/vendor/lib/hw/gps.z1stock.so",
+      "sha256": "5a9f1bb021d7145bbe4e998f3dd6d43dafcd232d21fed0e6b4921483b3a9f257",
+      "mode": "644",
+      "role": "factory MTK GPS HAL with unique SONAME"
+    },
+    {
+      "path": "/system/lib/modules/z1-radio/z1_gpsdrv.ko",
+      "sha256": "5cab8a98e9bad3fc7cfa369af2b850dc9c271cd81678150b77279d22667de717",
+      "mode": "644",
+      "role": "read-only gpsdrv sysfs compatibility module"
+    },
+    {
+      "path": "/system/usr/keylayout/mt6779-keypad.kl",
+      "sha256": "da29948bb71336ccc73f0b05333be610cf18feee3987fddddafd7d44d59c5f55",
+      "mode": "644",
+      "role": "key 158 volume-up layout"
+    },
+    {
+      "path": "/system/lib/modules/z1_cst836u.ko",
+      "sha256": "03b0f94c67fab10551ea0085beffff4fb02c87878a2034f184fd28bca8368745",
+      "mode": "664",
+      "role": "touch driver with Y=320 navigation boundary"
+    },
+    {
+      "path": "/system/lib/modules/snd-soc-mt6323.ko",
+      "sha256": "3fa88d5aa0734612aefec8f45de1b4cabc24a86f67a383fb39f85481663f03cc",
+      "mode": "664",
+      "role": "MT6323 codec playback-rate and trigger sequencing"
+    },
+    {
+      "path": "/system/etc/init/z1_touch_navigation.rc",
+      "sha256": "32b84644e3eeb7bb99af897d1f104ce7518fc87beafe919d0b81de4960b56901",
+      "mode": "644",
+      "role": "post-boot key_y_min=320 policy"
+    },
+    {
+      "path": "/system/build.prop",
+      "sha256": "421b3173d9f8aa93be410868001c449088ccd4cee7441db64b60f8c7426514c8",
+      "mode": "644",
+      "role": "qemu.hw.mainkeys=1 policy"
+    },
+    {
+      "path": "/system/lib/modules/z1-radio/mtk_stp_bt_soc.ko",
+      "sha256": "01fbd5706e9c74dc9759d3da60da5e3a5443c5c71c12c0dc1a1464495e45f63e",
+      "mode": "644",
+      "role": "R4 Bluetooth SOC module"
+    },
+    {
+      "path": "/system/lib/modules/z1-radio/wlan_gen2.ko",
+      "sha256": "143c5611267eb4c5e20135fffdd39db491753147ef295278c3a69330c1fbf80f",
+      "mode": "644",
+      "role": "R4 WiFi driver"
+    },
+    {
+      "path": "/vendor/lib/egl/libGLES_mesa.so",
+      "sha256": "bb0ac77c03e79648db5dc8a480ec478be566b78c6105e9f781fd22100b46f445",
+      "mode": "644",
+      "role": "Mesa EGL entry point"
+    },
+    {
+      "path": "/vendor/lib/libgallium_dri.so",
+      "sha256": "492f0b5e871868f55023351722a609da6b65e186fbf31366a28d7faf981232b9",
+      "mode": "644",
+      "role": "Mesa Gallium driver"
+    },
+    {
+      "path": "/system/lib/libart.so",
+      "sha256": "81226e14966cd9d342a0df36f24c2ad12ecdcc926c0a14bf354c1b373cb2ea94",
+      "mode": "644",
+      "role": "ART runtime"
+    },
+    {
+      "path": "/system/framework/arm/boot.oat",
+      "sha256": "baef5ea2e9a91031ae68d0b6ce853ee5b2822a4ed394178a1b97d4167ee2553c",
+      "mode": "644",
+      "role": "ART boot image code as opened at runtime"
+    },
+    {
+      "path": "/system/framework/oat/arm/services.odex",
+      "sha256": "750554a7f8e6b07fe36b4f22562a282a0eabf602ca7f0fcf7e87f1d6af83dc08",
+      "mode": "644",
+      "role": "Precompiled system server services"
+    },
+    {
+      "path": "/system/priv-app/SystemUI/SystemUI.apk",
+      "sha256": "edb83b4f626549b9080ad3968ad4b5d1761182ee43298351601d8e8a8e67114d",
+      "mode": "644",
+      "role": "SystemUI package"
+    }
+  ],
+  "properties": [
+    {
+      "name": "sys.boot_completed",
+      "value": "1"
+    },
+    {
+      "name": "sys.z1.storage_ready",
+      "value": "1"
+    },
+    {
+      "name": "z1stage.status",
+      "value": "ready"
+    },
+    {
+      "name": "sys.z1.radio.modules_ready",
+      "value": "1"
+    },
+    {
+      "name": "sys.z1.radio.wifi_modules_ready",
+      "value": "1"
+    },
+    {
+      "name": "z1stage.hwcomposer.sha",
+      "value": "f57ffee670186d5bdfc135043773cfd0576364ae8fac463fb6ef1b65532c20da"
+    },
+    {
+      "name": "z1stage.hwcomposer.boot",
+      "value": "f57ffee670186d5bdfc135043773cfd0576364ae8fac463fb6ef1b65532c20da"
+    },
+    {
+      "name": "init.svc.vendor.hwcomposer-2-1",
+      "value": "running"
+    },
+    {
+      "name": "init.svc.mnld",
+      "value": "running"
+    },
+    {
+      "name": "persist.mtk.wcn.combo.chipid",
+      "value": "0x6572"
+    },
+    {
+      "name": "nvram_init",
+      "value": "Ready"
+    },
+    {
+      "name": "sys.z1.radio.bt_nvram_ready",
+      "value": "1"
+    }
+  ],
+  "hwcomposer_sources": [
+    "ramdisk",
+    "active:candidate-match",
+    "active:pinned"
+  ],
+  "loaded_modules": [
+    "mt6572_mt6323",
+    "mt6572_afe_pcm",
+    "snd_soc_mt6323",
+    "z1_cst836u",
+    "wlan_gen2",
+    "mtk_stp_bt_soc",
+    "mtk_stp_wmt_soc",
+    "mtk_btif_drv",
+    "z1_gpsdrv",
+    "mtk_stp_gps_soc"
+  ],
+  "content_checks": [
+    {
+      "id": "keylayout-158-volume-up",
+      "path": "/system/usr/keylayout/mt6779-keypad.kl",
+      "line": "key 158   VOLUME_UP"
+    },
+    {
+      "id": "touch-boundary-320",
+      "path": "/system/etc/init/z1_touch_navigation.rc",
+      "line": "write /sys/module/z1_cst836u/parameters/key_y_min 320"
+    },
+    {
+      "id": "hide-virtual-navigation",
+      "path": "/system/build.prop",
+      "line": "qemu.hw.mainkeys=1"
+    },
+    {
+      "id": "microphone-policy",
+      "path": "/vendor/etc/primary_audio_policy_configuration.xml",
+      "line": "AUDIO_DEVICE_IN_BUILTIN_MIC"
+    },
+    {
+      "id": "microphone-route",
+      "path": "/vendor/bin/z1_audio_route.sh",
+      "line": "set_one \"MIC Route\" 1"
+    },
+    {
+      "id": "audio-capture-registered",
+      "path": "/proc/asound/pcm",
+      "line": "AWB Capture"
+    },
+    {
+      "id": "factory-bt-combo-id",
+      "path": "/system/bin/z1_linux7_radio_init.sh",
+      "line": "combo_chip_id=0x6572"
+    },
+    {
+      "id": "factory-bt-nvram-gate",
+      "path": "/system/bin/z1_linux7_radio_init.sh",
+      "line": "/system/bin/setprop nvram_init Ready"
+    }
+  ],
+  "device_checks": [
+    {
+      "id": "touch-input-registered",
+      "path": "/proc/bus/input/devices",
+      "line": "Name=\"z1_cst836u\""
+    },
+    {
+      "id": "audio-card-present",
+      "path": "/proc/asound/cards",
+      "line": "mt6572-mt6323"
+    },
+    {
+      "id": "wlan0-present",
+      "path": "/sys/class/net/wlan0/operstate",
+      "must_exist": true
+    },
+    {
+      "id": "backlight-power-gate",
+      "path": "/sys/class/leds/lcd-backlight/display_blank",
+      "line": "0"
+    },
+    {
+      "id": "bluetooth-nvram-record-shape",
+      "path": "/data/nvram/APCFG/APRDEB/BT_Addr",
+      "must_exist": true,
+      "bytes": 64
+    },
+    {
+      "id": "wifi-nvram-record-shape",
+      "path": "/data/nvram/APCFG/APRDEB/WIFI",
+      "must_exist": true,
+      "bytes": 512
+    }
+  ],
+  "current_status": {
+    "as_of": "2026-11-20T21:45:00+08:00",
+    "status": "HOST_VERIFIED_NOT_DEVICE_TESTED",
+    "accepted_post_flash_boot": false,
+    "reason": "The R7 Bluetooth candidate preserves the board-tested speaker kernel and changes only the system image. Offline checks pass, but Bluetooth NVRAM, HCI, framework enable, pairing, and A2DP remain board-test items.",
+    "observed_but_not_accepted": [
+      "The no-HSQ boot is the exact image used in the 896-second board run.",
+      "The system image adds only the radio gate, HCI probe, Bluetooth diagnostics, and runtime manifest.",
+      "The ARM probe was built with NDK r26d for API 28 and depends only on libc and libdl.",
+      "The system image passed e2fsck -fn and every changed file passed debugfs readback with mode 0755 and system_file labels.",
+      "The images passed runtime manifest fixture tests.",
+      "These are host-side facts; they do not establish device behavior."
+    ]
+  }
+}

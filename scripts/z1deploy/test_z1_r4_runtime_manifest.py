@@ -29,7 +29,7 @@ class R4RuntimeManifestTest(unittest.TestCase):
         self.bin = self.root / "system/bin"
         self.bin.mkdir(parents=True)
         self.commands = self.root / "commands.log"
-        for name in ("awk", "cat", "date", "grep", "sha256sum", "stat", "tr"):
+        for name in ("awk", "cat", "date", "grep", "sha256sum", "stat", "tr", "wc"):
             executable = shutil.which(name)
             if executable:
                 os.symlink(executable, self.bin / name)
@@ -54,6 +54,11 @@ class R4RuntimeManifestTest(unittest.TestCase):
         target = self.root / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content)
+
+    def write_bytes(self, relative, size):
+        target = self.root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"A" * size)
 
     def write_expected_files(self):
         for item in self.manifest["runtime_files"]:
@@ -243,6 +248,40 @@ class R4RuntimeManifestTest(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("char-device:", result.stdout)
         self.assertIn("status=FAIL", result.stdout)
+
+    def test_r7_bt_profile_checks_factory_combo_and_nvram_gates(self):
+        self.manifest = json.loads(
+            (HERE / "r7_bt_runtime_manifest.json").read_text())
+        self.write("proc/modules", "\n".join(
+            f"{name} 1 0 - Live 0x00000000"
+            for name in self.manifest["loaded_modules"]
+        ) + "\n")
+        self.write_expected_files()
+        self.write_getprop()
+        self.write_tools()
+        self.write("sys/class/leds/lcd-backlight/display_blank", "0\n")
+        self.write_bytes("data/nvram/APCFG/APRDEB/BT_Addr", 64)
+        self.write_bytes("data/nvram/APCFG/APRDEB/WIFI", 512)
+        socket_dir = self.root / "dev/socket"
+        socket_dir.mkdir(parents=True)
+        server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.addCleanup(server.close)
+        server.bind(str(socket_dir / "mnld"))
+        self.root.joinpath("dev/stpgps").symlink_to("/dev/null")
+
+        result = self.run_probe("--r7-bt")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(
+            "schema=z1-r7-bt-runtime/v1 candidate=r7-bt-20261120",
+            result.stdout)
+        self.assertIn("summary pass=66 fail=0 status=PASS", result.stdout)
+
+        self.write("data/nvram/APCFG/APRDEB/BT_Addr", "short\n")
+        result = self.run_probe("--r7-bt")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(
+            "check=bt-nvram-record status=FAIL expected=64_BYTE_REGULAR_FILE",
+            result.stdout)
 
     def test_missing_boot_completion_and_stale_hwc_source_fail(self):
         self.write_tools()

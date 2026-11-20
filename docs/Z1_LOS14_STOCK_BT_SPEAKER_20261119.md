@@ -26,6 +26,33 @@ address, scanning, pairing and A2DP. If factory GORM is required, retain its
 initialization with a verified board-specific BT record and a scoped NVRAM
 compatibility path.
 
+## Bluetooth follow-up: R7 initialization gates
+
+The R7 boot evidence at
+`mainline_recon/z1_boot_r14_verify.log:231037` reaches
+`bt_read_nvram: Get NVRAM restore ready fails!`, followed by
+`mtk: Read Nvram data fails` and an HCI initialization failure. A later
+attempt reaches `BT_open` and WMT BT power-on, then still fails after the
+factory library polls `persist.mtk.wcn.combo.chipid`.
+
+The stock Z1 ramdisk sets that property to `0x6572` in
+`init.charging.rc:610` and `meta_init.rc:286`; R7 did not. Disassembly of
+`libbluetooth_mtk.so` shows `bt_get_combo_id()` requiring the property before
+`GORM_Init()`. The Bluetooth-only candidate now sets and verifies the property
+after exact Z1 DT validation.
+
+R7 also lacks the Android 4.4 `nvram_daemon`. The candidate therefore
+publishes `nvram_init=Ready` only when the existing per-device
+`/data/nvram/APCFG/APRDEB/BT_Addr` and `WIFI` records have their expected
+64-byte and 512-byte shapes. It never copies, prints, or rewrites the records.
+`sys.z1.radio.bt_nvram_ready` records whether this gate passed.
+
+The isolated H4 probe is installed in the candidate. Board validation order
+is: confirm both NVRAM gate properties, run the passive Bluetooth diagnostic,
+release the framework opener, run the exclusive HCI Reset and Read Local
+Version probe, then test framework enable, discovery, pairing, reconnect and
+A2DP. These remain unverified until the candidate runs on the device.
+
 ## Speaker
 
 Both legacy audio HALs route through `/dev/eac`. Their

@@ -30,6 +30,40 @@ class RadioInitIdentityTest(unittest.TestCase):
         )
         self.assertIn("refusing to load an unpinned Wi-Fi driver", text)
 
+    def test_factory_bluetooth_combo_chip_id_is_set_and_verified(self):
+        text = SCRIPT.read_text()
+        dt_gate = text.index("require_compatible / mediatek,mt6572")
+        setprop = text.index(
+            '/system/bin/setprop persist.mtk.wcn.combo.chipid "$combo_chip_id"'
+        )
+        verify = text.index(
+            '[ "$observed_combo_chip_id" = "$combo_chip_id" ]'
+        )
+        bt_modules = text.index('BT_MODULES="mtk_btif_drv')
+        self.assertLess(dt_gate, setprop)
+        self.assertLess(setprop, verify)
+        self.assertLess(verify, bt_modules)
+        self.assertIn("combo_chip_id=0x6572", text)
+
+    def test_bt_nvram_readiness_requires_shape_before_setting_factory_gate(self):
+        text = SCRIPT.read_text()
+        bt_record = text.index(
+            'bt_nvram_record=/data/nvram/APCFG/APRDEB/BT_Addr'
+        )
+        wifi_record = text.index(
+            'wifi_nvram_record=/data/nvram/APCFG/APRDEB/WIFI'
+        )
+        shape_gate = text.index('[ "$(wc -c < "$bt_nvram_record" 2>/dev/null)" = 64 ]')
+        ready = text.index('/system/bin/setprop nvram_init Ready')
+        state = text.index(
+            '/system/bin/setprop sys.z1.radio.bt_nvram_ready "$bt_nvram_ready"'
+        )
+        self.assertLess(bt_record, shape_gate)
+        self.assertLess(wifi_record, shape_gate)
+        self.assertLess(shape_gate, ready)
+        self.assertLess(ready, state)
+        self.assertIn('| tr -d \' 0\\n\'', text)
+
 
 if __name__ == "__main__":
     unittest.main()

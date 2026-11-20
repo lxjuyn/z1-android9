@@ -67,7 +67,7 @@ cap "$CUR" "bt kernel modules" "grep -i -E 'stp_bt|btif|bluetooth|stp_uart|stp_w
 cap "$CUR" "bt processes" "(ps -A 2>/dev/null || ps) | grep -i -E 'bluetooth|btif|hci' | grep -v grep"
 cap "$CUR" "init service states" "getprop | grep -E 'init\.svc\.(bt|bluetooth)'"
 cap "$CUR" "factory NVRAM and WMT readiness" \
-    "getprop nvram_init; getprop init.svc.nvram_daemon; (ps -A 2>/dev/null || ps) | grep -E '[6]620_launcher|[n]vram_daemon'; if [ -e /data/BT_Addr ]; then wc -c < /data/BT_Addr; fi"
+    "getprop nvram_init; getprop sys.z1.radio.bt_nvram_ready; getprop init.svc.nvram_daemon; getprop persist.mtk.wcn.combo.chipid; (ps -A 2>/dev/null || ps) | grep -E '[6]620_launcher|[n]vram_daemon'; if [ -e /data/BT_Addr ]; then wc -c < /data/BT_Addr; fi"
 cap "$CUR" "hciconfig -a" "hciconfig -a"
 cap "$CUR" "rfkill" "rfkill list"
 cap "$CUR" "/sys/class/bluetooth" "ls -l /sys/class/bluetooth"
@@ -84,6 +84,8 @@ cap "$CUR" "dmesg bt lines" \
 
 PRE_BT_ON=$(settings get global bluetooth_on 2>/dev/null)
 fact PRE_NVRAM_INIT "$(getprop nvram_init 2>/dev/null)"
+fact PRE_BT_NVRAM_READY "$(getprop sys.z1.radio.bt_nvram_ready 2>/dev/null)"
+fact PRE_COMBO_CHIP_ID "$(getprop persist.mtk.wcn.combo.chipid 2>/dev/null)"
 fact PRE_STPBT_NODE "$(pc /dev/stpbt)"
 fact PRE_BT_ON_SETTING "$PRE_BT_ON"
 fact PRE_BT_STACK_PROCS "$(pcount com.android.bluetooth)"

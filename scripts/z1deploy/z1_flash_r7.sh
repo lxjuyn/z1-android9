@@ -18,12 +18,13 @@ SYSTEM_SHA=8060c851075bb053e931376e7965c3c80850a2f5e9d73cdd62e54add83400bf4
 EXECUTE=0
 HWC_BLANK=0
 SPEAKER_GPIO=0
+BLUETOOTH=0
 CHUNK_MB=48
 TRIES=4
 
 usage() {
     cat <<'EOF'
-Usage: z1_flash_r7.sh [--execute] [--hwc-blank|--speaker-gpio] [--chunk-mb N] [--tries N]
+Usage: z1_flash_r7.sh [--execute] [--hwc-blank|--speaker-gpio|--bt] [--chunk-mb N] [--tries N]
 
 Without --execute this validates hashes, boot capacity, system filesystem,
 and the read-only runtime manifest. --execute writes bootimg first, then the
@@ -32,6 +33,8 @@ performed.
 --hwc-blank selects the verified boot with the restart-safe backlight gate fix.
 --speaker-gpio selects the paired R7 system with the GPIO140 speaker-enable
 machine module and matching appended DTB.
+--bt selects the R7 Bluetooth system derived from the verified speaker image.
+Materialize system.img first with scripts/z1deploy/z1_build_r7_bt_system.sh.
 EOF
 }
 
@@ -40,6 +43,7 @@ while [ "$#" -gt 0 ]; do
         --execute) EXECUTE=1 ;;
         --hwc-blank) HWC_BLANK=1 ;;
         --speaker-gpio) SPEAKER_GPIO=1 ;;
+        --bt) BLUETOOTH=1 ;;
         --chunk-mb) CHUNK_MB=${2:?missing chunk size}; shift ;;
         --tries) TRIES=${2:?missing retry count}; shift ;;
         -h|--help) usage; exit 0 ;;
@@ -51,8 +55,9 @@ done
 case "$CHUNK_MB" in ''|*[!0-9]*|0) echo "invalid chunk size" >&2; exit 2 ;; esac
 case "$TRIES" in ''|*[!0-9]*|0) echo "invalid retry count" >&2; exit 2 ;; esac
 
-if [ "$HWC_BLANK" -eq 1 ] && [ "$SPEAKER_GPIO" -eq 1 ]; then
-    echo "--hwc-blank and --speaker-gpio select different boots" >&2
+variant_count=$((HWC_BLANK + SPEAKER_GPIO + BLUETOOTH))
+if [ "$variant_count" -gt 1 ]; then
+    echo "--hwc-blank, --speaker-gpio, and --bt select different boots and system images" >&2
     exit 2
 fi
 
@@ -69,6 +74,16 @@ if [ "$HWC_BLANK" -eq 1 ]; then
     BOOT_ROLLBACK=$HWC_BLANK_ROLLBACK
     BOOT=$HWC_BLANK_BOOT
     BOOT_SHA=$HWC_BLANK_SHA
+fi
+
+if [ "$BLUETOOTH" -eq 1 ]; then
+    CANDIDATE="$ROOT/out/r7_bt_candidate_20261120"
+    BOOT="$CANDIDATE/boot.img"
+    SYSTEM="$CANDIDATE/system.img"
+    BOOT_SHA=4fde12b18f2f0ee7423d63a0165847a0075f2c67148100e77c09d01de08b33bd
+    BOOT_ROLLBACK="$ROOT/out/r7_speaker_gpio_candidate_20261119/boot.img"
+    BT_BOOT_ROLLBACK_SHA=e761299886d61bd5cfca6ff0876cf36d0355a3216c7cbb050a9cf08016f56a1d
+    SYSTEM_SHA=650d2c4146162e49469454871eb3aa1ed607058d3e41dfa0aad8bcb772227449
 fi
 
 for path in "$BOOT" "$SYSTEM" "$BOOT_ROLLBACK" \
@@ -90,6 +105,8 @@ check_sha "$BOOT" "$BOOT_SHA"
 check_sha "$SYSTEM" "$SYSTEM_SHA"
 if [ "$HWC_BLANK" -eq 1 ]; then
     check_sha "$BOOT_ROLLBACK" "$HWC_BLANK_ROLLBACK_SHA"
+elif [ "$BLUETOOTH" -eq 1 ]; then
+    check_sha "$BOOT_ROLLBACK" "$BT_BOOT_ROLLBACK_SHA"
 elif [ "$SPEAKER_GPIO" -eq 1 ]; then
     check_sha "$BOOT_ROLLBACK" "$HWC_BLANK_SHA"
 fi
@@ -101,14 +118,19 @@ boot_size=$(stat -c%s "$BOOT")
     { echo "boot exceeds 6 MiB" >&2; exit 3; }
 [ "$(head -c 8 "$BOOT")" = ANDROID! ] ||
     { echo "boot lacks ANDROID! magic" >&2; exit 3; }
-[ "$(stat -c%s "$SYSTEM")" -eq 943718400 ] ||
+[ "$(stat -Lc%s "$SYSTEM")" -eq 943718400 ] ||
     { echo "unexpected system image size" >&2; exit 3; }
 e2fsck -fn "$SYSTEM" >/dev/null ||
     { echo "system e2fsck failed" >&2; exit 3; }
 
+if [ "$BLUETOOTH" -eq 1 ]; then
+    runtime_candidate=r7-bt-20261120
+else
+    runtime_candidate=r7-combined-20261119
+fi
 debugfs -R 'cat /bin/z1_runtime_manifest' "$SYSTEM" 2>/dev/null |
-    grep -F 'r7-combined-20261119' >/dev/null ||
-    { echo "R7 runtime manifest is not installed" >&2; exit 3; }
+    grep -F "$runtime_candidate" >/dev/null ||
+    { echo "expected runtime manifest is not installed" >&2; exit 3; }
 for pair in \
     "/lib/modules/z1-radio/wlan_gen2.ko 143c5611267eb4c5e20135fffdd39db491753147ef295278c3a69330c1fbf80f" \
     "/lib/modules/z1-radio/z1_gpsdrv.ko 5cab8a98e9bad3fc7cfa369af2b850dc9c271cd81678150b77279d22667de717" \
@@ -119,6 +141,19 @@ for pair in \
     [ "$actual" = "$expected" ] ||
         { echo "image payload mismatch: $payload expected=$expected actual=$actual" >&2; exit 3; }
 done
+
+if [ "$BLUETOOTH" -eq 1 ]; then
+    for pair in \
+        "/bin/z1_linux7_radio_init.sh dff768b4846765f462abbc6bca6b3c041ccc1d1e8458172bc4289f99354872a5" \
+        "/bin/z1_bt_hci_probe b0f783c0f295e183ec78454a4b410d7cc33fdb331f3e434384e443389096940e" \
+        "/bin/z1diag/z1_diag_bt.sh 96201f608e633b4da2a3877cecbeeabc4428f8369af10f63c2bf0f18ccbebbe6"; do
+        read -r payload expected <<< "$pair"
+        actual=$(debugfs -R "cat $payload" "$SYSTEM" 2>/dev/null | sha256sum)
+        actual=${actual%% *}
+        [ "$actual" = "$expected" ] ||
+            { echo "Bluetooth image payload mismatch: $payload expected=$expected actual=$actual" >&2; exit 3; }
+    done
+fi
 
 if [ "$SPEAKER_GPIO" -eq 1 ]; then
     PREFLIGHT_TMP=$(mktemp -d /tmp/z1-speaker-preflight.XXXXXX)
@@ -189,7 +224,9 @@ if [ "$SPEAKER_GPIO" -eq 1 ]; then
 
 fi
 
-if [ "$SPEAKER_GPIO" -eq 1 ]; then
+if [ "$BLUETOOTH" -eq 1 ]; then
+    echo "R7 Bluetooth preflight PASS"
+elif [ "$SPEAKER_GPIO" -eq 1 ]; then
     echo "R7 speaker GPIO preflight PASS"
 else
     echo "R7 preflight PASS"
@@ -199,6 +236,9 @@ echo "  system: $SYSTEM (sha256 $SYSTEM_SHA)"
 echo "  target: bootimg then android; rollback boot $BOOT_ROLLBACK"
 if [ "$SPEAKER_GPIO" -eq 1 ]; then
     echo "  speaker: GPIO140 active-high, module $module_sha"
+fi
+if [ "$BLUETOOTH" -eq 1 ]; then
+    echo "  bluetooth: factory combo 0x6572, H4 probe, NVRAM shape gate"
 fi
 if [ "$EXECUTE" -ne 1 ]; then
     echo "dry-run only; add --execute to this command when the device is ready"

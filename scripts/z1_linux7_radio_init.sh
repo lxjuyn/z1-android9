@@ -96,6 +96,44 @@ for node in /btif@1100e000 /btif@1100e000/btif_tx@11000380 \
     node_enabled_or_unspecified "$node" || skip "radio DT node disabled: $node"
 done
 
+# The factory Bluetooth HAL polls this property for five seconds and aborts
+# initialization when it is missing or "-1". The stock Z1 ramdisk sets the
+# same value before radio userspace starts.
+combo_chip_id=0x6572
+/system/bin/setprop persist.mtk.wcn.combo.chipid "$combo_chip_id" ||
+    skip "cannot set factory Bluetooth combo chip id"
+observed_combo_chip_id=$(/system/bin/getprop persist.mtk.wcn.combo.chipid 2>/dev/null)
+[ "$observed_combo_chip_id" = "$combo_chip_id" ] ||
+    skip "factory Bluetooth combo chip id is '$observed_combo_chip_id', expected '$combo_chip_id'"
+say "Bluetooth combo chip id=$observed_combo_chip_id"
+
+# R7 has no Android 4.4 nvram_daemon. The factory Bluetooth library still
+# gates every NVRAM read on this property. Publish it only when the existing
+# per-device AP NVRAM tree has the expected shape; neither record is copied or
+# rewritten. The runtime gate separately exposes the result to CI and board
+# diagnostics.
+bt_nvram_record=/data/nvram/APCFG/APRDEB/BT_Addr
+wifi_nvram_record=/data/nvram/APCFG/APRDEB/WIFI
+bt_nvram_ready=0
+if [ -f "$bt_nvram_record" ] && [ ! -L "$bt_nvram_record" ] &&
+   [ -f "$wifi_nvram_record" ] && [ ! -L "$wifi_nvram_record" ] &&
+   [ "$(wc -c < "$bt_nvram_record" 2>/dev/null)" = 64 ] &&
+   [ "$(wc -c < "$wifi_nvram_record" 2>/dev/null)" = 512 ] &&
+   [ -n "$(od -An -tx1 -N64 "$bt_nvram_record" 2>/dev/null | tr -d ' 0\n')" ]; then
+    if [ "$(/system/bin/getprop nvram_init 2>/dev/null)" != Ready ]; then
+        /system/bin/setprop nvram_init Ready ||
+            say "cannot publish NVRAM readiness for the factory Bluetooth library"
+    fi
+    if [ "$(/system/bin/getprop nvram_init 2>/dev/null)" = Ready ]; then
+        bt_nvram_ready=1
+        say "Bluetooth NVRAM shape valid; factory nvram_init=Ready"
+    fi
+else
+    say "Bluetooth NVRAM unavailable: expected 64-byte BT_Addr and 512-byte WIFI under /data/nvram/APCFG/APRDEB"
+fi
+/system/bin/setprop sys.z1.radio.bt_nvram_ready "$bt_nvram_ready" ||
+    say "cannot publish Bluetooth NVRAM readiness state"
+
 # The Linux7 kernel has FW_LOADER built in. Its firmware_class.path bootarg
 # directs request_firmware() to /system/etc/firmware after init has mounted
 # /system (this script runs from post-fs, before the radio modules are loaded).
