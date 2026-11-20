@@ -5,7 +5,7 @@ candidate. It selects:
 
 - DL1 playback through the MT6323 speaker and headphone paths;
 - AWB capture with the MT6572 AFE source set to `MIC`;
-- the MT6323 `MIC Route` and `MIC1` input mux.
+- the MT6323 `MIC Route Switch` and `MIC1` input mux.
 
 The script is read-only with respect to /data. It waits at most 60 seconds for
 `controlC0`, records every `tinymix` command and its error, and exits nonzero

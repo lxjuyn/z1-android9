@@ -33,7 +33,7 @@ set_one "Headphone Volume" 18
 
 # Capture path: AWB memory interface -> ADDA uplink -> MT6323 MIC1.
 set_one "AWB Source" MIC
-set_one "MIC Route" 1
+set_one "MIC Route Switch" 1
 set_one "MIC Input Mux" MIC1
 
 count=$(tinymix 2>/dev/null | wc -l)

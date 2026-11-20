@@ -15,7 +15,7 @@ class AudioRouteTest(unittest.TestCase):
             "Speaker Route Switch",
             "Speaker Switch",
             "Headphone Switch",
-            "MIC Route",
+            "MIC Route Switch",
         ):
             self.assertIn(f'set_one "{control}" 1', text)
             self.assertNotIn(f'set_one "{control}" On', text)
