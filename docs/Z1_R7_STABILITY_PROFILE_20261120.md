@@ -116,3 +116,60 @@ After boot read the three properties `persist.mtk.wcn.combo.chipid`,
 out when all three gates pass, collect WMT, BTIF, and H4 results before changing
 kernel transport. If the readiness gate fails, preserve the unit's existing
 NVRAM and diagnose the expected paths and sizes before writing any record.
+
+## Priority pair: Bluetooth, speaker and lock screen
+
+`out/r7_priority_bt_audio_lock/` combines the speaker-equipped, no-GNSS
+Bluetooth comparison system with the r19 lock-screen fix. It is an option for
+one board session when flash windows are limited. The no-GNSS v2 pair remains
+the isolated fallback if the combined pair fails the boot or input gate.
+GPS functionality is deferred; this pair retains only the watchdog isolation
+already in the v2 profile. Keep touch cadence and performance changes separate.
+
+| File | SHA256 |
+| --- | --- |
+| `boot.img` | `2d99381361466a05861af7fe17a51e5924e4e6094a47287edfdf1759e60294c3` |
+| `system.img` | `638e86df43bb449180f5f3b82dd83894f10fe229df04e1c84633a5a2234615c9` |
+| `MT6572_Z1_R7_STABILITY_scatter.txt` | `a1f34ae8d68924edb7275c80c0e0370016268d70928f099d6748c5b832fa713a` |
+
+The boot builder uses the Bluetooth comparison boot as the base and replaces
+only `hwcomposer.z1.so`. It verified every unchanged ramdisk record, including
+the late radio init trigger. The kernel is byte-identical, and the only DT
+change is the updated `linux,initrd-end`. The paired system passed read-only
+`e2fsck`; GPIO140 is active-high in the appended DT and the ext4 copy of
+`mt6572-mt6323.ko` matches the speaker baseline. The scatter allows only
+`bootimg` at `0x2980000` and `android` at `0x4340000`; both images fit.
+
+The path in `out/r7_priority_bt_audio_lock/staging_path` names the temporary
+SP Flash Tool directory. If gone, rebuild `boot.img` from the archived
+`boot-inputs.json` with `scripts/z1_build_adaptation_boot.py`, or use the
+archived boot. Recover `system.img` with `scripts/z1deploy/z1_image_block_delta.py
+apply`, using the v2 no-GNSS system as `--base`, the priority package delta as
+`--delta`, and a fresh `system.img` path as `--output`. Check all three hashes
+with `SHA256SUMS.flash` before Download Only. The standalone `--bt`/`--hwc-blank`
+flash-script profiles select older pairs and should not be used for this package.
+Start CH340 capture and the exact SP Flash Tool job before requesting the download
+USB connection. Remove the download cable for normal boot.
+
+Board gate for this combined pair:
+
+1. Verify `sys.boot_completed=1`, the same live `system_server` PID, and an
+   available input service over a 10-minute interval with physical swipes.
+   Confirm GNSS did not start. If Android restarts or touch stops, keep the
+   serial trace and use the isolated v2 pair for fault separation.
+2. After the three Bluetooth identity/readiness properties pass, test enable,
+   discovery, pairing and reconnect. On failure, capture WMT/BTIF before using
+   the H4 probe independently; don't run a raw probe while Android owns HCI.
+3. With headphones unplugged and Bluetooth off, play the bounded test tone via
+   `z1_diag_audio.sh trigger`, then play it with an Android media app at two
+   audible volume levels. If direct PCM is silent, check PCM RUNNING, Speaker
+   DAPM and GPIO140 during the same attempt. If direct PCM works and the app
+   is silent, capture AudioFlinger/AudioPolicy while the app is playing.
+4. Verify the effective HWC SHA is
+   `5e1294dea240ebb31a9623424ccdb27c78617dc6b929dd4b2c85096422e27ad5`.
+   Use `z1_lockscreen_probe.sh` for `display_blank=0 → 1 → 0` and repeat with
+   the physical power button. Observe the actual panel going dark, then a new
+   responsive frame after wake. A gate transition alone does not prove either.
+
+Status: host verified, not flashed. This does not establish Bluetooth link,
+physical speaker output, or panel behavior on a board.
