@@ -67,3 +67,22 @@ Acceptance order:
    before and after any performance change. Record `dumpsys gfxinfo` totals and
    `dumpsys SurfaceFlinger --latency`, with the CPU/GPU policy and loaded HWC
    hash recorded. Keep graphics timing experiments separate from stability.
+
+For a repeatable UI comparison, open the same unlocked portrait screen on both
+runs. It must be scrollable in both directions. With `Z1LOG` set to the active
+serial capture, upload the probe and run it against the foreground package:
+
+```sh
+z1a9_gpt/scripts/z1deploy/z1push.sh \
+    z1a9_gpt/scripts/diag/z1_diag_ui_swipes.sh z1_diag_ui_swipes.sh
+z1a9_gpt/scripts/z1deploy/z1push.sh --wait 120 --cmd \
+    'sh /data/local/tmp/z1stage/z1_diag_ui_swipes.sh com.android.launcher3 baseline'
+```
+
+Use the resolved foreground package if different. Compare only measurements
+ending with `Z1_UI_END valid=1`; the probe rejects a missing input service,
+restarted framework/app, wrong foreground app, or no rendered frames. Match
+the screen, display size, battery/thermal state and applied HWC build for
+both runs unless one of those is the variable being tested. This measures the
+app's reported rendering statistics; use SurfaceFlinger and display timing
+separately to identify a scanout or compositor bottleneck.
