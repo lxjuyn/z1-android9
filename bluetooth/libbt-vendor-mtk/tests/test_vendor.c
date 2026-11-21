@@ -237,6 +237,18 @@ static void direct_fallback(void) {
   driver_counts(3, 0, -12345);
   loader_counts(3, 3, 3);
 }
+static void unready_nvram(void) {
+  int fds[CH_MAX] = {0};
+  CHECK(vi->init(&callbacks, address) == 0);
+  CHECK(vi->op(BT_VND_OP_USERIAL_OPEN, fds) == 1);
+  CHECK(fds[0] >= 0 && fcntl(fds[0], F_GETFD) >= 0);
+  channels(fds, fds[0]);
+  CHECK(vi->op(BT_VND_OP_FW_CFG, NULL) == 0);
+  CHECK(fw_ok == 1 && fw_bad == 0);
+  vi->cleanup();
+  driver_counts(0, 0, -12345);
+  loader_counts(1, 1, 1);
+}
 static void fd_counts(int owned, int closed) {
   int actual_owned, actual_closed;
   get_fd_stats(&actual_owned, &actual_closed);
@@ -384,6 +396,7 @@ int main(int argc, char **argv) {
     else if (!strcmp(test, "fd-zero")) zero_fd();
     else if (!strcmp(test, "close-retry")) { close_failure(); cleanup_failure(); }
     else if (!strcmp(test, "direct-fallback")) direct_fallback();
+    else if (!strcmp(test, "unready-nvram")) unready_nvram();
     else if (!strcmp(test, "cleanup-disable-failure")) cleanup_failure();
     else { fprintf(stderr, "unknown case: %s\n", test); return 2; }
   }

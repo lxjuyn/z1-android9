@@ -21,6 +21,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <stdint.h>
+#include <sys/system_properties.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
@@ -142,12 +143,13 @@ static int open_direct_h4(void) {
    */
   fd = open(Z1_BT_DEVICE_PATH, O_RDWR | O_NONBLOCK | O_CLOEXEC | O_NOFOLLOW);
   if (fd < 0) {
+    int error = errno;
     ALOGE("cannot open %s for direct H4: %s", Z1_BT_DEVICE_PATH,
-          strerror(errno));
-    return -1;
+          strerror(error));
+    return -error;
   }
 
-  ALOGI("using direct H4 on %s after factory initialization did not return an HCI descriptor",
+  ALOGI("using direct H4 on %s",
         Z1_BT_DEVICE_PATH);
   return fd;
 }
@@ -164,19 +166,30 @@ static int z1_bt_userial_open(void *param) {
     return 0;
   }
 
-  /* mtk() opens stpbt (WMT func-on), then runs NVRAM/GORM HCI init. */
-  fd = mtk_bt_enable();
-  if (fd < 0) {
-    ALOGW("factory Bluetooth initialization failed (fd=%d); trying direct H4",
-          fd);
-    wait_for_wmt_reset_to_settle();
-    fd = open_direct_h4();
-    if (fd < 0) return 0;
-    hci_fd_owner = HCI_FD_DIRECT;
+  char ready[PROP_VALUE_MAX] = {0};
+  int factory_ready = __system_property_get("sys.z1.radio.bt_nvram_ready", ready) == 1 &&
+                      ready[0] == '1';
+  if (factory_ready) {
+    fd = mtk_bt_enable();
+    if (fd >= 0) {
+      ALOGI("factory Bluetooth HCI initialization completed");
+      hci_fd_owner = HCI_FD_FACTORY;
+    } else {
+      ALOGW("factory Bluetooth initialization failed (fd=%d); trying direct H4", fd);
+      wait_for_wmt_reset_to_settle();
+      fd = open_direct_h4();
+    }
   } else {
-    ALOGI("factory Bluetooth HCI initialization completed");
-    hci_fd_owner = HCI_FD_FACTORY;
+    ALOGW("factory Bluetooth NVRAM unavailable; trying direct H4");
+    fd = open_direct_h4();
+    /* BT_open() returns ENODEV when WMT function-on fails or STP is not ready. */
+    if (fd == -ENODEV) {
+      wait_for_wmt_reset_to_settle();
+      fd = open_direct_h4();
+    }
   }
+  if (fd < 0) return 0;
+  if (hci_fd_owner == HCI_FD_NONE) hci_fd_owner = HCI_FD_DIRECT;
 
   hci_fd = fd;
   for (channel = 0; channel < CH_MAX; ++channel) fd_array[channel] = fd;
@@ -229,7 +242,7 @@ static int z1_bt_op(bt_vendor_opcode_t opcode, void *param) {
     case BT_VND_OP_USERIAL_CLOSE:
       return z1_bt_userial_close();
     case BT_VND_OP_FW_CFG:
-      /* Only a successful synchronous factory init may complete FW_CFG. */
+      /* Both transports must publish a valid HCI descriptor before FW_CFG. */
       if (vendor_callbacks != NULL && vendor_callbacks->fwcfg_cb != NULL) {
         vendor_callbacks->fwcfg_cb(hci_fd >= 0 ? BT_VND_OP_RESULT_SUCCESS
                                              : BT_VND_OP_RESULT_FAIL);

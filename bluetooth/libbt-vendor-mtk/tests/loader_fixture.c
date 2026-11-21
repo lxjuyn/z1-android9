@@ -28,3 +28,11 @@ int __wrap_dlclose(void *handle) {
 void test_loader_stats(int *tries, int *opens, int *closes, int *bad) {
   *tries = attempts; *opens = acquired; *closes = released; *bad = wrong_name;
 }
+
+int __system_property_get(const char *name, char *value) {
+  const char *ready = getenv("Z1_TEST_NVRAM_READY");
+  if (strcmp(name, "sys.z1.radio.bt_nvram_ready") != 0 || !ready) return 0;
+  value[0] = ready[0];
+  value[1] = '\0';
+  return ready[0] ? 1 : 0;
+}
