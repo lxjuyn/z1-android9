@@ -102,7 +102,7 @@ ramdisk vendor library.
 
 ## Board gate
 
-Start CH340 capture at 115200 before powering the board. Confirm boot
+Start direct CH340 capture at 921600 before powering the R5 board (matching its live ttyS0 boot argument). Confirm boot
 completion and storage stability before enabling Bluetooth.
 
 The pass sequence is:
@@ -136,11 +136,14 @@ The board proved the transport change:
 - Android received HCI command-complete events through the new descriptor;
 - no `H4Protocol::Send` writev error occurred.
 
-The next failure was layer-specific. HCI command complete for
-`HCI_BLE_READ_WHITE_LIST_SIZE` returned status `0x30` (`Controller Busy`).
-Android 9's `hci_packet_parser.cc` treats a non-zero completion status as a
-null stream and aborts at `CHECK(stream != NULL)`. `com.android.bluetooth`
-therefore died after each startup attempt.
+The next failure was layer-specific. Multiple R5 crash records identify
+`parse_read_local_extended_features_response` in `libbluetooth.so`, with
+`CHECK(stream != NULL)` at LineageOS 16 `hci_packet_parser.cc:131`. This
+matches the parser for HCI Read Local Extended Features (`0x1004`). The
+abort record does not include the raw event or identify the failing page.
+Do not attribute this crash to LE Read White List Size or infer an HCI
+status from the abort. In Android's HCI status table, `0x30` is Parameter
+Out Of Mandatory Range; Controller Busy is `0x3a`.
 
 The same boot still had `nvram_init` empty and
 `sys.z1.radio.bt_nvram_ready=0`. R5 predates the committed NVRAM 66/514-byte
