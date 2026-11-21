@@ -2,6 +2,7 @@ import hashlib
 from pathlib import Path
 import shutil
 import subprocess
+import tempfile
 import unittest
 
 
@@ -12,6 +13,8 @@ PATCH = (
     REPO
     / "scripts/btgps/bt/patches/0002-stpbt-coalesce-h4-writev.patch"
 )
+PAGE_CAP_PATCHER = REPO / "scripts/btgps/bt/patch_bluetooth_page_cap.py"
+BLUETOOTH_BASE = WORKSPACE / "out/z1_bt_stage/a9/libbluetooth.so"
 CANONICAL_MODULES = sorted(
     (WORKSPACE / "bridge_backups/products").glob(
         "products_r7_r5_stp_writev_*/mtk_stp_bt_soc.ko"
@@ -52,6 +55,24 @@ class StpbtWritevPatchTest(unittest.TestCase):
         self.assertFalse(
             any(line.startswith("+") and ".write = BT_write" in line for line in added)
         )
+
+    @unittest.skipUnless(
+        BLUETOOTH_BASE.is_file(),
+        "pinned R5 libbluetooth.so is not present",
+    )
+    def test_feature_page_cap_patch_is_reproducible(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "libbluetooth.so"
+            subprocess.run(
+                ["python3", str(PAGE_CAP_PATCHER), str(BLUETOOTH_BASE), str(output)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(
+                hashlib.sha256(output.read_bytes()).hexdigest(),
+                "86f6c3f0de68d417273d7fc869712f2d01b993b7aa2e43e76336a9daee034833",
+            )
 
 
 @unittest.skipUnless(
