@@ -142,8 +142,8 @@ The next failure was layer-specific. Multiple R5 crash records identify
 matches the parser for HCI Read Local Extended Features (`0x1004`). The
 full log also records `read_command_complete_header: return status - 0x30`
 before the abort. In Android's HCI status table, `0x30` is Parameter Out Of
-Mandatory Range; Controller Busy is `0x3a`. The raw event and page number
-were not captured. Do not attribute this crash to LE Read White List Size.
+Mandatory Range; Controller Busy is `0x3a`. Do not attribute this crash to LE
+Read White List Size.
 
 `scripts/btgps/bt/z1_bt_hci_probe.c` now has an optional `--features` mode
 that requests pages 0 through 3 and prints the returned page, maximum page,
@@ -154,6 +154,36 @@ The same boot still had `nvram_init` empty and
 `sys.z1.radio.bt_nvram_ready=0`. R5 predates the committed NVRAM 66/514-byte
 shape and AID 1050 access fix. The factory path therefore never completed its
 controller setup before direct H4 was selected.
+
+## Live NVRAM and feature-page probe
+
+On a clean R5 boot, the existing device-local records were confirmed as
+66-byte `BT_Addr` and 514-byte `WIFI`. Root-side metadata-only changes set the
+directories to `0770 root:bluetooth`, the files to `0660 root:bluetooth`, and
+published `nvram_init=Ready` plus `sys.z1.radio.bt_nvram_ready=1`. No record
+content was copied or changed.
+
+The first Bluetooth enable still failed below NVRAM: WMT waited 20 seconds for
+its function-on RX reply, triggered `there is no sync pkt in BTIF buffer`, and
+performed a whole-chip reset. The factory path therefore did not reach the
+readiness gate on that first attempt.
+
+After the reset settled, an exclusive direct-H4 probe produced:
+
+```text
+PASS opcode=0x0c03
+PASS opcode=0x1001
+FEATURE requested=0 status=0x00 page=0 max_page=2 features=bf3e8dfedbff5b87
+FEATURE requested=1 status=0x00 page=1 max_page=2 features=0000000000000000
+FEATURE requested=2 status=0x30 page=2 max_page=2 features=0000000000000000
+FEATURE requested=3 status=0x30 page=3 max_page=2 features=0000000000000000
+```
+
+This proves that raw H4 command/event transport works after the WMT reset and
+identifies the controller/framework mismatch: the controller reports page 2
+as supported but rejects it with `0x30`. Android 9's parser treats that
+rejection as fatal. The transport must stop after the last successful feature
+page, or request only pages the controller actually accepts.
 
 ## R6 follow-up
 
@@ -168,6 +198,7 @@ R6 combines the board-tested R5 transport with the committed NVRAM fix:
 | R5-to-R6 delta | `46218a794bea5c3f834d175c9dccc46f4f3429d301c7b38eb0c2840d82abb1a9` |
 
 R6 passed replacement readback, exact delta replay, and `e2fsck -fn`. It is
-host verified and awaits a clean board boot. The decisive check is whether the
-factory NVRAM path now completes and `/dev/stpbt` reaches the controller-ready
-state before Android sends the BLE initialization commands.
+host verified and awaits a clean board boot. It corrects the factory NVRAM
+gate, but the board probe above shows that R6 also needs feature-page parser
+tolerance and a WMT function-on retry path before it can be the final
+Bluetooth candidate.
