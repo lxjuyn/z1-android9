@@ -13,6 +13,9 @@ BASE_DELTA_TARGET_SHA=${Z1_BT_BASE_DELTA_TARGET_SHA:-e27601e75d416e6f2986a024a57
 [[ "$BASE_DELTA" != none ]] || BASE_DELTA=
 EXPECTED_VENDOR_SHA=a705913c606709447958ac1071366df3d5d5af521a975b29d6cd9815edd0dc7f
 TOOL="$HERE/z1_image_block_delta.py"
+RADIO_SOURCE="$ROOT/z1a9_gpt/scripts/z1_linux7_radio_init.sh"
+RUNTIME_SOURCE="$ROOT/z1a9_gpt/scripts/z1deploy/z1_r4_runtime_manifest.sh"
+HAL_RC_SOURCE="$ROOT/z1a9_gpt/rootdir/android.hardware.bluetooth@1.0-service.rc"
 
 if [[ $# != 2 ]]; then
     echo "usage: $0 <new-package-dir> <libbt-vendor.so>" >&2
@@ -27,7 +30,8 @@ SCATTER=${Z1_BT_SCATTER:-}
 SYSTEM="$OUT_DIR/system.img"
 DELTA="$OUT_DIR/system_from_base.img.z1delta"
 
-for path in "$BASE" "$VENDOR" "$BOOT" "$TOOL"; do
+for path in "$BASE" "$VENDOR" "$BOOT" "$TOOL" "$RADIO_SOURCE" \
+            "$RUNTIME_SOURCE" "$HAL_RC_SOURCE"; do
     [[ -f "$path" && ! -L "$path" ]] || {
         echo "missing regular input: $path" >&2
         exit 2
@@ -63,6 +67,38 @@ check_sha "$BASE" "$BASE_SHA"
 check_sha "$BOOT" "$BOOT_SHA"
 check_sha "$VENDOR" "$EXPECTED_VENDOR_SHA"
 
+write_image_file() {
+    local target=$1 source=$2 mode=$3 label=$4
+    local permission_bits=${mode#0}
+    debugfs -w -R "rm $target" "$SYSTEM" >/dev/null 2>&1 || true
+    debugfs -w -R "write $source $target" "$SYSTEM" >/dev/null
+    debugfs -w -R "set_inode_field $target mode 0100$permission_bits" "$SYSTEM" >/dev/null
+    debugfs -w -R "set_inode_field $target uid 0" "$SYSTEM" >/dev/null
+    debugfs -w -R "set_inode_field $target gid 0" "$SYSTEM" >/dev/null
+    for field in mtime atime ctime; do
+        debugfs -w -R "set_inode_field $target $field 1780000000" "$SYSTEM" >/dev/null
+    done
+    debugfs -w -R "ea_rm $target security.selinux" "$SYSTEM" >/dev/null 2>&1 || true
+    debugfs -w -R "ea_set $target security.selinux u:object_r:$label:s0" "$SYSTEM" >/dev/null
+}
+
+verify_image_file() {
+    local target=$1 expected=$2 mode=$3 label=$4 readback
+    readback="$READBACK_DIR/$(printf '%s' "$target" | tr '/' '_')"
+    debugfs -R "dump $target $readback" "$SYSTEM" >/dev/null 2>&1
+    check_sha "$readback" "$expected"
+    debugfs -R "stat $target" "$SYSTEM" 2>/dev/null |
+        grep -qE "Type: regular.*Mode:  0*$mode" || {
+            echo "unexpected inode type or mode: $target" >&2
+            exit 3
+        }
+    debugfs -R "ea_list $target" "$SYSTEM" 2>/dev/null |
+        grep -q "u:object_r:$label:s0" || {
+            echo "SELinux label mismatch: $target" >&2
+            exit 3
+        }
+}
+
 mkdir -p "$OUT_DIR"
 if [[ -n "$BASE_DELTA" ]]; then
     check_sha "$BASE_DELTA" "$BASE_DELTA_SHA"
@@ -73,31 +109,21 @@ else
     chmod u+w "$SYSTEM"
 fi
 
-debugfs -w -R "rm /vendor/lib/libbt-vendor.so" "$SYSTEM" >/dev/null 2>&1 || true
-debugfs -w -R "write $VENDOR /vendor/lib/libbt-vendor.so" "$SYSTEM" >/dev/null
-debugfs -w -R "set_inode_field /vendor/lib/libbt-vendor.so mode 0100644" "$SYSTEM" >/dev/null
-debugfs -w -R "set_inode_field /vendor/lib/libbt-vendor.so uid 0" "$SYSTEM" >/dev/null
-debugfs -w -R "set_inode_field /vendor/lib/libbt-vendor.so gid 0" "$SYSTEM" >/dev/null
-for field in mtime atime ctime; do
-    debugfs -w -R "set_inode_field /vendor/lib/libbt-vendor.so $field 1780000000" "$SYSTEM" >/dev/null
-done
-debugfs -w -R "ea_rm /vendor/lib/libbt-vendor.so security.selinux" "$SYSTEM" >/dev/null 2>&1 || true
-debugfs -w -R "ea_set /vendor/lib/libbt-vendor.so security.selinux u:object_r:vendor_file:s0" "$SYSTEM" >/dev/null
+write_image_file /vendor/lib/libbt-vendor.so "$VENDOR" 0644 vendor_file
+write_image_file /bin/z1_linux7_radio_init.sh "$RADIO_SOURCE" 0755 system_file
+write_image_file /bin/z1_runtime_manifest "$RUNTIME_SOURCE" 0755 system_file
+write_image_file /vendor/etc/init/android.hardware.bluetooth@1.0-service.rc \
+    "$HAL_RC_SOURCE" 0644 vendor_configs_file
 
-readback=$(mktemp /tmp/z1-r3-libbt-vendor.XXXXXXXX)
-trap 'rm -f -- "$readback"' EXIT
-debugfs -R "dump /vendor/lib/libbt-vendor.so $readback" "$SYSTEM" >/dev/null 2>&1
-check_sha "$readback" "$EXPECTED_VENDOR_SHA"
-debugfs -R "stat /vendor/lib/libbt-vendor.so" "$SYSTEM" 2>/dev/null |
-    grep -qE 'Type: regular.*Mode:  0644' || {
-        echo "unexpected libbt-vendor inode type or mode" >&2
-        exit 3
-    }
-debugfs -R "ea_list /vendor/lib/libbt-vendor.so" "$SYSTEM" 2>/dev/null |
-    grep -q 'u:object_r:vendor_file:s0' || {
-        echo "libbt-vendor SELinux label mismatch" >&2
-        exit 3
-    }
+READBACK_DIR=$(mktemp -d /tmp/z1-r3-bt-readback.XXXXXXXX)
+trap 'find "$READBACK_DIR" -depth -delete' EXIT
+verify_image_file /vendor/lib/libbt-vendor.so "$EXPECTED_VENDOR_SHA" 0644 vendor_file
+verify_image_file /bin/z1_linux7_radio_init.sh \
+    "$(sha256sum "$RADIO_SOURCE" | awk '{print $1}')" 0755 system_file
+verify_image_file /bin/z1_runtime_manifest \
+    "$(sha256sum "$RUNTIME_SOURCE" | awk '{print $1}')" 0755 system_file
+verify_image_file /vendor/etc/init/android.hardware.bluetooth@1.0-service.rc \
+    "$(sha256sum "$HAL_RC_SOURCE" | awk '{print $1}')" 0644 vendor_configs_file
 
 e2fsck -fn "$SYSTEM" >/dev/null
 python3 "$TOOL" create --base "$BASE" --target "$SYSTEM" --output "$DELTA"

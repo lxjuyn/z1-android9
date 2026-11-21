@@ -8,6 +8,8 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts/z1_linux7_radio_init.sh"
+HAL_RC = ROOT / "rootdir/android.hardware.bluetooth@1.0-service.rc"
+BUILDER = ROOT / "scripts/z1deploy/z1_build_r7_bt_r3_system.sh"
 
 
 class RadioInitIdentityTest(unittest.TestCase):
@@ -50,7 +52,7 @@ class RadioInitIdentityTest(unittest.TestCase):
     def test_bt_only_reapplies_loaded_chip_identity_without_touching_wifi(self):
         text = SCRIPT.read_text()
         late = text[text.index("publish_bt_identity() {"):text.index("# Keep the initial publication")]
-        late = late.replace("/system/bin/", "").replace("/data/nvram/APCFG/APRDEB/", "$CASE_DIR/")
+        late = late.replace("/system/bin/", "").replace("/data/nvram", "$CASE_DIR")
         fake = """
 mode=--bt-identity-only
 getprop() {
@@ -67,14 +69,20 @@ setprop() {
         nvram_init) printf '%s\\n' "$2" > "$CASE_DIR/nvram" ;;
     esac
 }
+chown() { :; }
+chmod() { :; }
 say() { :; }
 """
         with tempfile.TemporaryDirectory() as td:
             fixture = Path(td)
+            aprdeb = fixture / 'APCFG/APRDEB'
+            aprdeb.mkdir(parents=True)
             (fixture / 'chip').write_text('-1\n')
             (fixture / 'nvram').write_text('\n')
-            (fixture / 'BT_Addr').write_bytes(bytes([1]) + bytes(63))
-            (fixture / 'WIFI').write_bytes(bytes(512))
+            # Match the factory runtime files: payload plus the retained MTK
+            # two-byte storage checksum.
+            (aprdeb / 'BT_Addr').write_bytes(bytes([1]) + bytes(63) + b'\xaa\xf1')
+            (aprdeb / 'WIFI').write_bytes(bytes(512) + b'\xaa\xa4')
             for ready, expected_rc in [('false', 1), ('true', 0)]:
                 result = subprocess.run(['sh', '-c', fake + late], capture_output=True,
                                         env=dict(os.environ, CASE_DIR=td, PERSIST_READY=ready))
@@ -93,7 +101,7 @@ say() { :; }
         wifi_record = text.index(
             'wifi_nvram_record=/data/nvram/APCFG/APRDEB/WIFI'
         )
-        shape_gate = text.index('[ "$(wc -c < "$bt_nvram_record" 2>/dev/null)" = 64 ]')
+        shape_gate = text.index('case "$bt_nvram_size" in')
         ready = text.index('/system/bin/setprop nvram_init Ready')
         state = text.index(
             '/system/bin/setprop sys.z1.radio.bt_nvram_ready "$bt_nvram_ready"'
@@ -103,6 +111,10 @@ say() { :; }
         self.assertLess(shape_gate, ready)
         self.assertLess(ready, state)
         self.assertIn('| tr -d \' 0\\n\'', text)
+        self.assertIn('64|66)', text)
+        self.assertIn('512|514)', text)
+        self.assertIn('/system/bin/chown 0:1050 "$nvram_dir"', text)
+        self.assertIn('/system/bin/chown 0:1050 "$nvram_file"', text)
 
     def test_toybox_chown_uses_owner_group_syntax(self):
         text = SCRIPT.read_text()
@@ -118,6 +130,25 @@ say() { :; }
         self.assertNotIn(
             "/system/bin/chown 1002 1001 /dev/stpbt", text
         )
+
+    def test_factory_hal_has_supplementary_nvram_group(self):
+        text = HAL_RC.read_text()
+        self.assertIn(
+            "service vendor.bluetooth-1-0 "
+            "/vendor/bin/hw/android.hardware.bluetooth@1.0-service\n",
+            text,
+        )
+        self.assertIn("    user bluetooth\n", text)
+        self.assertIn("    group bluetooth nvram\n", text)
+        self.assertNotIn("    group bluetooth\n", text)
+
+    def test_builder_keeps_regular_file_type_bits_when_setting_mode(self):
+        text = BUILDER.read_text()
+        self.assertIn(
+            'set_inode_field $target mode 0100$permission_bits',
+            text,
+        )
+        self.assertNotIn('set_inode_field $target mode 0$mode', text)
 
 
 if __name__ == "__main__":

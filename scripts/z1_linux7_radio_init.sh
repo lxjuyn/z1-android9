@@ -115,13 +115,55 @@ publish_bt_identity() {
     # per-device AP NVRAM tree has the expected shape; neither record is copied or
     # rewritten. The runtime gate separately exposes the result to CI and board
     # diagnostics.
+    #
+    # The factory-created runtime files retain the 2-byte MTK storage checksum,
+    # so the accepted sizes are payload plus checksum (66/514) as well as the
+    # stripped payload sizes (64/512). Stock data also carries legacy AID 9997;
+    # grant Android 9 AID_NVRAM (1050) access instead of embedding or rewriting
+    # the calibration payload.
+    nvram_root=/data/nvram
+    nvram_apcfg=$nvram_root/APCFG
+    nvram_aprd=$nvram_apcfg/APRDEB
     bt_nvram_record=/data/nvram/APCFG/APRDEB/BT_Addr
     wifi_nvram_record=/data/nvram/APCFG/APRDEB/WIFI
+    nvram_access_ready=0
+    if [ -d "$nvram_root" ] && [ ! -L "$nvram_root" ] &&
+       [ -d "$nvram_apcfg" ] && [ ! -L "$nvram_apcfg" ] &&
+       [ -d "$nvram_aprd" ] && [ ! -L "$nvram_aprd" ] &&
+       [ -f "$bt_nvram_record" ] && [ ! -L "$bt_nvram_record" ] &&
+       [ -f "$wifi_nvram_record" ] && [ ! -L "$wifi_nvram_record" ]; then
+        nvram_access_ready=1
+        for nvram_dir in "$nvram_root" "$nvram_apcfg" "$nvram_aprd"; do
+            /system/bin/chown 0:1050 "$nvram_dir" &&
+                /system/bin/chmod 0770 "$nvram_dir" ||
+                nvram_access_ready=0
+        done
+        for nvram_file in "$bt_nvram_record" "$wifi_nvram_record"; do
+            /system/bin/chown 0:1050 "$nvram_file" &&
+                /system/bin/chmod 0660 "$nvram_file" ||
+                nvram_access_ready=0
+        done
+    fi
+
+    bt_nvram_size=
+    wifi_nvram_size=
+    if [ "$nvram_access_ready" = 1 ]; then
+        bt_nvram_size=$(wc -c < "$bt_nvram_record" 2>/dev/null)
+        wifi_nvram_size=$(wc -c < "$wifi_nvram_record" 2>/dev/null)
+    fi
+    bt_nvram_shape_ready=0
+    wifi_nvram_shape_ready=0
+    case "$bt_nvram_size" in
+        64|66) bt_nvram_shape_ready=1 ;;
+    esac
+    case "$wifi_nvram_size" in
+        512|514) wifi_nvram_shape_ready=1 ;;
+    esac
+
     bt_nvram_ready=0
-    if [ -f "$bt_nvram_record" ] && [ ! -L "$bt_nvram_record" ] &&
-       [ -f "$wifi_nvram_record" ] && [ ! -L "$wifi_nvram_record" ] &&
-       [ "$(wc -c < "$bt_nvram_record" 2>/dev/null)" = 64 ] &&
-       [ "$(wc -c < "$wifi_nvram_record" 2>/dev/null)" = 512 ] &&
+    if [ "$nvram_access_ready" = 1 ] &&
+       [ "$bt_nvram_shape_ready" = 1 ] &&
+       [ "$wifi_nvram_shape_ready" = 1 ] &&
        [ -n "$(od -An -tx1 -N64 "$bt_nvram_record" 2>/dev/null | tr -d ' 0\n')" ]; then
         if [ "$(/system/bin/getprop nvram_init 2>/dev/null)" != Ready ]; then
             /system/bin/setprop nvram_init Ready ||
@@ -132,7 +174,7 @@ publish_bt_identity() {
             say "Bluetooth NVRAM shape valid; factory nvram_init=Ready"
         fi
     else
-        say "Bluetooth NVRAM unavailable: expected 64-byte BT_Addr and 512-byte WIFI under /data/nvram/APCFG/APRDEB"
+        say "Bluetooth NVRAM unavailable: expected BT_Addr=64/66 and WIFI=512/514 bytes with AID_NVRAM access under /data/nvram/APCFG/APRDEB"
     fi
     /system/bin/setprop sys.z1.radio.bt_nvram_ready "$bt_nvram_ready" ||
         say "cannot publish Bluetooth NVRAM readiness state"
