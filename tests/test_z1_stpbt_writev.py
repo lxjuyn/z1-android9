@@ -22,6 +22,10 @@ CANONICAL_PACKAGE = Path(
     "/media/lxj/1e749c56-0693-6644-a595-1b45353bc925/"
     "z1-archive/r7-r5-bt-h4-writev-lock-20261121"
 )
+R6_PACKAGE = Path(
+    "/media/lxj/1e749c56-0693-6644-a595-1b45353bc925/"
+    "z1-archive/r7-r6-bt-nvram-writev-20261121_231045"
+)
 EXPECTED_MODULE_SHA256 = (
     "af2f849794e26272716dbc79ba7239803a05d1ecbce53e55eb98f60c3c76203f"
 )
@@ -95,6 +99,32 @@ class StpbtWritevPackageTest(unittest.TestCase):
         for name, digest in expected.items():
             actual = hashlib.sha256(
                 (CANONICAL_PACKAGE / name).read_bytes()
+            ).hexdigest()
+            self.assertEqual(actual, digest)
+
+
+@unittest.skipUnless(
+    (R6_PACKAGE / "boot.img").is_file()
+    and (R6_PACKAGE / "system.img").is_file()
+    and (R6_PACKAGE / "system_from_r5.img.z1delta").is_file(),
+    "materialized R6 package is not present",
+)
+class StpbtR6PackageTest(unittest.TestCase):
+    def test_package_has_pinned_boot_system_and_delta(self):
+        expected = {
+            "boot.img": (
+                "5ae4c69066d5285a6819d88f82ed11a4d3bce4b3bc9bd8775dc8425270a2be7d"
+            ),
+            "system.img": (
+                "5bfbb8eaf17803190b6c6c6a0bff149fc3d600dcdb4d9e6bb87f455f81719663"
+            ),
+            "system_from_r5.img.z1delta": (
+                "46218a794bea5c3f834d175c9dccc46f4f3429d301c7b38eb0c2840d82abb1a9"
+            ),
+        }
+        for name, digest in expected.items():
+            actual = hashlib.sha256(
+                (R6_PACKAGE / name).read_bytes()
             ).hexdigest()
             self.assertEqual(actual, digest)
 

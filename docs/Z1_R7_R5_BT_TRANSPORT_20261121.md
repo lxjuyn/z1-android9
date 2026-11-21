@@ -1,6 +1,6 @@
 # R7 R5: Bluetooth startup and H4 transmission
 
-Status: `HOST_VERIFIED_NOT_DEVICE_TESTED`.
+Status: `BOARD_TESTED_PARTIAL_PASS`.
 
 ## Findings
 
@@ -120,3 +120,46 @@ shipped. If no HCI reply follows a successful WMT open, stop Android Bluetooth
 and confirm it released `/dev/stpbt` before using the exclusive HCI probe.
 Test scan, pairing, reconnect, Wi-Fi coexistence, and A2DP separately. Earlier
 SoC resets remain a separate issue.
+
+## Board result
+
+R5 was flashed successfully on 2026-11-21. `boot.img` and `system.img` matched
+the published hashes, the module running in memory was 16,384 bytes in
+`/proc/modules`, and system readback found the new module at
+`/system/lib/modules/z1-radio/mtk_stp_bt_soc.ko` with SHA256
+`af2f8497...`. The installed vendor adapter read back as `a705913c...`.
+
+The board proved the transport change:
+
+- `z1-bt-vendor` loaded the direct-H4 adapter;
+- after the factory initializer failed, it opened `/dev/stpbt` directly;
+- Android received HCI command-complete events through the new descriptor;
+- no `H4Protocol::Send` writev error occurred.
+
+The next failure was layer-specific. HCI command complete for
+`HCI_BLE_READ_WHITE_LIST_SIZE` returned status `0x30` (`Controller Busy`).
+Android 9's `hci_packet_parser.cc` treats a non-zero completion status as a
+null stream and aborts at `CHECK(stream != NULL)`. `com.android.bluetooth`
+therefore died after each startup attempt.
+
+The same boot still had `nvram_init` empty and
+`sys.z1.radio.bt_nvram_ready=0`. R5 predates the committed NVRAM 66/514-byte
+shape and AID 1050 access fix. The factory path therefore never completed its
+controller setup before direct H4 was selected.
+
+## R6 follow-up
+
+R6 combines the board-tested R5 transport with the committed NVRAM fix:
+
+`/media/lxj/1e749c56-0693-6644-a595-1b45353bc925/z1-archive/r7-r6-bt-nvram-writev-20261121_231045/`
+
+| File | SHA256 |
+| --- | --- |
+| `boot.img` | `5ae4c69066d5285a6819d88f82ed11a4d3bce4b3bc9bd8775dc8425270a2be7d` |
+| `system.img` | `5bfbb8eaf17803190b6c6c6a0bff149fc3d600dcdb4d9e6bb87f455f81719663` |
+| R5-to-R6 delta | `46218a794bea5c3f834d175c9dccc46f4f3429d301c7b38eb0c2840d82abb1a9` |
+
+R6 passed replacement readback, exact delta replay, and `e2fsck -fn`. It is
+host verified and awaits a clean board boot. The decisive check is whether the
+factory NVRAM path now completes and `/dev/stpbt` reaches the controller-ready
+state before Android sends the BLE initialization commands.
