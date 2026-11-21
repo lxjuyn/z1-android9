@@ -69,7 +69,7 @@
     },
     {
       "path": "/system/bin/z1_linux7_radio_init.sh",
-      "sha256": "dff768b4846765f462abbc6bca6b3c041ccc1d1e8458172bc4289f99354872a5",
+      "sha256": "718cb40441d7ab1acdc50733d5135f403c93b2f2b01a56a07b0a74af16d7260c",
       "mode": "755",
       "role": "identity-gated Bluetooth/Wi-Fi bring-up with factory combo and NVRAM gates"
     },

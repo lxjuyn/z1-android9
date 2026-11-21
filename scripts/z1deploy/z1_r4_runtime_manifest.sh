@@ -58,7 +58,7 @@ case "${1:-}" in
         codec_sha=3fa88d5aa0734612aefec8f45de1b4cabc24a86f67a383fb39f85481663f03cc
         audio_sha=3f1b3a841aea4eedd7cb7ba5c22ebe12e6062b6ec88ec5d28eed6864251e1722
         wlan_sha=143c5611267eb4c5e20135fffdd39db491753147ef295278c3a69330c1fbf80f
-        radio_sha=b3979f564462d2801202e5684691ee107efa7fb7abefc45bfc80e1bffa6d3ad2
+        radio_sha=718cb40441d7ab1acdc50733d5135f403c93b2f2b01a56a07b0a74af16d7260c
         probe_sha=b0f783c0f295e183ec78454a4b410d7cc33fdb331f3e434384e443389096940e
         diag_sha=96201f608e633b4da2a3877cecbeeabc4428f8369af10f63c2bf0f18ccbebbe6
         ;;

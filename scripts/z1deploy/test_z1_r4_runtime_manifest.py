@@ -294,7 +294,7 @@ class R4RuntimeManifestTest(unittest.TestCase):
         self.write_getprop()
         self.write_tools({
             "/system/bin/z1_linux7_radio_init.sh":
-                "b3979f564462d2801202e5684691ee107efa7fb7abefc45bfc80e1bffa6d3ad2",
+                "718cb40441d7ab1acdc50733d5135f403c93b2f2b01a56a07b0a74af16d7260c",
         })
         self.write("sys/class/leds/lcd-backlight/display_blank", "0\n")
         self.write_bytes("data/nvram/APCFG/APRDEB/BT_Addr", 66)
