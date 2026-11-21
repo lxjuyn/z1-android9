@@ -3,7 +3,7 @@
 # z1_diag_audio.sh - Z1 audio deep-dive evidence probe
 #
 # Chain under test: MT6572 AFE + MT6323 codec (gabin8 ASoC machine driver)
-#                   -> tinyalsa (/dev/snd) -> legacy MT6572 audio HAL
+#                   -> tinyalsa (/dev/snd) -> A9 primary audio HAL
 #                   -> AudioFlinger / AudioPolicy.
 #
 # Usage:
@@ -12,9 +12,11 @@
 #
 # The trigger records independent direct PCM playback, capture, and Android
 # audio service state:
-#   1. tinyplay  + a locally generated low-level PCM tone  (kernel PCM path)
-#   2. tinycap   (capture path)
-#   3. dumpsys media.audio_flinger  (passive; use a real app for playback)
+#   1. save the mixer, force a speaker-only route, then play a locally
+#      generated low-level PCM tone through tinyplay
+#   2. record PCM, Speaker DAPM, GPIO140 and optional MT6323/AFE registers
+#   3. tinycap   (capture path)
+#   4. dumpsys media.audio_flinger  (passive; use a real app for playback)
 # Nothing outside /data/local/z1diag is written.
 # ---------------------------------------------------------------------------
 
@@ -42,6 +44,31 @@ hdr() {
     { printf '# %s\n# %s\n' "$1" "$(date 2>/dev/null)"; } >> "$2" 2>/dev/null || true
 }
 fact() { printf '%s=%s\n' "$1" "$2" >> "$FACTS" 2>/dev/null || true; }
+
+mixer_value() {
+    tinymix 2>/dev/null | awk -v name="$1" '
+        {
+            sub(/\r$/, "", $0)
+            at = index($0, name)
+            if (!at || substr($0, at) != name)
+                next
+            value = substr($0, at + length(name))
+            gsub(/^[ \t]+|[ \t]+$/, "", value)
+            print value
+            exit
+        }'
+}
+
+mixer_set() {
+    _label=$1
+    _name=$2
+    _value=$3
+    _out=$(tinymix "$_name" "$_value" 2>&1)
+    _rc=$?
+    printf 'tinymix "%s" %s: rc=%s %s\n' "$_name" "$_value" "$_rc" "$_out" >> "$CUR"
+    fact "MIXER_${_label}_RC" "$_rc"
+    [ "$_rc" -eq 0 ] || TRIGGER_FAIL=1
+}
 
 TO=
 have timeout && TO="timeout 60"
@@ -107,6 +134,39 @@ fi
 CUR=$OUT/02_trigger.txt
 hdr "Audio trigger attempts" "$CUR"
 WAV=$OUT/tone.wav
+TRIGGER_FAIL=0
+
+# Preserve the boot-time route and restore it on every exit path. The operator
+# must leave wired headphones physically disconnected for this differential.
+HP_SWITCH_BEFORE=$(mixer_value "Headphone Switch")
+SPK_ROUTE_BEFORE=$(mixer_value "Speaker Route Switch")
+SPK_SWITCH_BEFORE=$(mixer_value "Speaker Switch")
+SPK_VOLUME_BEFORE=$(mixer_value "Speaker Volume")
+ROUTE_ACTIVE=0
+
+restore_playback_route() {
+    [ "${ROUTE_ACTIVE:-0}" -eq 1 ] || return 0
+    [ -z "${HP_SWITCH_BEFORE:-}" ] ||
+        tinymix "Headphone Switch" "$HP_SWITCH_BEFORE" >/dev/null 2>&1 || true
+    [ -z "${SPK_ROUTE_BEFORE:-}" ] ||
+        tinymix "Speaker Route Switch" "$SPK_ROUTE_BEFORE" >/dev/null 2>&1 || true
+    [ -z "${SPK_SWITCH_BEFORE:-}" ] ||
+        tinymix "Speaker Switch" "$SPK_SWITCH_BEFORE" >/dev/null 2>&1 || true
+    [ -z "${SPK_VOLUME_BEFORE:-}" ] ||
+        tinymix "Speaker Volume" "$SPK_VOLUME_BEFORE" >/dev/null 2>&1 || true
+    ROUTE_ACTIVE=0
+    printf 'playback route restored\n' >> "$CUR"
+}
+trap restore_playback_route 0 1 2 15
+
+cap "$CUR" "mixer before speaker-only route" "tinymix 2>&1 | head -n 200"
+ROUTE_ACTIVE=1
+mixer_set HEADPHONE_OFF "Headphone Switch" 0
+mixer_set SPEAKER_ROUTE_ON "Speaker Route Switch" 1
+mixer_set SPEAKER_SWITCH_ON "Speaker Switch" 1
+mixer_set SPEAKER_VOLUME "Speaker Volume" 2
+cap "$CUR" "mixer during speaker-only route" "tinymix 2>&1 | head -n 200"
+fact SPEAKER_ONLY_ROUTE "$([ "$TRIGGER_FAIL" -eq 0 ] && echo ready || echo failed)"
 
 # 3 s, 48 kHz, stereo PCM16, 500 Hz, peak 1024/32768 (-30 dBFS).
 # This bypasses AudioFlinger and tests the kernel/codec/speaker path only.
@@ -126,36 +186,109 @@ wav_bytes=$(wc -c < "$WAV" 2>/dev/null) || wav_bytes=0
 
 cap "$CUR" "generated wav" "ls -l $WAV"
 
-if [ -x /system/bin/tinyplay ] && [ "$wav_bytes" -eq 576044 ] && have timeout; then
+if [ -x /system/bin/tinyplay ] && [ "$wav_bytes" -eq 576044 ] &&
+        have timeout && [ "$TRIGGER_FAIL" -eq 0 ]; then
     say "PATH1 tinyplay: playing $WAV"
     PLAY=$OUT/03_playback.txt
+    REGREAD=
+    for candidate in "$OUT/regread-arm" \
+            /data/local/tmp/z1stage/regread-arm \
+            /data/local/z1diag/regread-arm \
+            /data/local/tmp/r3probe_2116/regread; do
+        if [ -x "$candidate" ]; then
+            REGREAD=$candidate
+            break
+        fi
+    done
+    fact REGISTER_PROBE "$([ -n "$REGREAD" ] && echo present || echo absent)"
     : > "$PLAY" 2>/dev/null || true
     timeout 12 /system/bin/tinyplay "$WAV" -D 0 -d 0 > "$PLAY" 2>&1 &
     ppid=$!
     i=0
+    PCM_RUNNING=0
     while [ $i -lt 12 ]; do
         kill -0 "$ppid" 2>/dev/null || break
         for s in /proc/asound/card*/pcm*p/sub0/status; do
-            [ -r "$s" ] && printf '%s: %s\n' "$s" "$(head -n 1 "$s" 2>/dev/null)" >> "$PLAY" 2>/dev/null
+            [ -r "$s" ] || continue
+            state=$(head -n 1 "$s" 2>/dev/null)
+            printf '%s: %s\n' "$s" "$state" >> "$PLAY" 2>/dev/null
+            case "$state" in
+                *RUNNING*) PCM_RUNNING=1 ;;
+            esac
         done
-        for w in /sys/kernel/debug/asoc/*/dapm/Speaker; do
-            [ -r "$w" ] && head -n 1 "$w" >> "$PLAY"
-        done
+        find /sys/kernel/debug/asoc -type f \
+            \( -path '*/dapm/Speaker' -o -path '*/dapm/Speaker Driver' \) \
+            -print 2>/dev/null |
+            while IFS= read -r w; do
+                [ -r "$w" ] &&
+                    printf '%s: %s\n' "$w" "$(head -n 1 "$w")" >> "$PLAY"
+            done
         if [ -r /sys/kernel/debug/gpio ]; then
-            grep -E 'gpio-140([[:space:]]|$)|speaker-enable' /sys/kernel/debug/gpio >> "$PLAY" || true
+            grep -E 'gpio-140([[:space:]]|$)|speaker-enable' \
+                /sys/kernel/debug/gpio >> "$PLAY" 2>/dev/null || true
+        fi
+        if [ -n "$REGREAD" ] && [ "$i" -eq 2 ]; then
+            "$REGREAD" > "$OUT/registers_during.txt" 2>> "$PLAY" ||
+                fact REGISTER_PROBE_RESULT failed
         fi
         sleep 1
         i=$((i + 1))
     done
     wait "$ppid" 2>/dev/null
     play_rc=$?
+    restore_playback_route
     fact TRIGGER_PATH1_RC "$play_rc"
+    fact PCM_RUNNING "$PCM_RUNNING"
+    [ "$play_rc" -eq 0 ] || TRIGGER_FAIL=1
+    [ "$PCM_RUNNING" -eq 1 ] || TRIGGER_FAIL=1
+    if grep -q 'Speaker: On' "$PLAY"; then
+        fact SPEAKER_DAPM On
+    else
+        fact SPEAKER_DAPM missing
+        TRIGGER_FAIL=1
+    fi
+    if grep -q 'Speaker Driver: On' "$PLAY"; then
+        fact SPEAKER_DRIVER_DAPM On
+    else
+        fact SPEAKER_DRIVER_DAPM missing
+        TRIGGER_FAIL=1
+    fi
+    if grep -qE 'gpio-140.*(out hi|value=1)' "$PLAY"; then
+        fact GPIO140_HIGH 1
+    elif grep -q 'gpio-140' "$PLAY"; then
+        fact GPIO140_HIGH 0
+        TRIGGER_FAIL=1
+    else
+        fact GPIO140_STATE unavailable
+    fi
+    if [ -r "$OUT/registers_during.txt" ]; then
+        reg_value() {
+            awk -v label="$1" -v reg="$2" \
+                '$1 == label && $2 == reg { print $3; exit }' \
+                "$OUT/registers_during.txt"
+        }
+        CON5=$(reg_value PMIC 0x070a:)
+        SPK0=$(reg_value PMIC 0x0052:)
+        AFE0=$(reg_value AFE 0x010:)
+        fact AUDTOP_CON5 "$([ -n "$CON5" ] && echo "$CON5" || echo missing)"
+        fact SPK_CON0 "$([ -n "$SPK0" ] && echo "$SPK0" || echo missing)"
+        fact AFE_DAC_CON0 "$([ -n "$AFE0" ] && echo "$AFE0" || echo missing)"
+        [ "$CON5" = 0x1114 ] || TRIGGER_FAIL=1
+        [ "$SPK0" = 0x3001 ] || TRIGGER_FAIL=1
+        if [ -n "$AFE0" ] &&
+                [ $((AFE0 & 0x403)) -eq $((0x403)) ]; then
+            :
+        else
+            TRIGGER_FAIL=1
+        fi
+    fi
     cap "$CUR" "tinyplay exit + dmesg during playback" \
-        "tail -n 20 $PLAY; echo ---; dmesg 2>/dev/null | grep -i -E 'snd|afe|dai|pcm|under|mt6323' | tail -n 80"
+        "tail -n 80 $PLAY; echo ---; dmesg 2>/dev/null | grep -i -E 'snd|afe|dai|pcm|under|mt6323' | tail -n 80"
     fact TRIGGER_PATH1 tinyplay
 else
-    say "PATH1 skipped: usable WAV, tinyplay and timeout are all required"
+    say "PATH1 skipped: speaker route, usable WAV, tinyplay and timeout are all required"
     fact TRIGGER_PATH1 absent
+    TRIGGER_FAIL=1
 fi
 
 # ---------------------------------------------------------------------------
@@ -190,10 +323,13 @@ fi
 # ---------------------------------------------------------------------------
 say "PATH3: use a media app to play the tone; service dumps alone do not prove playback"
 fact TRIGGER_PATH3 manual_playback_required
+fact OPERATOR_AUDIBLE not_recorded
+fact PLAYBACK_DIFFERENTIAL_FAIL "$TRIGGER_FAIL"
+fact PHYSICAL_RESULT user_confirmation_required
 
 cap "$CUR" "final dmesg audio lines" \
     "dmesg 2>/dev/null | grep -i -E 'snd|afe|pcm|mt6323|dai' | tail -n 200"
 
 say "done: $OUT  (a human at the speaker is still the only real check)"
 cat "$FACTS" 2>/dev/null
-exit 0
+exit "$TRIGGER_FAIL"
