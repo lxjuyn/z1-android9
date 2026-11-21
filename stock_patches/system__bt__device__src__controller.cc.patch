@@ -1,0 +1,41 @@
+--- a/system/bt/device/src/controller.cc
++++ b/system/bt/device/src/controller.cc
+@@ -125,13 +125,18 @@
+   supported_commands[29] &= ~0x08;
+ #endif
+ 
++  for (auto& page : features_classic) page = {};
++  last_features_classic_page_index = 0;
+   // Read page 0 of the controller features next
+   uint8_t page_number = 0;
+   response = AWAIT_COMMAND(
+       packet_factory->make_read_local_extended_features(page_number));
+-  packet_parser->parse_read_local_extended_features_response(
+-      response, &page_number, &last_features_classic_page_index,
+-      features_classic, MAX_FEATURES_CLASSIC_PAGE_COUNT);
++  if (!packet_parser->parse_read_local_extended_features_response(
++          response, &page_number, &last_features_classic_page_index,
++          features_classic, MAX_FEATURES_CLASSIC_PAGE_COUNT)) {
++    LOG(ERROR) << "Controller did not provide Bluetooth feature page 0";
++    return future_new_immediate(FUTURE_FAIL);
++  }
+ 
+   CHECK(page_number == 0);
+   page_number++;
+@@ -169,9 +174,13 @@
+          page_number < MAX_FEATURES_CLASSIC_PAGE_COUNT) {
+     response = AWAIT_COMMAND(
+         packet_factory->make_read_local_extended_features(page_number));
+-    packet_parser->parse_read_local_extended_features_response(
+-        response, &page_number, &last_features_classic_page_index,
+-        features_classic, MAX_FEATURES_CLASSIC_PAGE_COUNT);
++    if (!packet_parser->parse_read_local_extended_features_response(
++            response, &page_number, &last_features_classic_page_index,
++            features_classic, MAX_FEATURES_CLASSIC_PAGE_COUNT)) {
++      LOG(WARNING) << "Stopping at the last validated Bluetooth feature page";
++      last_features_classic_page_index = page_number - 1;
++      break;
++    }
+ 
+     page_number++;
+   }

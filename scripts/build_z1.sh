@@ -23,6 +23,7 @@ if [[ "$Z1_KERNEL_VARIANT" == "stock" ]]; then
     fi
 fi
 if [[ "$Z1_KERNEL_VARIANT" == "mainline" ]]; then
+    python3 "$REPO_ROOT/scripts/apply_stock_patches.py" --source "$LOS_ROOT" --userspace-compat-only
     export Z1_MESA_SOURCE_DIR="$(bash "$REPO_ROOT/scripts/prepare_mesa_lima.sh" "$LOS_ROOT")"
     MESA_PYTHON_CACHE="$LOS_ROOT/.cache/z1-python2"
     export PYTHONPATH="$MESA_PYTHON_CACHE${PYTHONPATH:+:$PYTHONPATH}"

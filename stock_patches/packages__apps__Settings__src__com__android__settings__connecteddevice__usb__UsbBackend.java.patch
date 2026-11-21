@@ -1,0 +1,49 @@
+--- a/packages/apps/Settings/src/com/android/settings/connecteddevice/usb/UsbBackend.java
++++ b/packages/apps/Settings/src/com/android/settings/connecteddevice/usb/UsbBackend.java
+@@ -70,22 +70,31 @@
+     }
+ 
+     public long getCurrentFunctions() {
+-        return mUsbManager.getCurrentFunctions();
++        return mUsbManager == null ? UsbManager.FUNCTION_NONE
++                : mUsbManager.getCurrentFunctions();
+     }
+ 
+     public void setCurrentFunctions(long functions) {
+-        mUsbManager.setCurrentFunctions(functions);
++        if (mUsbManager != null) {
++            mUsbManager.setCurrentFunctions(functions);
++        }
+     }
+ 
+     public long getDefaultUsbFunctions() {
+-        return mUsbManager.getScreenUnlockedFunctions();
++        return mUsbManager == null ? UsbManager.FUNCTION_NONE
++                : mUsbManager.getScreenUnlockedFunctions();
+     }
+ 
+     public void setDefaultUsbFunctions(long functions) {
+-        mUsbManager.setScreenUnlockedFunctions(functions);
++        if (mUsbManager != null) {
++            mUsbManager.setScreenUnlockedFunctions(functions);
++        }
+     }
+ 
+     public boolean areFunctionsSupported(long functions) {
++        if (mUsbManager == null) {
++            return false;
++        }
+         if ((!mMidiSupported && (functions & UsbManager.FUNCTION_MIDI) != 0)
+                 || (!mTetheringSupported && (functions & UsbManager.FUNCTION_RNDIS) != 0)) {
+             return false;
+@@ -228,6 +237,10 @@
+     private void updatePorts() {
+         mPort = null;
+         mPortStatus = null;
++        // SystemServer may not publish USB on devices without host/accessory support.
++        if (mUsbManager == null) {
++            return;
++        }
+         UsbPort[] ports = mUsbManager.getPorts();
+         if (ports == null) {
+             return;

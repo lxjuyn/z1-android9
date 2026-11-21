@@ -1,0 +1,11 @@
+--- a/system/bt/hci/include/hci_packet_parser.h
++++ b/system/bt/hci/include/hci_packet_parser.h
+@@ -43,7 +43,7 @@
+       BT_HDR* response, uint8_t* supported_commands_ptr,
+       size_t supported_commands_length);
+ 
+-  void (*parse_read_local_extended_features_response)(
++  bool (*parse_read_local_extended_features_response)(
+       BT_HDR* response, uint8_t* page_number_ptr, uint8_t* max_page_number_ptr,
+       bt_device_features_t* feature_pages, size_t feature_pages_count);
+ 

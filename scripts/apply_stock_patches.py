@@ -23,9 +23,16 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--source", required=True, type=Path, help="LOS16 source root")
     ap.add_argument("--check", action="store_true", help="verify all result hashes without modifying source")
+    ap.add_argument("--userspace-compat-only", action="store_true",
+                    help="apply only the shared Bluetooth and Settings patches")
     args = ap.parse_args()
     source = args.source.resolve()
     entries = json.loads((ROOT / "stock_patches/manifest.json").read_text())
+    if args.userspace_compat_only:
+        entries = [item for item in entries if item["file"].startswith(
+            ("system/bt/", "packages/apps/Settings/"))]
+        if not entries:
+            ap.error("no shared userspace compatibility patches were found")
     failed = False
     for item in entries:
         target = source / item["file"]

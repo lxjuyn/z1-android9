@@ -1,0 +1,56 @@
+--- a/system/bt/hci/src/hci_packet_parser.cc
++++ b/system/bt/hci/src/hci_packet_parser.cc
+@@ -122,22 +122,39 @@
+   buffer_allocator->free(response);
+ }
+ 
+-static void parse_read_local_extended_features_response(
++static bool parse_read_local_extended_features_response(
+     BT_HDR* response, uint8_t* page_number_ptr, uint8_t* max_page_number_ptr,
+     bt_device_features_t* feature_pages, size_t feature_pages_count) {
+-  uint8_t* stream = read_command_complete_header(
+-      response, HCI_READ_LOCAL_EXT_FEATURES,
+-      2 + sizeof(bt_device_features_t) /* bytes after */);
+-  CHECK(stream != NULL);
+-
+-  STREAM_TO_UINT8(*page_number_ptr, stream);
+-  STREAM_TO_UINT8(*max_page_number_ptr, stream);
+-
+-  CHECK(*page_number_ptr < feature_pages_count);
+-  STREAM_TO_ARRAY(feature_pages[*page_number_ptr].as_array, stream,
+-                  (int)sizeof(bt_device_features_t));
+-
+-  buffer_allocator->free(response);
++  // A controller may reject a later page even after reporting it in the
++  // highest supported page number. Inspect this reply without a fatal CHECK.
++  if (response == nullptr) return false;
++  constexpr size_t kEventHeaderSize = 2;
++  constexpr size_t kCommandCompleteSize = 4;
++  constexpr size_t kPageFieldSize = 2;
++  const uint8_t* stream = response->data + response->offset;
++  bool valid = false;
++  if (response->len >= kEventHeaderSize + kCommandCompleteSize &&
++      stream[0] == HCI_COMMAND_COMPLETE_EVT &&
++      stream[1] + kEventHeaderSize == response->len &&
++      (stream[3] | (stream[4] << 8)) == HCI_READ_LOCAL_EXT_FEATURES) {
++    const uint8_t status = stream[5];
++    if (status != HCI_SUCCESS) {
++      LOG_ERROR(LOG_TAG, "%s: page %u returned status 0x%02x", __func__,
++                *page_number_ptr, status);
++    } else if (stream[1] == kCommandCompleteSize + kPageFieldSize +
++                                sizeof(bt_device_features_t) &&
++               stream[6] == *page_number_ptr && stream[6] < feature_pages_count &&
++               stream[7] >= stream[6]) {
++      *max_page_number_ptr = stream[7] < feature_pages_count
++                                 ? stream[7] : feature_pages_count - 1;
++      stream += kEventHeaderSize + kCommandCompleteSize + kPageFieldSize;
++      STREAM_TO_ARRAY(feature_pages[*page_number_ptr].as_array, stream,
++                      (int)sizeof(bt_device_features_t));
++      valid = true;
++    }
++  }
++  buffer_allocator->free(response);
++  return valid;
+ }
+ 
+ static void parse_ble_read_white_list_size_response(

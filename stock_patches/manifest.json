@@ -176,5 +176,29 @@
     "patch": "packages__providers__DownloadProvider__src__com__android__providers__downloads__DownloadProvider.java.patch",
     "base_sha256": "4c508fa85d9926efd0806b18d7419d7d144c9e9c2a231916a43a49d844372b58",
     "result_sha256": "c847e2c247ba68f799be0c7ece4c1f51a47e5ecd016590b68b3acad11f6ac968"
+  },
+  {
+    "file": "packages/apps/Settings/src/com/android/settings/connecteddevice/usb/UsbBackend.java",
+    "patch": "packages__apps__Settings__src__com__android__settings__connecteddevice__usb__UsbBackend.java.patch",
+    "base_sha256": "8d93920c963e3e6dc37870de1cf2c362ce8becd6328bdb9286002d7cabce4ecf",
+    "result_sha256": "433ea84b76ae8c1a53264c9fc7d21115f2ce55011cb54375bcf2c698931ff5d5"
+  },
+  {
+    "file": "system/bt/hci/include/hci_packet_parser.h",
+    "patch": "system__bt__hci__include__hci_packet_parser.h.patch",
+    "base_sha256": "023e866909bef78213d6deeeebd4d7b2602e0c434956380309a29eb33c8c826f",
+    "result_sha256": "c5c26961c4e061fae89d566bb5eae9805d4df1a4ae28965c0bfb28e4e6c7a707"
+  },
+  {
+    "file": "system/bt/hci/src/hci_packet_parser.cc",
+    "patch": "system__bt__hci__src__hci_packet_parser.cc.patch",
+    "base_sha256": "7ab7add79a866bb063937bba9b58dd8f545e8f299fa1456868f80dfb81d7473f",
+    "result_sha256": "1a278d2e8734e0a2675605a6eb6a19bba73b8b8975f3e4542f3f3951ae598e22"
+  },
+  {
+    "file": "system/bt/device/src/controller.cc",
+    "patch": "system__bt__device__src__controller.cc.patch",
+    "base_sha256": "14b2176ecccacf62b229dbed25465d3029ab67384af2bd2827a811f51696d9f6",
+    "result_sha256": "4c684b1ccef29ad11cbefc68e18c71c1395b93321901c242827e74bafdc1f009"
   }
 ]
