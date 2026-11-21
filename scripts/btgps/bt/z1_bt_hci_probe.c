@@ -101,16 +101,70 @@ static int command(int fd, uint16_t opcode, uint8_t expected_len)
     }
 }
 
+static int read_extended_features(int fd, uint8_t requested_page)
+{
+    uint8_t tx[] = { 0x01, 0x04, 0x10, 0x01, requested_page };
+    uint8_t header[3], event[255];
+    int64_t start = monotonic_ms();
+    ssize_t written;
+
+    if (start < 0)
+        return -1;
+    written = write(fd, tx, sizeof(tx));
+    if (written != (ssize_t)sizeof(tx)) {
+        if (written >= 0)
+            errno = EIO;
+        return -1;
+    }
+    for (;;) {
+        if (read_exact(fd, header, sizeof(header), start + 3000) < 0)
+            return -1;
+        if (header[0] != 0x04) {
+            errno = EPROTO;
+            return -1;
+        }
+        if (read_exact(fd, event, header[2], start + 3000) < 0)
+            return -1;
+        if (header[1] == 0x0f && header[2] == 4 &&
+            event[2] == tx[1] && event[3] == tx[2]) {
+            printf("FEATURE requested=%u command_status=0x%02x\n",
+                   requested_page, event[0]);
+            return 0;
+        }
+        if (header[1] != 0x0e || header[2] < 3 ||
+            event[1] != tx[1] || event[2] != tx[2])
+            continue;
+        if (header[2] < 4) {
+            errno = EPROTO;
+            return -1;
+        }
+        printf("FEATURE requested=%u status=0x%02x", requested_page, event[3]);
+        if (header[2] >= 6)
+            printf(" page=%u max_page=%u", event[4], event[5]);
+        if (header[2] >= 14) {
+            printf(" features=");
+            for (size_t i = 6; i < 14; ++i)
+                printf("%02x", event[i]);
+        }
+        putchar('\n');
+        return 0;
+    }
+}
+
 int main(int argc, char **argv)
 {
     const char *path = "/dev/stpbt";
     struct stat st;
+    int features = 0;
 
-    if (argc != 2 || strcmp(argv[1], "--exclusive-controller") != 0) {
+    if (argc < 2 || strcmp(argv[1], "--exclusive-controller") != 0 ||
+        (argc == 3 && strcmp(argv[2], "--features") != 0) || argc > 3) {
         fprintf(stderr, "Stop Android Bluetooth and confirm there is no other STP BT opener.\n"
-                        "Usage: %s --exclusive-controller\n", argv[0]);
+                        "Usage: %s --exclusive-controller [--features]\n", argv[0]);
         return 2;
     }
+    if (argc == 3)
+        features = 1;
     setvbuf(stdout, NULL, _IOLBF, 0);
     if (lstat(path, &st) < 0 || !S_ISCHR(st.st_mode)) {
         fprintf(stderr, "%s is not available as a character device\n", path);
@@ -127,7 +181,16 @@ int main(int argc, char **argv)
         perror("HCI Reset");
     else if (command(fd, 0x1001, 12) < 0)
         perror("HCI Read Local Version Information");
-    else
+    else if (features) {
+        result = 0;
+        for (uint8_t page = 0; page < 4; ++page) {
+            if (read_extended_features(fd, page) < 0) {
+                perror("HCI Read Local Extended Features");
+                result = 1;
+                break;
+            }
+        }
+    } else
         result = 0;
     if (close(fd) < 0) {
         perror("close /dev/stpbt");

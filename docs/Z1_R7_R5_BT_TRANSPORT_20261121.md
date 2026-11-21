@@ -140,10 +140,15 @@ The next failure was layer-specific. Multiple R5 crash records identify
 `parse_read_local_extended_features_response` in `libbluetooth.so`, with
 `CHECK(stream != NULL)` at LineageOS 16 `hci_packet_parser.cc:131`. This
 matches the parser for HCI Read Local Extended Features (`0x1004`). The
-abort record does not include the raw event or identify the failing page.
-Do not attribute this crash to LE Read White List Size or infer an HCI
-status from the abort. In Android's HCI status table, `0x30` is Parameter
-Out Of Mandatory Range; Controller Busy is `0x3a`.
+full log also records `read_command_complete_header: return status - 0x30`
+before the abort. In Android's HCI status table, `0x30` is Parameter Out Of
+Mandatory Range; Controller Busy is `0x3a`. The raw event and page number
+were not captured. Do not attribute this crash to LE Read White List Size.
+
+`scripts/btgps/bt/z1_bt_hci_probe.c` now has an optional `--features` mode
+that requests pages 0 through 3 and prints the returned page, maximum page,
+status, and feature bytes. Use it only after Android Bluetooth is disabled
+and no other `/dev/stpbt` opener remains.
 
 The same boot still had `nvram_init` empty and
 `sys.z1.radio.bt_nvram_ready=0`. R5 predates the committed NVRAM 66/514-byte

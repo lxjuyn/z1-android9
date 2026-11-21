@@ -37,6 +37,18 @@ logs. If both return `PASS`, the transport and these commands work without
 factory GORM initialization. Scan, device address provisioning, pairing and
 audio still need their own validation before selecting a replacement backend.
 
+To inspect the local extended-feature pages that Android 9 requests during
+controller start-up, use:
+
+```sh
+/data/local/tmp/z1_bt_hci_probe --exclusive-controller --features
+```
+
+This keeps the same exclusive-controller requirement and prints
+`FEATURE requested=... page=... max_page=... status=... features=...` for
+pages 0 through 3. A non-zero status is reported for diagnosis. The default
+probe behavior is unchanged when `--features` is omitted.
+
 Run the bounded framework diagnostic first:
 
 ```sh

@@ -39,6 +39,7 @@
 # Environment
 #   Z1DEV (default /dev/ttyUSB0)      Z1LOG (capture file, required online)
 #   Z1BAUD (default 921600)           Z1NO_STTY=1 to keep the port settings
+#   Z1_KEEP_ECHO=1 to keep remote shell echo enabled (default 0)
 #   Z1B64CHARS (default 400)          Z1CHUNK_LINES (default 8)
 #   Z1CHUNK_SLEEP (default 0.05)      Z1POLL (default 0.2)
 #   Z1PUSH_TIMEOUT (override the computed heredoc timeout)
@@ -60,6 +61,7 @@ POLL=${Z1POLL:-0.2}
 MODE=0644
 RETRIES=1
 WAIT=30
+KEEP_ECHO=${Z1_KEEP_ECHO:-0}
 DRYRUN=0
 FD_OPEN=0
 ECHO_OFF=0
@@ -101,6 +103,7 @@ Environment:
   Z1LOG           append-only console capture     (required for online modes)
   Z1BAUD          baud rate                       (default 921600)
   Z1NO_STTY=1     do not touch the port settings
+  Z1_KEEP_ECHO=1  do not run remote stty -echo/echo
   Z1B64CHARS      base64 line width               (default 400)
   Z1CHUNK_LINES   lines per paced chunk           (default 8)
   Z1CHUNK_SLEEP   pause between chunks, seconds   (default 0.05)
@@ -140,6 +143,18 @@ log_size() { local n; n=$(wc -c < "$LOG" 2>/dev/null | tr -d ' '); printf '%s' "
 send_line() {
     [ "$FD_OPEN" = 1 ] || die "internal: serial fd is not open"
     printf '%s\r\n' "$1" >&3 2>/dev/null || die "write to ${DEV} failed (serial gone?)"
+}
+
+remote_echo_off() {
+    [ "$KEEP_ECHO" = 1 ] && return 0
+    send_line 'stty -echo'
+    ECHO_OFF=1
+}
+
+remote_echo_on() {
+    [ "$KEEP_ECHO" = 1 ] && return 0
+    send_line 'stty echo'
+    ECHO_OFF=0
 }
 
 # Extract the text between the unique <tag>_BEGIN / <tag>_END output markers
@@ -310,9 +325,9 @@ run_cmd() {
     fi
     prepare_device
     ping_device 6
-    send_line 'stty -echo'; ECHO_OFF=1
+    remote_echo_off
     send_marker_block "$(new_tag)" "$cmd" "$tmo" "cmd"
-    send_line 'stty echo'; ECHO_OFF=0
+    remote_echo_on
 }
 
 # ---------------------------------------------------------------------------
@@ -339,7 +354,7 @@ run_rootcmd() {
 
     prepare_device
     ping_device 6
-    send_line 'stty -echo'; ECHO_OFF=1
+    remote_echo_off
 
     # make sure the stage directory exists before the heredoc
     send_marker_block "$(new_tag)" "mkdir -p ${STAGE} && echo MKDIR_OK" 15 "mkdir" >/dev/null
@@ -368,7 +383,7 @@ EOF
     capture_block "$body2" $(( wait_loops + 30 )) "rootcmd"
     printf '%s\n' "$CAPTURED"
 
-    send_line 'stty echo'; ECHO_OFF=0
+    remote_echo_on
 
     case "$CAPTURED" in
         *'###DONE'*) return 0 ;;
@@ -443,7 +458,7 @@ run_push() {
 
     prepare_device
     ping_device 6
-    send_line 'stty -echo'; ECHO_OFF=1
+    remote_echo_off
     send_marker_block "$(new_tag)" "mkdir -p ${STAGE} && echo MKDIR_OK" 15 "mkdir" >/dev/null
 
     local tmo=${Z1PUSH_TIMEOUT:-$(( 20 + b64size / 8000 ))}
@@ -480,7 +495,7 @@ run_push() {
     done
 
     if [ "$ok" != 1 ]; then
-        send_line 'stty echo'; ECHO_OFF=0
+        remote_echo_on
         die "FAIL: could not transfer ${src} -> ${rbase} after ${max} attempt(s)"
     fi
 
@@ -493,7 +508,7 @@ run_push() {
     mv_rc=$(field_of "$out" MV_RC)
     fin_sha=$(hash_of "$out")
 
-    send_line 'stty echo'; ECHO_OFF=0
+    remote_echo_on
 
     if [ "${mv_rc:-?}" != 0 ] || [ "$fin_sha" != "$sha" ]; then
         printf '%s\n' "$out" | sed 's/^/  /' >&2
