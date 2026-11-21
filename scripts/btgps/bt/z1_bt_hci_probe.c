@@ -97,6 +97,13 @@ static int command(int fd, uint16_t opcode, uint8_t expected_len)
         if (opcode == 0x1001)
             printf("hci_version=0x%02x manufacturer=0x%04x\n", event[4],
                    (unsigned)(event[8] | (event[9] << 8)));
+        if (opcode == 0x1002) {
+            /* Core Supported Commands bitmap, octets counted from zero. */
+            const uint8_t *commands = event + 4;
+            printf("COMMANDS read_encryption_key_size=%u read_local_codecs=%u\n",
+                   (unsigned)!!(commands[20] & 0x10),
+                   (unsigned)!!(commands[29] & 0x20));
+        }
         return 0;
     }
 }
@@ -182,7 +189,9 @@ int main(int argc, char **argv)
     else if (command(fd, 0x1001, 12) < 0)
         perror("HCI Read Local Version Information");
     else if (features) {
-        result = 0;
+        result = command(fd, 0x1002, 68) < 0;
+        if (result)
+            perror("HCI Read Local Supported Commands");
         for (uint8_t page = 0; page < 4; ++page) {
             if (read_extended_features(fd, page) < 0) {
                 perror("HCI Read Local Extended Features");

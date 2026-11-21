@@ -46,7 +46,10 @@ controller start-up, use:
 
 This keeps the same exclusive-controller requirement and prints
 `FEATURE requested=... page=... max_page=... status=... features=...` for
-pages 0 through 3. A non-zero status is reported for diagnosis. The default
+pages 0 through 3. It also reads the supported-commands bitmap and reports
+Read Encryption Key Size (required by Android 9) and Read Local Supported
+Codecs. The probe never prints the device address. A non-zero status is
+reported for diagnosis. The default
 probe behavior is unchanged when `--features` is omitted.
 
 Run the bounded framework diagnostic first:

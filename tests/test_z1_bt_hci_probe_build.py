@@ -11,7 +11,7 @@ WORKSPACE = ROOT.parent
 BUILD = ROOT / "scripts/btgps/bt/build_probe.sh"
 NDK = WORKSPACE / "android-ndk-r26d"
 EXPECTED_SHA = (
-    "b0f783c0f295e183ec78454a4b410d7cc33fdb331f3e434384e443389096940e"
+    "cdeb42b821cc903c87780e0af13aa0633aeec1a97e167b84d027c0320bc724a9"
 )
 
 
