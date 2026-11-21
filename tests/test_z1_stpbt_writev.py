@@ -26,6 +26,10 @@ R6_PACKAGE = Path(
     "/media/lxj/1e749c56-0693-6644-a595-1b45353bc925/"
     "z1-archive/r7-r6-bt-nvram-writev-20261121_231045"
 )
+R7_PACKAGE = Path(
+    "/media/lxj/1e749c56-0693-6644-a595-1b45353bc925/"
+    "z1-archive/r7-r7-bt-stack-compat-20261121_234156"
+)
 EXPECTED_MODULE_SHA256 = (
     "af2f849794e26272716dbc79ba7239803a05d1ecbce53e55eb98f60c3c76203f"
 )
@@ -127,6 +131,42 @@ class StpbtR6PackageTest(unittest.TestCase):
                 (R6_PACKAGE / name).read_bytes()
             ).hexdigest()
             self.assertEqual(actual, digest)
+
+
+@unittest.skipUnless(
+    (R7_PACKAGE / "boot.img").is_file()
+    and (R7_PACKAGE / "system.img").is_file()
+    and (R7_PACKAGE / "libbluetooth.so").is_file(),
+    "materialized R7 package is not present",
+)
+class StpbtR7PackageTest(unittest.TestCase):
+    def test_package_and_two_byte_parser_patch_identity(self):
+        expected = {
+            "boot.img": (
+                "0d19730f915bece3e2dd1110baeadcfd8a03ca58f7e371dfd3cb2492c6903d18"
+            ),
+            "system.img": (
+                "a3fc264d50e9b8e9a8024622637517b70d031cb1d5fe985e3da50b04ce982565"
+            ),
+            "system_from_r6.img.z1delta": (
+                "9778760171dd481260f78d6a2fd8fce2ea33039583b5105e5d57fa4af9973bfb"
+            ),
+            "libbt-vendor.so": (
+                "b359b8e4088efa3cdd4b2d9aa3e0242351c4dc587f198d5afee514b249f310aa"
+            ),
+            "libbluetooth.so": (
+                "86f6c3f0de68d417273d7fc869712f2d01b993b7aa2e43e76336a9daee034833"
+            ),
+        }
+        for name, digest in expected.items():
+            actual = hashlib.sha256(
+                (R7_PACKAGE / name).read_bytes()
+            ).hexdigest()
+            self.assertEqual(actual, digest)
+        self.assertEqual(
+            (R7_PACKAGE / "libbluetooth.so").read_bytes()[0x10B60C:0x10B610],
+            bytes.fromhex("01202070"),
+        )
 
 
 if __name__ == "__main__":
