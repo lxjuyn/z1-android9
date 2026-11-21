@@ -14,13 +14,13 @@
 #   --dry-run      只做校验与打印，不写任何东西
 #
 # 部署目标路径 (镜像内即 system-as-root 根):
-#   /vendor/lib/libaudio.primary.default.so    <- 真正的实现 (shim 会 dlopen 它)
-#   /vendor/lib/hw/audio.primary.default.so    <- AudioFlinger 先找的 hw/ 路径
+#   /vendor/lib/hw/audio.primary.mt6572.so    <- ro.hardware=mt6572 时的首选模块
+#   /vendor/lib/hw/audio.primary.default.so   <- 首选文件缺失时的回退
+#   /vendor/lib/libaudio.primary.default.so   <- 兼容旧 shim 的完整实现
 #
-# 之所以选 vendor 路径: 镜像内 /vendor/lib/hw/audio.primary.mt6572.so 是个 dlopen shim,
-# 它 dlopen "libaudio.primary.default.so" (带 lib 前缀)，走 linker 默认搜索路径
-# (/system/lib, /vendor/lib)。镜像里没有 /lib/libaudio.primary.default.so，所以放在
-# /vendor/lib/ 最直接。
+# 2026-11-22: R7 的 mt6572 文件不是透明 shim，而是缺少 pcm_read 的输出专用旧 HAL。
+# Android libhardware 实测先加载 audio.primary.mt6572.so，因此必须把同一份完整 HAL
+# 写入全部三条路径，避免框架实际加载与 manifest 声明不一致。
 #
 # 纪律: 不原地改；先 cp 到 out.img 再改 out.img；只读校验用 e2fsck -fn；逐项回读比对 sha256。
 #
@@ -48,6 +48,7 @@ fi
 [ -n "$HAL" ] || HAL="$HERE/libaudio.primary.z1.so"
 
 TARGETS=(
+    "/vendor/lib/hw/audio.primary.mt6572.so"
     "/vendor/lib/libaudio.primary.default.so"
     "/vendor/lib/hw/audio.primary.default.so"
 )

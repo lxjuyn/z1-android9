@@ -11,6 +11,7 @@ HERE = Path(__file__).resolve().parent
 INSTALLER = HERE / "apply_audio_hal.sh"
 HAL = HERE.parent / "r5g_audio" / "libaudio.primary.z1.so"
 TARGETS = (
+    "/vendor/lib/hw/audio.primary.mt6572.so",
     "/vendor/lib/libaudio.primary.default.so",
     "/vendor/lib/hw/audio.primary.default.so",
 )
@@ -26,7 +27,7 @@ class AudioImageInstallerTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         return result.stdout
 
-    def test_replaces_both_hal_paths_and_preserves_file_metadata(self):
+    def test_replaces_all_hal_paths_and_preserves_file_metadata(self):
         with tempfile.TemporaryDirectory(prefix="z1-audio-image-") as directory:
             root = Path(directory)
             source = root / "in.img"

@@ -249,6 +249,43 @@ class R4RuntimeManifestTest(unittest.TestCase):
         self.assertIn("char-device:", result.stdout)
         self.assertIn("status=FAIL", result.stdout)
 
+    def test_r7_audio_profile_checks_selected_and_fallback_hal_paths(self):
+        self.manifest = json.loads(
+            (HERE / "r7_audio_runtime_manifest.json").read_text())
+        audio_sha = (
+            "670cd3e97d07bf342d1635771b21b755f6c35b257949c959e481055e450176b6"
+        )
+        audio_paths = (
+            "/vendor/lib/hw/audio.primary.mt6572.so",
+            "/vendor/lib/hw/audio.primary.default.so",
+            "/vendor/lib/libaudio.primary.default.so",
+        )
+        self.write_expected_files()
+        self.write_getprop()
+        self.write_tools()
+        self.write("sys/class/leds/lcd-backlight/display_blank", "0\n")
+
+        result = self.run_probe("--r7-audio")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(
+            "schema=z1-r7-audio-runtime/v1 "
+            "candidate=r7-audio-paths-20261122",
+            result.stdout)
+        for path in audio_paths:
+            self.assertIn(
+                f"check={self.root}{path} status=PASS expected={audio_sha}",
+                result.stdout)
+
+        self.write_tools({
+            "/vendor/lib/hw/audio.primary.mt6572.so": "5" * 64,
+        })
+        result = self.run_probe("--r7-audio")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(
+            f"check={self.root}/vendor/lib/hw/audio.primary.mt6572.so "
+            "status=FAIL",
+            result.stdout)
+
     def test_r7_bt_profile_checks_factory_combo_and_nvram_gates(self):
         self.manifest = json.loads(
             (HERE / "r7_bt_runtime_manifest.json").read_text())

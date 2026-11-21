@@ -153,6 +153,20 @@ sb_state() { printf '%s\n' "$SB"; }
         src=self.p/'source';dst=self.p/'target';dst2=self.p/'target2';src.write_bytes(b'new');dst.write_bytes(b'old');dst2.write_bytes(b'old2')
         rc,t=self.run_shell(f'atomic_install {src} {dst} first; atomic_install {src} {dst2} second',FS_FUNCS+INSTALL_FUNCS)
         self.assertNotEqual(rc,0);self.assertEqual(t.count('cp '),1);self.assertEqual(dst2.read_bytes(),b'old2')
+    def test_audio_hal_seeds_selected_and_fallback_paths(self):
+        body=(
+            'install_sys_file() { '
+            'printf "INSTALL %s %s\\n" "$1" "$2" >> "$TRACE"; }; '
+            'install_audio_hal'
+        )
+        rc,t=self.run_shell(body,FS_FUNCS+INSTALL_FUNCS)
+        self.assertEqual(rc,0)
+        self.assertEqual(t.count('INSTALL z1_audio.primary.mt6572.so '),3,t)
+        for destination in (
+                '/system/vendor/lib/hw/audio.primary.mt6572.so',
+                '/system/vendor/lib/hw/audio.primary.default.so',
+                '/system/vendor/lib/libaudio.primary.default.so'):
+            self.assertIn('INSTALL z1_audio.primary.mt6572.so '+destination,t)
 
     def full_storage_run(self, bad_cache=False, mode='--storage-only'):
         data=self.p/'data-dev';cache=self.p/'cache-dev'

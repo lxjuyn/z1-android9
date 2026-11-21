@@ -99,6 +99,11 @@ cap "$CUR" "snd/afe/codec modules" "grep -i -E 'snd|afe|mt6323|gabin|audio' /pro
 cap "$CUR" "audio props" "getprop | grep -i -E 'audio|sound|codec|afe|voice'"
 cap "$CUR" "audio HAL libraries (legacy primary + HIDL impl)" \
     "ls -l /vendor/lib/hw/*audio*.so /system/lib/hw/*audio*.so /vendor/lib/hw/android.hardware.audio* /system/lib/hw/android.hardware.audio* 2>/dev/null"
+cap "$CUR" "mapped audio primary HAL paths" \
+    "for maps in /proc/[0-9]*/maps; do \
+        [ -r \"\$maps\" ] || continue; \
+        grep -aH 'audio.primary.*\\.so' \"\$maps\"; \
+    done 2>/dev/null | head -n 80"
 cap "$CUR" "audio module loader" \
     "ls -l /system/lib/modules/load_audio.sh 2>/dev/null; grep -i -E 'snd|afe|gabin|mt6323' /system/lib/modules/load_audio.sh 2>/dev/null"
 cap "$CUR" "audio policy config" \

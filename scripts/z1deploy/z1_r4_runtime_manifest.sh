@@ -62,8 +62,16 @@ case "${1:-}" in
         probe_sha=b0f783c0f295e183ec78454a4b410d7cc33fdb331f3e434384e443389096940e
         diag_sha=96201f608e633b4da2a3877cecbeeabc4428f8369af10f63c2bf0f18ccbebbe6
         ;;
+    --r7-audio)
+        candidate=r7-audio-paths-20261122
+        schema=z1-r7-audio-runtime/v1
+        hwc_sha=f57ffee670186d5bdfc135043773cfd0576364ae8fac463fb6ef1b65532c20da
+        codec_sha=3fa88d5aa0734612aefec8f45de1b4cabc24a86f67a383fb39f85481663f03cc
+        audio_sha=670cd3e97d07bf342d1635771b21b755f6c35b257949c959e481055e450176b6
+        wlan_sha=143c5611267eb4c5e20135fffdd39db491753147ef295278c3a69330c1fbf80f
+        ;;
     --help)
-        printf '%s\n' 'Usage: sh z1_r4_runtime_manifest.sh [--r4|--r5|--r6|--r7|--r7-bt|--r7-bt-nvram]'
+        printf '%s\n' 'Usage: sh z1_r4_runtime_manifest.sh [--r4|--r5|--r6|--r7|--r7-bt|--r7-bt-nvram|--r7-audio]'
         printf '%s\n' 'Read-only Z1 runtime identity and readiness check.'
         exit 0
         ;;
@@ -305,6 +313,11 @@ if [ "$candidate" = r6-audio-20261119 ] ||
     check_hash /vendor/lib/hw/audio.primary.default.so "$audio_sha" 644
     check_hash /vendor/lib/libaudio.primary.default.so "$audio_sha" 644
 fi
+if [ "$candidate" = r7-audio-paths-20261122 ]; then
+    check_hash /vendor/lib/hw/audio.primary.mt6572.so "$audio_sha" 644
+    check_hash /vendor/lib/hw/audio.primary.default.so "$audio_sha" 644
+    check_hash /vendor/lib/libaudio.primary.default.so "$audio_sha" 644
+fi
 if [ "$candidate" = r7-combined-20261119 ] ||
    [ "$candidate" = r7-bt-20261120 ] ||
    [ "$candidate" = r7-bt-nvram-20261121 ]; then
@@ -337,6 +350,22 @@ if [ "$candidate" = r7-combined-20261119 ] ||
         5a9f1bb021d7145bbe4e998f3dd6d43dafcd232d21fed0e6b4921483b3a9f257 644
     check_hash /system/lib/modules/z1-radio/z1_gpsdrv.ko \
         5cab8a98e9bad3fc7cfa369af2b850dc9c271cd81678150b77279d22667de717 644
+fi
+if [ "$candidate" = r7-audio-paths-20261122 ]; then
+    check_hash /system/bin/z1_odex_direct \
+        af36ef18802cd58c5a2ebe830d9633d3971b69dc69095fd3d7bcb05ed0094038 755
+    check_hash /system/bin/z1_odex_probe \
+        c5c85e68f1016f1ba543d3450a5cf51528af4762df3cd120e188a81fe7ec6d0b 755
+    check_hash /vendor/etc/primary_audio_policy_configuration.xml \
+        954d41f1838921c3fd4d75ad9660b1c63204806021208afe9cf815cb84424f37 644
+    check_hash /vendor/bin/z1_audio_route.sh \
+        1ab33c4e48f4d693822a9c6e7a09eed7eab19795611e40c81fdbea73476d57bb 755
+    check_line microphone-policy \
+        /vendor/etc/primary_audio_policy_configuration.xml \
+        'AUDIO_DEVICE_IN_BUILTIN_MIC'
+    check_line microphone-route /vendor/bin/z1_audio_route.sh \
+        'set_one "MIC Route Switch" 1'
+    check_line audio-capture-registered /proc/asound/pcm 'AWB Capture'
 fi
 check_hash /system/lib/libart.so \
     81226e14966cd9d342a0df36f24c2ad12ecdcc926c0a14bf354c1b373cb2ea94 644
@@ -382,7 +411,8 @@ if [ "$candidate" = r5-20261119 ] ||
    [ "$candidate" = r6-audio-20261119 ] ||
    [ "$candidate" = r7-combined-20261119 ] ||
    [ "$candidate" = r7-bt-20261120 ] ||
-   [ "$candidate" = r7-bt-nvram-20261121 ]; then
+   [ "$candidate" = r7-bt-nvram-20261121 ] ||
+   [ "$candidate" = r7-audio-paths-20261122 ]; then
     backlight_gate=/sys/class/leds/lcd-backlight/display_blank
     blank=$(cat "$backlight_gate" 2>/dev/null) || blank=UNREADABLE
     if [ "$blank" = 0 ]; then

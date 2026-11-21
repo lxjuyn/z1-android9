@@ -553,6 +553,18 @@ install_sys_file() {   # <src-in-ramdisk> <dst>; absence preserves system image
     atomic_install "/$1" "$2" "$1"
 }
 
+install_audio_hal() {
+    # ro.hardware=mt6572 selects the explicit variant before "default".
+    # Keep all loader paths on the identical complete A9 HAL so the selected
+    # module and the runtime identity are deterministic.
+    install_sys_file z1_audio.primary.mt6572.so \
+        /system/vendor/lib/hw/audio.primary.mt6572.so
+    install_sys_file z1_audio.primary.mt6572.so \
+        /system/vendor/lib/hw/audio.primary.default.so
+    install_sys_file z1_audio.primary.mt6572.so \
+        /system/vendor/lib/libaudio.primary.default.so
+}
+
 publish_identity() {
     for _id_module in hwcomposer gralloc; do
         _id_name="$_id_module.z1.so"
@@ -574,7 +586,7 @@ install_one hwcomposer.z1.so hwcomposer
 install_one gralloc.z1.so gralloc
 install_sys_file z1_libwifi-hal.so          /system/vendor/lib/libwifi-hal.so
 install_sys_file z1_libbt-vendor.so         /system/vendor/lib/libbt-vendor.so
-install_sys_file z1_audio.primary.mt6572.so /system/vendor/lib/hw/audio.primary.mt6572.so
+install_audio_hal
 install_sys_file z1_mt6572-afe-pcm.ko        /system/lib/modules/mt6572-afe-pcm.ko
 install_sys_file z1_snd-soc-mt6323.ko        /system/lib/modules/snd-soc-mt6323.ko
 if ! restore_system_ro; then
