@@ -35,7 +35,7 @@ setprop sys.z1.art_cache ready
 '''
 
 
-def build(base, system):
+def build(base, system, radio_off=False):
     require(sha(base) == BASE_SHA, 'unexpected R7 boot hash')
     with system.open('rb') as stream:
         require(hashlib.file_digest(stream, 'sha256').hexdigest() == SYSTEM_SHA,
@@ -58,6 +58,23 @@ def build(base, system):
                           ' -Xzygote -Xnorelocate -Xnoimage-dex2oat ')
     replacements = {'init.z1.rc': rc.encode(), 'init.zygote32.rc': zygote.encode(),
                     'z1_art_seed.sh': CLEAN}
+    if radio_off:
+        # Keep the CONNSYS transport and WLAN modules out of this boot so the
+        # board test covers a cold boot without wireless traffic or recovery.
+        background = '    exec_background u:r:init:s0 root root -- /system/bin/sh '
+        for script in ('/system/bin/z1_linux7_radio_init.sh', '/z1_radio_finish.sh',
+                       '/z1_wifi_probe.sh'):
+            rc = replace_once(rc, background + script + '\n', '')
+        rc = replace_once(rc, 'on property:sys.z1.radio.modules_ready=1\n'
+                         '    start z1_6620\n\n', '')
+        rc = replace_once(rc, 'service z1_6620 /system/bin/6620_launcher -m 3 -p /system/etc/firmware/\n',
+                          'service z1_6620 /system/bin/6620_launcher -m 3 -p /system/etc/firmware/\n'
+                          '    disabled\n')
+        network = replace_once(files['init.z1.network.rc'].decode(),
+                               'on post-fs\n    exec u:r:init:s0 root root -- /system/bin/sh /z1_wifi_pre.sh\n\n', '')
+        network = replace_once(network, 'on property:ro.persistent_properties.ready=true\n' +
+                               background + '/system/bin/z1_linux7_radio_init.sh --bt-identity-only\n', '')
+        replacements.update({'init.z1.rc': rc.encode(), 'init.z1.network.rc': network.encode()})
     new_rootfs = edit_rootfs(rootfs, replacements)
     with tempfile.TemporaryDirectory(prefix='z1-r7-art-') as scratch:
         dt = Path(scratch) / 'boot.dtb'
@@ -86,8 +103,9 @@ def main():
     cli.add_argument('base', type=Path)
     cli.add_argument('system', type=Path)
     cli.add_argument('output', type=Path)
+    cli.add_argument('--radio-off', action='store_true', help='isolate CONNSYS for a cold boot test')
     args = cli.parse_args()
-    image = build(args.base.read_bytes(), args.system)
+    image = build(args.base.read_bytes(), args.system, args.radio_off)
     with args.output.open('xb') as stream:
         stream.write(image)
     print(f'{sha(image)}  {args.output} ({len(image)} bytes)')
