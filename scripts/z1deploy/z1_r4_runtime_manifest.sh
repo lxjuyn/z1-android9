@@ -409,6 +409,10 @@ if [ "$candidate" = r7-bt-20261120 ] ||
         /data/nvram/APCFG/APRDEB/BT_Addr 64 66
     check_regular_size wifi-nvram-record \
         /data/nvram/APCFG/APRDEB/WIFI 512 514
+    if [ "$candidate" = r7-bt-nvram-20261121 ]; then
+        check_regular_size nvram-version-table \
+            /data/nvram/APCFG/APRDCL/FILE_VER 3404
+    fi
 fi
 
 if [ "$FAIL_COUNT" -eq 0 ]; then

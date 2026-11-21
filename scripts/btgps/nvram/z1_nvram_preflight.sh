@@ -59,21 +59,45 @@ else
     fail restore_marker_regular_readable
 fi
 
-valid_records=0
+valid_bt_records=0
 for record in /data/nvram/APCFG/APRDEB/BT_Addr /data/BT_Addr; do
     if regular "$record"; then
         bytes=$(wc -c < "$record" 2>/dev/null) || bytes=
-        if [ "$bytes" -eq 64 ] 2>/dev/null; then
-            pass "record_shape_64_bytes $record"
-            valid_records=$((valid_records + 1))
-        else
-            unknown "record_size_invalid $record"
-        fi
+        case "$bytes" in
+            64|66)
+                pass "record_shape_${bytes}_bytes $record"
+                valid_bt_records=$((valid_bt_records + 1))
+                ;;
+            *) unknown "record_size_invalid $record" ;;
+        esac
     else
         unknown "record_not_available $record"
     fi
 done
-[ "$valid_records" -gt 0 ] || fail no_complete_bt_record
+[ "$valid_bt_records" -gt 0 ] || fail no_complete_bt_record
+
+wifi_record=/data/nvram/APCFG/APRDEB/WIFI
+if regular "$wifi_record"; then
+    bytes=$(wc -c < "$wifi_record" 2>/dev/null) || bytes=
+    case "$bytes" in
+        512|514) pass "record_shape_${bytes}_bytes $wifi_record" ;;
+        *) fail "record_size_invalid $wifi_record" ;;
+    esac
+else
+    fail wifi_record_regular_readable
+fi
+
+version_record=/data/nvram/APCFG/APRDCL/FILE_VER
+if regular "$version_record"; then
+    bytes=$(wc -c < "$version_record" 2>/dev/null) || bytes=
+    if [ "$bytes" -eq 3404 ] 2>/dev/null; then
+        pass "record_shape_3404_bytes $version_record"
+    else
+        fail "record_size_invalid $version_record"
+    fi
+else
+    fail file_version_regular_readable
+fi
 
 if [ ! -L /dev/nvram ] && [ -c /dev/nvram ]; then
     unknown nvram_character_node_present_backend_unverified

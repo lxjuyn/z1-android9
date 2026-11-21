@@ -101,6 +101,28 @@ done
 # The factory Bluetooth HAL polls this property for five seconds and aborts
 # initialization when it is missing or "-1". The stock Z1 ramdisk sets the
 # same value before radio userspace starts.
+mtk_record_checksum_matches() {
+    record=$1
+    payload_bytes=$2
+    record_bytes=$(od -An -v -tu1 "$record" 2>/dev/null) || return 1
+    set -- $record_bytes
+    [ "$#" -eq $((payload_bytes + 2)) ] || return 1
+
+    index=0
+    checksum=0
+    while [ "$index" -lt "$payload_bytes" ]; do
+        byte=$1
+        shift
+        if [ $((index % 2)) -eq 0 ]; then
+            checksum=$(((checksum + byte) & 255))
+        else
+            checksum=$((checksum ^ byte))
+        fi
+        index=$((index + 1))
+    done
+    [ "$1" -eq 170 ] && [ "$2" -eq "$checksum" ]
+}
+
 publish_bt_identity() {
     combo_chip_id=0x6572
     /system/bin/setprop persist.mtk.wcn.combo.chipid "$combo_chip_id" ||
@@ -118,27 +140,32 @@ publish_bt_identity() {
     #
     # The factory-created runtime files retain the 2-byte MTK storage checksum,
     # so the accepted sizes are payload plus checksum (66/514) as well as the
-    # stripped payload sizes (64/512). Stock data also carries legacy AID 9997;
-    # grant Android 9 AID_NVRAM (1050) access instead of embedding or rewriting
-    # the calibration payload.
+    # stripped payload sizes (64/512). NVM_GetFileDesc() first opens
+    # APRDCL/FILE_VER, whose factory table is 46 fixed 74-byte entries (3404
+    # bytes). Stock data also carries legacy AID 9997; grant Android 9
+    # AID_NVRAM (1050) access instead of embedding or rewriting calibration.
     nvram_root=/data/nvram
     nvram_apcfg=$nvram_root/APCFG
     nvram_aprd=$nvram_apcfg/APRDEB
+    nvram_aprdcl=$nvram_apcfg/APRDCL
     bt_nvram_record=/data/nvram/APCFG/APRDEB/BT_Addr
     wifi_nvram_record=/data/nvram/APCFG/APRDEB/WIFI
+    file_version_record=/data/nvram/APCFG/APRDCL/FILE_VER
     nvram_access_ready=0
     if [ -d "$nvram_root" ] && [ ! -L "$nvram_root" ] &&
        [ -d "$nvram_apcfg" ] && [ ! -L "$nvram_apcfg" ] &&
        [ -d "$nvram_aprd" ] && [ ! -L "$nvram_aprd" ] &&
+       [ -d "$nvram_aprdcl" ] && [ ! -L "$nvram_aprdcl" ] &&
        [ -f "$bt_nvram_record" ] && [ ! -L "$bt_nvram_record" ] &&
-       [ -f "$wifi_nvram_record" ] && [ ! -L "$wifi_nvram_record" ]; then
+       [ -f "$wifi_nvram_record" ] && [ ! -L "$wifi_nvram_record" ] &&
+       [ -f "$file_version_record" ] && [ ! -L "$file_version_record" ]; then
         nvram_access_ready=1
-        for nvram_dir in "$nvram_root" "$nvram_apcfg" "$nvram_aprd"; do
+        for nvram_dir in "$nvram_root" "$nvram_apcfg" "$nvram_aprd" "$nvram_aprdcl"; do
             /system/bin/chown 0:1050 "$nvram_dir" &&
                 /system/bin/chmod 0770 "$nvram_dir" ||
                 nvram_access_ready=0
         done
-        for nvram_file in "$bt_nvram_record" "$wifi_nvram_record"; do
+        for nvram_file in "$bt_nvram_record" "$wifi_nvram_record" "$file_version_record"; do
             /system/bin/chown 0:1050 "$nvram_file" &&
                 /system/bin/chmod 0660 "$nvram_file" ||
                 nvram_access_ready=0
@@ -147,24 +174,58 @@ publish_bt_identity() {
 
     bt_nvram_size=
     wifi_nvram_size=
+    file_version_size=
     if [ "$nvram_access_ready" = 1 ]; then
         bt_nvram_size=$(wc -c < "$bt_nvram_record" 2>/dev/null)
         wifi_nvram_size=$(wc -c < "$wifi_nvram_record" 2>/dev/null)
+        file_version_size=$(wc -c < "$file_version_record" 2>/dev/null)
     fi
     bt_nvram_shape_ready=0
     wifi_nvram_shape_ready=0
+    file_version_shape_ready=0
     case "$bt_nvram_size" in
         64|66) bt_nvram_shape_ready=1 ;;
     esac
     case "$wifi_nvram_size" in
         512|514) wifi_nvram_shape_ready=1 ;;
     esac
+    case "$file_version_size" in
+        3404) file_version_shape_ready=1 ;;
+    esac
+    file_version_content_ready=0
+    if [ "$file_version_shape_ready" = 1 ] &&
+       /system/bin/grep -a -F -q 'BT_Addr' "$file_version_record" &&
+       /system/bin/grep -a -F -q 'WIFI' "$file_version_record"; then
+        file_version_content_ready=1
+    fi
+
+    bt_nvram_content_ready=0
+    wifi_nvram_content_ready=0
+    if [ "$bt_nvram_shape_ready" = 1 ] &&
+       [ -n "$(od -An -tx1 -N64 "$bt_nvram_record" 2>/dev/null | tr -d ' 0\n')" ]; then
+        case "$bt_nvram_size" in
+            64) bt_nvram_content_ready=1 ;;
+            66)
+                mtk_record_checksum_matches "$bt_nvram_record" 64 &&
+                    bt_nvram_content_ready=1
+                ;;
+        esac
+    fi
+    if [ "$wifi_nvram_shape_ready" = 1 ]; then
+        case "$wifi_nvram_size" in
+            512) wifi_nvram_content_ready=1 ;;
+            514)
+                mtk_record_checksum_matches "$wifi_nvram_record" 512 &&
+                    wifi_nvram_content_ready=1
+                ;;
+        esac
+    fi
 
     bt_nvram_ready=0
     if [ "$nvram_access_ready" = 1 ] &&
-       [ "$bt_nvram_shape_ready" = 1 ] &&
-       [ "$wifi_nvram_shape_ready" = 1 ] &&
-       [ -n "$(od -An -tx1 -N64 "$bt_nvram_record" 2>/dev/null | tr -d ' 0\n')" ]; then
+       [ "$bt_nvram_content_ready" = 1 ] &&
+       [ "$wifi_nvram_content_ready" = 1 ] &&
+       [ "$file_version_content_ready" = 1 ]; then
         if [ "$(/system/bin/getprop nvram_init 2>/dev/null)" != Ready ]; then
             /system/bin/setprop nvram_init Ready ||
                 say "cannot publish NVRAM readiness for the factory Bluetooth library"
@@ -174,7 +235,7 @@ publish_bt_identity() {
             say "Bluetooth NVRAM shape valid; factory nvram_init=Ready"
         fi
     else
-        say "Bluetooth NVRAM unavailable: expected BT_Addr=64/66 and WIFI=512/514 bytes with AID_NVRAM access under /data/nvram/APCFG/APRDEB"
+        say "Bluetooth NVRAM unavailable: expected checksummed BT_Addr=66 and WIFI=514 plus APRDCL/FILE_VER=3404 bytes with AID_NVRAM access"
     fi
     /system/bin/setprop sys.z1.radio.bt_nvram_ready "$bt_nvram_ready" ||
         say "cannot publish Bluetooth NVRAM readiness state"

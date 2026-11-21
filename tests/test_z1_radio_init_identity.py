@@ -12,7 +12,80 @@ HAL_RC = ROOT / "rootdir/android.hardware.bluetooth@1.0-service.rc"
 BUILDER = ROOT / "scripts/z1deploy/z1_build_r7_bt_r3_system.sh"
 
 
+def mtk_storage_record(payload):
+    checksum = 0
+    for index, value in enumerate(payload):
+        if index % 2 == 0:
+            checksum = (checksum + value) & 0xFF
+        else:
+            checksum ^= value
+    return payload + bytes((0xAA, checksum))
+
+
+def factory_file_version_table():
+    table = bytearray(46 * 74)
+    for index, name in enumerate((
+        b"NVRAM_VER_INFO", b"FILE_VER", b"BT_Addr", b"AUXADC", b"WIFI"
+    )):
+        start = index * 74
+        table[start:start + len(name)] = name
+        table[start + 70:start + 74] = (1).to_bytes(4, "little")
+    return bytes(table)
+
+
 class RadioInitIdentityTest(unittest.TestCase):
+    def run_bt_nvram_fixture(self, bt_record, wifi_record, version_record):
+        text = SCRIPT.read_text()
+        late = text[
+            text.index("mtk_record_checksum_matches() {"):
+            text.index("# Keep the initial publication")
+        ]
+        late = late.replace("/system/bin/", "").replace("/data/nvram", "$CASE_DIR")
+        fake = """
+mode=--bt-identity-only
+getprop() {
+    case "$1" in
+        ro.persistent_properties.ready) printf 'true\\n' ;;
+        persist.mtk.wcn.combo.chipid) cat "$CASE_DIR/chip" ;;
+        nvram_init) cat "$CASE_DIR/nvram" ;;
+    esac
+}
+setprop() {
+    printf '%s=%s\\n' "$1" "$2" >> "$CASE_DIR/writes"
+    case "$1" in
+        persist.mtk.wcn.combo.chipid) printf '%s\\n' "$2" > "$CASE_DIR/chip" ;;
+        nvram_init) printf '%s\\n' "$2" > "$CASE_DIR/nvram" ;;
+    esac
+}
+chown() { :; }
+chmod() { :; }
+say() { :; }
+"""
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        fixture = Path(temp.name)
+        aprdeb = fixture / 'APCFG/APRDEB'
+        aprdcl = fixture / 'APCFG/APRDCL'
+        aprdeb.mkdir(parents=True)
+        aprdcl.mkdir()
+        (fixture / 'chip').write_text('-1\n')
+        (fixture / 'nvram').write_text('\n')
+        if bt_record is not None:
+            (aprdeb / 'BT_Addr').write_bytes(bt_record)
+        if wifi_record is not None:
+            (aprdeb / 'WIFI').write_bytes(wifi_record)
+        if version_record is not None:
+            (aprdcl / 'FILE_VER').write_bytes(version_record)
+        result = subprocess.run(
+            ['sh', '-c', fake + late], capture_output=True, text=True,
+            env=dict(os.environ, CASE_DIR=temp.name))
+        writes = (
+            (fixture / 'writes').read_text().splitlines()
+            if (fixture / 'writes').exists()
+            else []
+        )
+        return result, writes, (fixture / 'nvram').read_text()
+
     def test_shell_syntax(self):
         result = subprocess.run(
             ["sh", "-n", SCRIPT], text=True, capture_output=True
@@ -51,7 +124,10 @@ class RadioInitIdentityTest(unittest.TestCase):
 
     def test_bt_only_reapplies_loaded_chip_identity_without_touching_wifi(self):
         text = SCRIPT.read_text()
-        late = text[text.index("publish_bt_identity() {"):text.index("# Keep the initial publication")]
+        late = text[
+            text.index("mtk_record_checksum_matches() {"):
+            text.index("# Keep the initial publication")
+        ]
         late = late.replace("/system/bin/", "").replace("/data/nvram", "$CASE_DIR")
         fake = """
 mode=--bt-identity-only
@@ -69,20 +145,25 @@ setprop() {
         nvram_init) printf '%s\\n' "$2" > "$CASE_DIR/nvram" ;;
     esac
 }
-chown() { :; }
-chmod() { :; }
+chown() { printf 'chown %s\\n' "$*" >> "$CASE_DIR/metadata"; }
+chmod() { printf 'chmod %s\\n' "$*" >> "$CASE_DIR/metadata"; }
 say() { :; }
 """
         with tempfile.TemporaryDirectory() as td:
             fixture = Path(td)
             aprdeb = fixture / 'APCFG/APRDEB'
+            aprdcl = fixture / 'APCFG/APRDCL'
             aprdeb.mkdir(parents=True)
+            aprdcl.mkdir()
             (fixture / 'chip').write_text('-1\n')
             (fixture / 'nvram').write_text('\n')
             # Match the factory runtime files: payload plus the retained MTK
             # two-byte storage checksum.
-            (aprdeb / 'BT_Addr').write_bytes(bytes([1]) + bytes(63) + b'\xaa\xf1')
-            (aprdeb / 'WIFI').write_bytes(bytes(512) + b'\xaa\xa4')
+            (aprdeb / 'BT_Addr').write_bytes(
+                mtk_storage_record(bytes([1]) + bytes(63)))
+            (aprdeb / 'WIFI').write_bytes(
+                mtk_storage_record(bytes(512)))
+            (aprdcl / 'FILE_VER').write_bytes(factory_file_version_table())
             for ready, expected_rc in [('false', 1), ('true', 0)]:
                 result = subprocess.run(['sh', '-c', fake + late], capture_output=True,
                                         env=dict(os.environ, CASE_DIR=td, PERSIST_READY=ready))
@@ -92,6 +173,38 @@ say() { :; }
             self.assertEqual((fixture / 'writes').read_text().splitlines(), [
                 'persist.mtk.wcn.combo.chipid=0x6572', 'nvram_init=Ready',
                 'sys.z1.radio.bt_nvram_ready=1'])
+            metadata = (fixture / 'metadata').read_text()
+            self.assertIn(f'chown 0:1050 {fixture}/APCFG/APRDCL',
+                          metadata)
+            self.assertIn(f'chown 0:1050 {aprdcl}/FILE_VER', metadata)
+            self.assertIn(f'chmod 0770 {fixture}/APCFG/APRDCL', metadata)
+            self.assertIn(f'chmod 0660 {aprdcl}/FILE_VER', metadata)
+
+    def test_invalid_storage_checksum_blocks_factory_ready(self):
+        bad_bt = bytes([1]) + bytes(63) + b'\xaa\x00'
+        result, writes, nvram = self.run_bt_nvram_fixture(
+            bad_bt,
+            mtk_storage_record(bytes(512)),
+            factory_file_version_table(),
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(nvram, '\n')
+        self.assertEqual(writes, [
+            'persist.mtk.wcn.combo.chipid=0x6572',
+            'sys.z1.radio.bt_nvram_ready=0',
+        ])
+
+    def test_factory_file_version_table_is_required_for_ready(self):
+        for version_record in (None, bytes(3403), bytes(3404)):
+            with self.subTest(version_record=version_record):
+                result, writes, nvram = self.run_bt_nvram_fixture(
+                    mtk_storage_record(bytes([1]) + bytes(63)),
+                    mtk_storage_record(bytes(512)),
+                    version_record,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(nvram, '\n')
+                self.assertIn('sys.z1.radio.bt_nvram_ready=0', writes)
 
     def test_bt_nvram_readiness_requires_shape_before_setting_factory_gate(self):
         text = SCRIPT.read_text()
@@ -110,9 +223,24 @@ say() { :; }
         self.assertLess(wifi_record, shape_gate)
         self.assertLess(shape_gate, ready)
         self.assertLess(ready, state)
+        self.assertIn('record_bytes=$(od -An -v -tu1', text)
         self.assertIn('| tr -d \' 0\\n\'', text)
         self.assertIn('64|66)', text)
         self.assertIn('512|514)', text)
+        self.assertIn('3404)', text)
+        self.assertIn(
+            "/system/bin/grep -a -F -q 'BT_Addr' \"$file_version_record\"",
+            text,
+        )
+        self.assertIn(
+            "/system/bin/grep -a -F -q 'WIFI' \"$file_version_record\"",
+            text,
+        )
+        self.assertIn('mtk_record_checksum_matches "$bt_nvram_record" 64', text)
+        self.assertIn('mtk_record_checksum_matches "$wifi_nvram_record" 512', text)
+        self.assertIn(
+            'file_version_record=/data/nvram/APCFG/APRDCL/FILE_VER', text
+        )
         self.assertIn('/system/bin/chown 0:1050 "$nvram_dir"', text)
         self.assertIn('/system/bin/chown 0:1050 "$nvram_file"', text)
 

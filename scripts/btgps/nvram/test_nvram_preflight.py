@@ -37,8 +37,14 @@ class PreflightTests(unittest.TestCase):
                 secret = b'PRIVATE_CALIBRATION_CONTENT_DO_NOT_PRINT'
                 data = root/'data/nvram'
                 (data/'APCFG/APRDEB').mkdir(parents=True)
+                (data/'APCFG/APRDCL').mkdir()
                 (data/'RestoreFlag').write_bytes(b'\x78\x56\x34\x12'+secret)
-                (data/'APCFG/APRDEB/BT_Addr').write_bytes(secret.ljust(64, b'\xa5'))
+                (data/'APCFG/APRDEB/BT_Addr').write_bytes(
+                    secret.ljust(66, b'\xa5'))
+                (data/'APCFG/APRDEB/WIFI').write_bytes(
+                    secret.ljust(514, b'\xa5'))
+                (data/'APCFG/APRDCL/FILE_VER').write_bytes(
+                    secret.ljust(3404, b'\xa5'))
                 props = {'init.svc.nvram_daemon': 'running', 'nvram_init': 'Ready'}
                 if change:
                     change(root, props)
@@ -73,6 +79,9 @@ class PreflightTests(unittest.TestCase):
             self.assertEqual(r.returncode, 2, r.stderr)
             self.assertIn('PASS restore_marker_format', r.stdout)
             self.assertIn('PASS daemon_self_reported_ready', r.stdout)
+            self.assertIn('PASS record_shape_66_bytes', r.stdout)
+            self.assertIn('PASS record_shape_514_bytes', r.stdout)
+            self.assertIn('PASS record_shape_3404_bytes', r.stdout)
             self.assertIn('UNKNOWN nvram_raw_restore_backend_unavailable', r.stdout)
             self.assertIn('READ_ONLY_CHECK_ONLY', r.stdout)
 
@@ -95,15 +104,31 @@ class PreflightTests(unittest.TestCase):
                 self.assertIn('FAIL restore_marker_format', r.stdout)
 
     def test_record_size_and_type_are_checked_without_reading_contents(self):
-        for kind in ('short', 'missing', 'symlink', 'fifo'):
+        for kind in ('short', 'storage-short', 'missing', 'symlink', 'fifo'):
             def change(root, props):
                 p=root/'data/nvram/APCFG/APRDEB/BT_Addr';p.unlink()
                 if kind=='short': p.write_bytes(b'\0'*63)
+                elif kind=='storage-short': p.write_bytes(b'\0'*65)
                 elif kind=='symlink': p.symlink_to(root/'data/nvram/RestoreFlag')
                 elif kind=='fifo': os.mkfifo(p)
             for r in self.run_fixture(change):
                 self.assertEqual(r.returncode, 1)
                 self.assertIn('FAIL no_complete_bt_record', r.stdout)
+
+    def test_version_table_must_be_a_3404_byte_regular_file(self):
+        for kind in ('missing', 'short', 'symlink'):
+            def change(root, props):
+                p=root/'data/nvram/APCFG/APRDCL/FILE_VER';p.unlink()
+                if kind=='short': p.write_bytes(b'\0'*3403)
+                elif kind=='symlink': p.symlink_to(root/'data/nvram/RestoreFlag')
+            for r in self.run_fixture(change):
+                self.assertEqual(r.returncode, 1)
+                if kind == 'short':
+                    self.assertIn('FAIL record_size_invalid', r.stdout)
+                else:
+                    self.assertIn(
+                        'FAIL file_version_regular_readable', r.stdout
+                    )
 
     def test_fallback_record_does_not_bypass_ready_or_provenance(self):
         def change(root, props):

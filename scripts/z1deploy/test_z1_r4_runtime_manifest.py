@@ -299,6 +299,7 @@ class R4RuntimeManifestTest(unittest.TestCase):
         self.write("sys/class/leds/lcd-backlight/display_blank", "0\n")
         self.write_bytes("data/nvram/APCFG/APRDEB/BT_Addr", 66)
         self.write_bytes("data/nvram/APCFG/APRDEB/WIFI", 514)
+        self.write_bytes("data/nvram/APCFG/APRDCL/FILE_VER", 3404)
         socket_dir = self.root / "dev/socket"
         socket_dir.mkdir(parents=True)
         server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -312,7 +313,7 @@ class R4RuntimeManifestTest(unittest.TestCase):
             "schema=z1-r7-bt-nvram-runtime/v1 "
             "candidate=r7-bt-nvram-20261121",
             result.stdout)
-        self.assertIn("summary pass=66 fail=0 status=PASS", result.stdout)
+        self.assertIn("summary pass=67 fail=0 status=PASS", result.stdout)
 
     def test_missing_boot_completion_and_stale_hwc_source_fail(self):
         self.write_tools()
