@@ -1,0 +1,27 @@
+--- a/btif/btif_dma_plat.c
++++ b/btif/btif_dma_plat.c
+@@ -1037,12 +1037,19 @@
+ 		rpt &= DMA_RPT_MASK;
+ 		wpt &= DMA_WPT_MASK;
+ 
+-/*calcaute length of available data  in vFIFO*/
+-		if (wpt_wrap != p_mtk_vfifo->last_wpt_wrap)
+-			real_len = wpt + vff_size - rpt;
+-		else
+-			real_len = wpt - rpt;
++		/* The unread span is between the current consumer and producer. */
++		if (rpt >= vff_size || wpt >= vff_size ||
++		    (rpt_wrap == wpt_wrap ? wpt < rpt : wpt > rpt)) {
++			pr_warn_ratelimited("BTIF RX: invalid FIFO pointers r=%#x w=%#x size=%u\n",
++					    rpt | rpt_wrap, wpt | wpt_wrap, vff_size);
++			break;
++		}
++		real_len = wpt_wrap == rpt_wrap ? wpt - rpt : vff_size - rpt + wpt;
++		if (!real_len)
++			break;
+ 
++		/* Observe DMA buffer writes after reading the producer pointer. */
++		dma_rmb();
+ 		if (rx_cb != NULL) {
+ 			tail_len = vff_size - rpt;
+ 			p_vff_buf = vff_base + rpt;
