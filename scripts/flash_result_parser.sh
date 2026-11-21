@@ -11,6 +11,12 @@ mtk_output_failed() {
 mtk_output_connected() {
   local out
   out=$(mtk_normalize_output "$1")
+  # The pinned client prints only its preloader hint and progress dots when
+  # it keeps waiting for a successful handshake. Any other output is unknown.
+  if printf '%s\n' "$out" | grep -Fq 'Power off the phone before connecting.' &&
+     ! printf '%s\n' "$out" | grep -qvE '^[[:space:].]*$|^[[:space:]]*(Port - Hint:|Power off the phone before connecting\.|For brom mode, press and hold vol up, vol dwn, or all hw buttons and connect usb\.|For preloader mode, don.t press any hw button and connect usb\.|If it is already connected and on, hold power for 10 seconds to reset\.|fuse library not installed)[[:space:]]*$'; then
+    return 1
+  fi
   # Transfer/DA evidence wins over a later disconnect or timeout.
   if printf '%s\n' "$out" | grep -qiE '(Write:|Read:|Erase:|Format:|Wrote |Formatted |Failed to (write|format)|sdmmc_write_data|Data ack|Handling da commands|DALegacy|DAXFlash|m_emmc_|sync done|(^| - )device (detected|found)|BROM mode|preloader.*(CPU|connected)|connection established)'; then
     return 0

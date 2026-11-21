@@ -56,6 +56,20 @@ class ParserTests(unittest.TestCase):
             with self.subTest(out=out):
                 self.assertEqual(self.predicate("mtk_output_connected", out), expected)
 
+    def test_preloader_wait_hint_requires_no_other_output(self):
+        hint = """fuse library not installed
+Port - Hint:
+
+Power off the phone before connecting.
+For brom mode, press and hold vol up, vol dwn, or all hw buttons and connect usb.
+For preloader mode, don't press any hw button and connect usb.
+If it is already connected and on, hold power for 10 seconds to reset.
+
+........"""
+        self.assertFalse(self.predicate("mtk_output_connected", hint))
+        self.assertTrue(self.predicate("mtk_output_connected", hint + "\nHandshake successful."))
+        self.assertTrue(self.predicate("mtk_output_connected", hint + "\n" + ERASE))
+
     def test_erase_matrix(self):
         for out, rc, expected in [(ERASE, "0", True), (ERASE, "1", False),
                                   ("Done", "0", False), ("erase done", "0", False),
@@ -122,7 +136,7 @@ sys.exit(step.get('rc', 0))
             result = subprocess.run(
                 ["bash", str(wrapper), "android", str(image), str(backup) if rollback else "", "1"],
                 capture_output=True, text=True, timeout=20,
-                env={**os.environ, "Z1_VERIFY": verify, "PATH": f"{root}:{os.environ['PATH']}"},
+                env={**os.environ, "Z1_VERIFY": verify, "Z1_FLASH_LOCK": str(root / "lock"), "PATH": f"{root}:{os.environ['PATH']}"},
             )
             self.assertEqual(int((root / "state").read_text()), len(steps), result.stdout + result.stderr)
             calls = (root / "calls").read_text().splitlines()
