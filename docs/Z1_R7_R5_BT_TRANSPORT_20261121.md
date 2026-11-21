@@ -9,9 +9,10 @@ initializer reported `Get NVRAM restore ready fails!` and closed the controller.
 No R4 board test occurred. Offline R4 review found that init copied
 `/z1_libbt-vendor.so` into `/system/vendor/lib/libbt-vendor.so`; R4 still
 carried the older ramdisk vendor library (`43944199...`). R5 pins both locations
-to the factory-first/direct-H4 adapter (`a705913c...`). This transport package
-retains the R3 boot unchanged so it isolates the Bluetooth experiment; the
-separately verified boot-only lock-screen gate is not mixed in.
+to the factory-first/direct-H4 adapter (`a705913c...`). The boot is derived from
+the verified lock-screen-gate boot and replaces `/z1_libbt-vendor.so` inside
+the ramdisk. This matters because `z1stage_boot.sh` can copy the ramdisk copy to
+`/system/vendor/lib/libbt-vendor.so` at boot.
 
 The Android 9 HAL selects H4 with one descriptor. AOSP Pie
 `H4Protocol::Send` sends packet type and payload in two `iovec` entries via
@@ -61,25 +62,43 @@ The `.modinfo` vermagic is
 
 ## Package
 
-Package: `out/r7_bt_writev_transport_20261121_222229/`
+Package:
+`/media/lxj/1e749c56-0693-6644-a595-1b45353bc925/z1-archive/r7-r5-bt-h4-writev-lock-20261121/`
 
 | File | Bytes | SHA256 |
 | --- | ---: | --- |
-| `boot.img` | 5,984,256 | `5baddbade8fb3b50e53220370d1eb11f1690a428af2690869e1e44c7e4e8441b` |
-| `system.img` | 943,718,400 | `4ea4fa8a6314fbfb94582a0273176abd2568bb117421ba4edce334d017f9dd7b` |
-| block delta | 20,742 | `5e49a26de9ff37ea98e7e866a921ef0bf8c1390d5f6cbb724d4d7ef184eeb841` |
+| `boot.img` | 5,986,304 | `5ae4c69066d5285a6819d88f82ed11a4d3bce4b3bc9bd8775dc8425270a2be7d` |
+| `system.img` | 943,718,400 | `774a84d6ec72cac67221248e6c857a7da077073a3c2bab11720ae06c9aea8571` |
+| `mtk_stp_bt_soc.ko` | 12,192 | `af2f849794e26272716dbc79ba7239803a05d1ecbce53e55eb98f60c3c76203f` |
 
-The system base is `76f7c5f333bbc8ed41192b696eff5e392344c7c796293df629480585c862dd58`.
-It retains direct-H4 `libbt-vendor.so`
+The boot base is the lock-gate candidate
+`1b0519b30d4b2dffeecabaeef70ee6e73eebccea6b422b3f7fffa117c0eb74eb`.
+Its zImage remains
+`b6b5174e8f394a70e8bde22bf2ff472a60aeb500d31ed1088090a0abb654c63e`.
+The ramdisk record `/z1_libbt-vendor.so` is the direct-H4 adapter
+`a705913c606709447958ac1071366df3d5d5af521a975b29d6cd9815edd0dc7f`,
+mode `100644`, root:root.
+
+The system base is
+`76f7c5f333bbc8ed41192b696eff5e392344c7c796293df629480585c862dd58`.
+It retains the same direct-H4 `libbt-vendor.so`
 `a705913c606709447958ac1071366df3d5d5af521a975b29d6cd9815edd0dc7f`
 and BTIF RX fix
 `a72b21df2173f210b04dc33583950ae0553c20de06366a877ca568f612724540`.
 
 Debugfs readback matched the module SHA256, regular-file type, mode `0644`,
-root:root ownership, and `u:object_r:system_file:s0`. The block delta reapplied
-to the exact system SHA256. `e2fsck -fn` passed. SHA256SUMS passed again after
-copying the package to
-`bridge_backups/products/products_r7_bt_writev_transport_20261121_222548/`.
+root:root ownership, and `u:object_r:system_file:s0`. The system vendor library
+also read back as `a705913c...`, mode `0644`, root:root, with
+`u:object_r:vendor_file:s0`. `e2fsck -fn` passed on the final ext4 image.
+
+The corresponding host archive is
+`bridge_backups/products/products_r7_r5_stp_writev_20261121_221226/`; it
+contains the boot, module, patch, build logs, WMT runtime symbols, and system
+replacement manifest. The external package above is the materialized pair.
+
+Do not flash `out/r7_bt_writev_transport_20261121_222229/`: that intermediate
+package contains the correct system module but retained the R3 boot and its old
+ramdisk vendor library.
 
 ## Board gate
 

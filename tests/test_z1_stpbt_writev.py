@@ -12,9 +12,16 @@ PATCH = (
     REPO
     / "scripts/btgps/bt/patches/0002-stpbt-coalesce-h4-writev.patch"
 )
-PACKAGES = sorted(WORKSPACE.glob("out/r7_bt_writev_transport_*"))
-PACKAGE = PACKAGES[-1] if PACKAGES else None
-MODULE = PACKAGE / "mtk_stp_bt_soc.ko" if PACKAGE else None
+CANONICAL_MODULES = sorted(
+    (WORKSPACE / "bridge_backups/products").glob(
+        "products_r7_r5_stp_writev_*/mtk_stp_bt_soc.ko"
+    )
+)
+MODULE = CANONICAL_MODULES[-1] if CANONICAL_MODULES else None
+CANONICAL_PACKAGE = Path(
+    "/media/lxj/1e749c56-0693-6644-a595-1b45353bc925/"
+    "z1-archive/r7-r5-bt-h4-writev-lock-20261121"
+)
 EXPECTED_MODULE_SHA256 = (
     "af2f849794e26272716dbc79ba7239803a05d1ecbce53e55eb98f60c3c76203f"
 )
@@ -68,6 +75,28 @@ class StpbtWritevModuleTest(unittest.TestCase):
             capture_output=True,
         ).stdout
         self.assertIn("BT_write_iter", relocations)
+
+
+@unittest.skipUnless(
+    (CANONICAL_PACKAGE / "boot.img").is_file()
+    and (CANONICAL_PACKAGE / "system.img").is_file(),
+    "materialized R5 boot/system package is not present",
+)
+class StpbtWritevPackageTest(unittest.TestCase):
+    def test_package_has_pinned_boot_and_system(self):
+        expected = {
+            "boot.img": (
+                "5ae4c69066d5285a6819d88f82ed11a4d3bce4b3bc9bd8775dc8425270a2be7d"
+            ),
+            "system.img": (
+                "774a84d6ec72cac67221248e6c857a7da077073a3c2bab11720ae06c9aea8571"
+            ),
+        }
+        for name, digest in expected.items():
+            actual = hashlib.sha256(
+                (CANONICAL_PACKAGE / name).read_bytes()
+            ).hexdigest()
+            self.assertEqual(actual, digest)
 
 
 if __name__ == "__main__":
