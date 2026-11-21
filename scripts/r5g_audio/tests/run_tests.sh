@@ -66,6 +66,7 @@ cases=(
     output-config
     stream-contract
     input-contract
+    mic-mute
     module-identity
 )
 for name in "${cases[@]}"; do

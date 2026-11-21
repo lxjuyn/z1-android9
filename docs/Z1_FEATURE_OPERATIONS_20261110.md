@@ -294,14 +294,14 @@ Linux `voltage_now`单位µV，`capacity`为0–100%，`temp`一般为0.1°C；`
 |---|---|
 | 用途 | 扬声器/3.5mm耳机播放、音量与插拔路由、麦克风录音；BT SCO和FM各有额外链路 |
 | 实际链 | 应用AudioTrack/AudioRecord → AudioFlinger/AudioPolicy → audio HIDL/legacy primary HAL → tinyalsa/ALSA PCM+mixer → MT6572 AFE/machine → MT6323 codec/ACCDET/放大器 → 耳机、扬声器、麦克风 |
-| 实施状态 | primary HAL 支持 48 kHz PCM16 播放及 `pcmC0D1c` 的 8/16/32/48 kHz PCM16 麦克风输入；两者均延迟打开并可从声卡晚注册恢复。policy 只暴露 Speaker/Earpiece/耳机输出与 Built-In Mic 输入，路由脚本选择 MT6323 MIC1 与 AFE AWB Source=MIC。主机 12/12 用例通过；3.5mm 听音和真实 MIC 数据未验 |
+| 实施状态 | primary HAL 支持 48 kHz PCM16 播放及 `pcmC0D1c` 的 8/16/32/48 kHz PCM16 麦克风输入；两者均延迟打开并可从声卡晚注册恢复。`set_mic_mute()` 保存全局静音状态，关闭期间仍读取并丢弃 PCM，但向框架返回全零样本；`get_mic_mute()` 返回实际状态。policy 只暴露 Speaker/Earpiece/耳机输出与 Built-In Mic 输入，路由脚本选择 MT6323 MIC1 与 AFE AWB Source=MIC。主机 13/13 用例通过；3.5mm 听音和真实 MIC 数据未验 |
 | 已证根因 | 旧open_fails=1后退避分支不再更新导致永不重试；set/get_master_volume假成功影响上层软件增益；这些不是所有无声/耳机/录音问题的总根因 |
 | 具体文件/测试 | `z1a9_gpt/scripts/r5g_audio/audio_primary_z1_poc.c:196–230,310–316,394–398`、`tests/`；`fork_linux/sound/soc/mediatek/mt6572/{mt6572-afe-pcm.c,mt6572-mt6323.c}`、`sound/soc/codecs/{mt6323.c,mt6323-accdet.c}`；E-AUDIO |
 | 故障分支及下一步 | 无声卡→模块/DT/时钟/codec；PCM打开失败→实际card/device/格式；PCM推进无声→mixer/DAPM/放大器/耳机路由；插拔不变→ACCDET/PMICIRQ/input-jack；底层capture有数据但App失败→输入HAL/policy；全零录音→真实采样源/ADC/MICBIAS |
 | 通过门禁 | 实际HAL maps/hash；声卡迟到后能恢复；低音量左右声道/单声道、静音/音量、插拔、播放停止重开；录音单独核ALSA有效样本与Android AudioRecord、时长/采样率/声道/非全零及无泄漏 |
 | 回滚 | audio HAL、tinyalsa依赖、policy、mixer初始路由、内核codec/AFE/machine/ACCDET模块成套恢复；保存用户音量与插拔状态，不能只换一份库 |
 
-新HAL的播放和录音各自使用独立 `open_retry_wait`，一次失败后跳过 9 次 write/read，在下一轮尝试，不靠失败计数无限停留。候选 SHA256 `3f1b3a841aea4eedd7cb7ba5c22ebe12e6062b6ec88ec5d28eed6864251e1722`；依赖 libtinyalsa/liblog/libm/libdl/libc，ARM softfp、无 TEXTREL。`input-contract` 用例验证 card0/device1、PCM_IN、10 次重试恢复、读入字节、teardown 和不伪造 capture position。[A-AUDIO]
+新HAL的播放和录音各自使用独立 `open_retry_wait`，一次失败后跳过 9 次 write/read，在下一轮尝试，不靠失败计数无限停留。MIC 静音候选 SHA256 `670cd3e97d07bf342d1635771b21b755f6c35b257949c959e481055e450176b6`；依赖 libtinyalsa/liblog/libm/libdl/libc，ARM softfp、无 TEXTREL。`input-contract` 用例验证 card0/device1、PCM_IN、10 次重试恢复、读入字节、teardown 和不伪造 capture position；`mic-mute` 用例验证静音状态读写、持续读取/排空、全零返回及解除静音后的数据恢复。[A-AUDIO]
 
 **3.5mm不是一个布尔开关**：耳机输出、插拔检测、耳机麦克风、按键、插头标准可能分别成功/失败。先确定本机插座触点/支持范围，不把某个ALSA Jack注册当作全部支持。设备无指示灯是用户事实，不列为故障。
 

@@ -27,10 +27,10 @@ The compressed backup is
   through `libtinyalsa.so`. The deployed copies load through the Android 9
   bionic linker and negotiate a 48 kHz stereo output plus 16 kHz mono AWB
   microphone stream without opening a PCM device during stream creation.
-- The 12-case audio HAL suite passes, including late sound-card recovery,
-  stream lifecycle, software volume fallback, error pacing, policy closure,
-  lazy `pcmC0D1c` microphone capture, and explicit failure for unsupported
-  capture extensions.
+- The 13-case audio HAL suite passes, including late sound-card recovery,
+  stream lifecycle, software volume fallback, error pacing, microphone
+  mute/unmute, policy closure, lazy `pcmC0D1c` microphone capture, and
+  explicit failure for unsupported capture extensions.
 - The GPS adapter maps the factory callback order and the actual factory HAL
   dependency closure loads under ARM qemu without initializing `mnld`. A
   separate 32-bit ARM host regression also verifies that unadapted factory

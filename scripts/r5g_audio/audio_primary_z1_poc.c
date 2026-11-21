@@ -2,6 +2,9 @@
  * audio_primary_z1_poc.c — minimal A9 (SDK28) audio PRIMARY HAL for Z1 (MT6572 + MT6323)
  * Implementation: AOSP audio_hw_hal.cpp "legacy wrapper" layout, backed by tinyalsa.
  *
+ * r9 revision (2026-11-19): implement the Android microphone mute contract by
+ * storing the device mute state and suppressing successful capture buffers.
+ *
  * r8 revision (2026-11-19): add the AWB microphone input stream on
  * pcmC0D1c. Playback and capture use the same lazy-open recovery so the HAL
  * can load before the ASoC card finishes probing.
@@ -96,6 +99,7 @@ struct z1_stream_out {
 
 struct z1_stream_in {
     struct audio_stream_in stream;
+    struct z1_audio_device *adev;
     pthread_mutex_t lock;
     struct pcm     *pcm;
     uint32_t        rate;
@@ -111,6 +115,7 @@ struct z1_audio_device {
     struct audio_hw_device hw;
     pthread_mutex_t        lock;
     int                    in_call;
+    bool                   mic_mute;
 };
 
 /* ---- ABI 断言: A9 (SDK28) 布局, 本轮用 arm-linux-gnueabihf-gcc 探针实算
@@ -460,6 +465,13 @@ static ssize_t in_read(struct audio_stream_in *stream, void *buffer, size_t byte
             rc = -EIO;
         } else {
             in->frames_read += bytes / in->frame_bytes;
+            /* Drain the PCM read above so mute does not become a busy loop.
+             * Taking the device lock also serializes a concurrent mute request:
+             * once set_mic_mute() returns, in-flight reads cannot leak samples. */
+            pthread_mutex_lock(&in->adev->lock);
+            if (in->adev->mic_mute)
+                memset(buffer, 0, bytes);
+            pthread_mutex_unlock(&in->adev->lock);
         }
     }
     pthread_mutex_unlock(&in->lock);
@@ -516,8 +528,29 @@ static int adev_get_master_volume(struct audio_hw_device *dev, float *v)
 { (void)dev; (void)v; return -ENOTSUP; }
 static int adev_set_mode(struct audio_hw_device *dev, audio_mode_t m)
 { ((struct z1_audio_device *)dev)->in_call = (m == AUDIO_MODE_IN_CALL); return 0; }
-static int adev_set_mic_mute(struct audio_hw_device *dev, bool s) { (void)dev; (void)s; return 0; }
-static int adev_get_mic_mute(const struct audio_hw_device *dev, bool *s) { (void)dev; if (s) *s = false; return 0; }
+static int adev_set_mic_mute(struct audio_hw_device *dev, bool s)
+{
+    struct z1_audio_device *adev = (struct z1_audio_device *)dev;
+
+    if (adev == NULL)
+        return -EINVAL;
+    pthread_mutex_lock(&adev->lock);
+    adev->mic_mute = s;
+    pthread_mutex_unlock(&adev->lock);
+    return 0;
+}
+
+static int adev_get_mic_mute(const struct audio_hw_device *dev, bool *s)
+{
+    struct z1_audio_device *adev = (struct z1_audio_device *)dev;
+
+    if (adev == NULL || s == NULL)
+        return -EINVAL;
+    pthread_mutex_lock(&adev->lock);
+    *s = adev->mic_mute;
+    pthread_mutex_unlock(&adev->lock);
+    return 0;
+}
 
 static int adev_set_parameters(struct audio_hw_device *dev, const char *kv)
 { (void)dev; (void)kv; return 0; }
@@ -615,6 +648,7 @@ static int adev_open_input_stream(struct audio_hw_device *dev, audio_io_handle_t
     in = (struct z1_stream_in *)calloc(1, sizeof(*in));
     if (in == NULL)
         return -ENOMEM;
+    in->adev = (struct z1_audio_device *)dev;
     in->rate = z1_normalize_input_rate(cfg->sample_rate);
     in->channels = popcount_mask(cfg->channel_mask) == 1 ? 1 : Z1_DEFAULT_CHANNELS;
     in->frame_bytes = in->channels * sizeof(int16_t);

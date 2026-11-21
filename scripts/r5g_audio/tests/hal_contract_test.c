@@ -452,6 +452,51 @@ static void input_contract_case(struct audio_hw_device *dev)
     printf("input contract: lazy pcmC0D1c capture, backoff, read and close\n");
 }
 
+static void mic_mute_case(struct audio_hw_device *dev)
+{
+    struct audio_config config = {
+        .sample_rate = 16000,
+        .channel_mask = AUDIO_CHANNEL_IN_MONO,
+        .format = AUDIO_FORMAT_PCM_16_BIT
+    };
+    struct audio_stream_in *input = NULL;
+    unsigned char samples[1024];
+    bool muted = true;
+
+    CHECK(dev->set_mic_mute(dev, false) == 0, "clear microphone mute");
+    CHECK(dev->get_mic_mute(dev, &muted) == 0 && !muted,
+          "microphone mute starts clear");
+    CHECK(dev->get_mic_mute(dev, NULL) == -EINVAL,
+          "microphone mute getter validates its output");
+    CHECK(dev->open_input_stream(
+              dev, 0, AUDIO_DEVICE_IN_BUILTIN_MIC, &config,
+              &input, AUDIO_INPUT_FLAG_NONE, NULL,
+              AUDIO_SOURCE_MIC) == 0 && input != NULL,
+          "open microphone stream for mute test");
+
+    device_ready = 1;
+    return_null = 0;
+    CHECK(dev->set_mic_mute(dev, true) == 0, "enable microphone mute");
+    muted = false;
+    CHECK(dev->get_mic_mute(dev, &muted) == 0 && muted,
+          "microphone mute state is retained");
+    memset(samples, 0xa5, sizeof(samples));
+    CHECK(input->read(input, samples, sizeof(samples)) == sizeof(samples),
+          "muted capture still drains a complete buffer");
+    for (size_t i = 0; i < sizeof(samples); i++)
+        CHECK(samples[i] == 0, "muted capture samples are all zero");
+
+    CHECK(dev->set_mic_mute(dev, false) == 0, "disable microphone mute");
+    memset(samples, 0, sizeof(samples));
+    CHECK(input->read(input, samples, sizeof(samples)) == sizeof(samples),
+          "unmuted capture returns a complete buffer");
+    CHECK(samples[0] == 0x5a && samples[sizeof(samples) - 1] == 0x5a,
+          "unmuted capture returns original samples");
+    CHECK(read_calls == 2, "mute changes capture content without dropping reads");
+    dev->close_input_stream(dev, input);
+    printf("microphone mute: retained, drained and suppressed; unmute restores data\n");
+}
+
 static void module_identity_case(struct audio_hw_device *dev)
 {
     CHECK(HAL_MODULE_INFO_SYM.common.tag == HARDWARE_MODULE_TAG,
@@ -502,6 +547,7 @@ int main(int argc, char **argv)
     else if (strcmp(argv[1], "output-config") == 0) output_config_case(dev);
     else if (strcmp(argv[1], "stream-contract") == 0) stream_contract_case(out);
     else if (strcmp(argv[1], "input-contract") == 0) input_contract_case(dev);
+    else if (strcmp(argv[1], "mic-mute") == 0) mic_mute_case(dev);
     else if (strcmp(argv[1], "module-identity") == 0) module_identity_case(dev);
     else { fprintf(stderr, "Unknown case: %s\n", argv[1]); failures++; }
     dev->close_output_stream(dev, out);

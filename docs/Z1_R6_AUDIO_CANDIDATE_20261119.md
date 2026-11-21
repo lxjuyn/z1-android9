@@ -27,10 +27,11 @@ used as the matching R6 system.
 - The Android 9 linker loads each deployed copy under qemu and opens the HAL
   interface. A 44.1 kHz stereo request is negotiated to 48 kHz stereo PCM16
   without opening a PCM device.
-- The source-level suite passes 12/12 cases covering lazy opening, ten-write
+- The source-level suite passes 13/13 cases covering lazy opening, ten-write
   recovery from a late sound-card probe, standby, stream lifecycle, software
-  volume fallback, write errors, unsupported presentation timestamps, policy
-  closure, and explicit unsupported capture.
+  volume fallback, write errors, unsupported presentation timestamps,
+  microphone mute and unmute, policy closure, and explicit unsupported
+  capture extensions.
 - `e2fsck -fn` passes after installation.
 - Both HAL replacements retain the original `0644 root:root` metadata and the
   NUL-terminated `u:object_r:vendor_file:s0` label.
