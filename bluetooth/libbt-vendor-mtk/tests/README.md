@@ -20,7 +20,7 @@ process with a 20-second timeout.
 ## Cases and observed results
 
 Verified on 2026-11-21 against production SHA-256
-`cbd21aac7a551444289a625604390768457553ca02fcf768e6302182d3c37543`.
+`0a23a9943a40d762fd68e5b9e089e29e1cc5ab4bd70c66826677779d29e10e74`.
 Normal, ASan/UBSan, explicit probe, and ASan/UBSan explicit probe all exited 0.
 
 | Case | Assertions | What it checks | Result |
@@ -28,7 +28,7 @@ Normal, ASan/UBSan, explicit probe, and ASan/UBSan explicit probe all exited 0.
 | `lifecycle` | 138 | Callback size/null validation; pre-init operations; duplicate init/open; all HCI channel slots; synchronous firmware result; enable failure/retry; repeated power cycles; close/power-off/cleanup ordering; no double-disable; callback cleanup; unsupported SCO/audio; optional callbacks; LPM/epilog | Pass |
 | `fd-zero` | 33 | fd=0 is a valid controller fd, shared by all four slots; FW_CFG succeeds; close and cleanup both disable fd=0 once | Pass |
 | `close-retry` | 368 | Explicit close failure plus the real-fd cleanup regression below, included in the default suite | Pass |
-| `direct-fallback` | 48 | Factory enable failure falls back to the direct stpbt/H4 descriptor through userial close, cleanup, and power-off paths; the adapter closes only descriptors it owns | Pass |
+| `direct-fallback` | 48 | Factory enable failure waits two seconds for a WMT whole-chip reset to settle, then falls back to the direct stpbt/H4 descriptor through userial close, cleanup, and power-off paths; the adapter closes only descriptors it owns | Pass |
 | `missing-enable` | 34 | Missing `mtk_bt_enable` yields `-ENOSYS`; handle unload; no stale callbacks; healthy init retry without cleanup | Pass |
 | `missing-disable` | 34 | Missing `mtk_bt_disable` yields `-ENOSYS`; handle unload; healthy init retry without cleanup | Pass |
 | `dlopen-missing` | 34 | Nonexistent fixture yields `-ENOENT`; no acquired handle; healthy retry | Pass |

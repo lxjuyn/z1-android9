@@ -22,6 +22,7 @@
 #include <fcntl.h>
 #include <stdint.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <log/log.h>
@@ -29,6 +30,10 @@
 
 #ifndef Z1_BT_DEVICE_PATH
 #define Z1_BT_DEVICE_PATH "/dev/stpbt"
+#endif
+
+#ifndef Z1_BT_DIRECT_OPEN_DELAY_MS
+#define Z1_BT_DIRECT_OPEN_DELAY_MS 2000
 #endif
 
 /* Z1 factory libbluetoothdrv.so mtk_bt_enable (0x778) takes no inputs. */
@@ -48,6 +53,23 @@ enum hci_fd_owner {
 };
 
 static enum hci_fd_owner hci_fd_owner;
+
+static void wait_for_wmt_reset_to_settle(void) {
+  struct timespec delay = {
+      .tv_sec = Z1_BT_DIRECT_OPEN_DELAY_MS / 1000,
+      .tv_nsec = (Z1_BT_DIRECT_OPEN_DELAY_MS % 1000) * 1000000L,
+  };
+
+  /*
+   * A failed stpbt open can be followed by a WMT whole-chip reset. The reset
+   * completed in under one second on the board; two seconds keeps the fallback
+   * clear of that callback without delaying a direct path that opens normally.
+   */
+  ALOGW("waiting %d ms for WMT reset before direct H4",
+        Z1_BT_DIRECT_OPEN_DELAY_MS);
+  while (nanosleep(&delay, &delay) < 0 && errno == EINTR) {
+  }
+}
 
 static void clear_driver(void) {
   mtk_bt_enable = NULL;
@@ -147,6 +169,7 @@ static int z1_bt_userial_open(void *param) {
   if (fd < 0) {
     ALOGW("factory Bluetooth initialization failed (fd=%d); trying direct H4",
           fd);
+    wait_for_wmt_reset_to_settle();
     fd = open_direct_h4();
     if (fd < 0) return 0;
     hci_fd_owner = HCI_FD_DIRECT;

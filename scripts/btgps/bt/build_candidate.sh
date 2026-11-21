@@ -82,9 +82,9 @@ metadata = {'built_at': datetime.datetime.now().astimezone().isoformat(),
             'host_regressions': f'{host_case_count} cases passed',
             'board_validated': False,
             'known_limitations': ['cleanup failure retention is tested; persistent factory failure or unloading the adapter may still prevent recovery',
-                                  'direct H4 fallback is host-tested but has not completed Android stack initialization on the board',
-                                  'NVRAM and actual target library mappings unverified',
-                                  'no actual controller, HCI data transport, pairing, or audio validation']}
+                                  'the first WMT function-on can time out; direct H4 waits two seconds for whole-chip reset recovery',
+                                  'the controller rejects extended-feature pages 2 and 3 with status 0x30; the Android parser requires the committed tolerance patch',
+                                  'controller identity, scan, pairing, reconnect, coexistence, and audio remain board-test items']}
 (a/'build_metadata.json').write_text(json.dumps(metadata, indent=2)+'\n')
 (a/'SOURCE_SHA256SUMS').write_text(''.join(
     hashlib.sha256(p.read_bytes()).hexdigest()+'  '+str(p.relative_to(a))+'\n'
