@@ -104,6 +104,21 @@ say() { :; }
         self.assertLess(ready, state)
         self.assertIn('| tr -d \' 0\\n\'', text)
 
+    def test_toybox_chown_uses_owner_group_syntax(self):
+        text = SCRIPT.read_text()
+        self.assertIn(
+            "/system/bin/chown 1000:1000 /dev/stpwmt", text
+        )
+        self.assertIn(
+            "/system/bin/chown 1002:1001 /dev/stpbt", text
+        )
+        self.assertNotIn(
+            "/system/bin/chown 1000 1000 /dev/stpwmt", text
+        )
+        self.assertNotIn(
+            "/system/bin/chown 1002 1001 /dev/stpbt", text
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

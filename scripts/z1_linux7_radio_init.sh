@@ -292,8 +292,8 @@ done
 [ -c /dev/stpbt ] || skip "/dev/stpbt not created by the loaded BT module"
 
 /system/bin/chmod 0660 /dev/stpwmt /dev/stpbt || skip "cannot set Bluetooth/WMT node modes"
-/system/bin/chown 1000 1000 /dev/stpwmt || skip "cannot assign WMT ownership"
-/system/bin/chown 1002 1001 /dev/stpbt || skip "cannot assign Bluetooth ownership"
+/system/bin/chown 1000:1000 /dev/stpwmt || skip "cannot assign WMT ownership"
+/system/bin/chown 1002:1001 /dev/stpbt || skip "cannot assign Bluetooth ownership"
 
 if [ "$wifi_ready" = 1 ]; then
     if [ ! -c /dev/wmtWifi ]; then
