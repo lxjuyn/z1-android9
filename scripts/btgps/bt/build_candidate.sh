@@ -55,6 +55,10 @@ archive, repo, live, source_hash = sys.argv[1:]
 a = pathlib.Path(archive)
 text = (a / 'readelf.txt').read_text()
 needed = re.findall(r'\(NEEDED\).*?\[([^\]]+)\]', text)
+host_tests = (a / 'host_tests.log').read_text()
+host_match = re.search(r'^RESULT cases=(\d+) failed=(\d+)', host_tests, re.M)
+assert host_match and host_match.group(2) == '0', 'host regressions failed'
+host_case_count = int(host_match.group(1))
 assert 'Class:                             ELF32' in text, 'not ELF32'
 assert re.search(r'Machine:\s+ARM\b', text), 'not ARM'
 assert re.search(r'\(SONAME\).*\[libbt-vendor\.so\]', text), 'bad SONAME'
@@ -75,8 +79,10 @@ metadata = {'built_at': datetime.datetime.now().astimezone().isoformat(),
             'candidate_sha256': hashlib.sha256((a/'libbt-vendor.so').read_bytes()).hexdigest(),
             'ndk': 'r26d / 26.3.11579264', 'target': 'armv7a-linux-androideabi28',
             'needed': needed, 'no_undefined': True, 'abi_checks': 'passed',
-            'host_regressions': '7 cases passed', 'board_validated': False,
+            'host_regressions': f'{host_case_count} cases passed',
+            'board_validated': False,
             'known_limitations': ['cleanup failure retention is tested; persistent factory failure or unloading the adapter may still prevent recovery',
+                                  'direct H4 fallback is host-tested but has not completed Android stack initialization on the board',
                                   'NVRAM and actual target library mappings unverified',
                                   'no actual controller, HCI data transport, pairing, or audio validation']}
 (a/'build_metadata.json').write_text(json.dumps(metadata, indent=2)+'\n')

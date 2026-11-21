@@ -14,11 +14,13 @@ if [[ ${SANITIZE:-0} == 1 ]]; then
   flags+=(-fsanitize=address,undefined -fno-omit-frame-pointer)
 fi
 mkdir -p "$work/good" "$work/missing-enable" "$work/missing-disable" "$work/invalid"
+: > "$work/stpbt"
 # Stable snapshot + before/after hash: never execute an archived production .so.
 cp -- "$source_file" "$work/libbt-vendor-mtk.c"
 source_hash=$(sha256sum "$work/libbt-vendor-mtk.c" | cut -d ' ' -f1)
 printf 'SOURCE sha256=%s\n' "$source_hash"
 "$cc" "${flags[@]}" -fPIC -shared -I"$here/include" -I"$here/shim_host" \
+  "-DZ1_BT_DEVICE_PATH=\"$work/stpbt\"" \
   "$work/libbt-vendor-mtk.c" "$here/loader_fixture.c" -ldl \
   -Wl,--no-undefined -Wl,--wrap=dlopen -Wl,--wrap=dlclose \
   -o "$work/libbt-vendor-host.so"
@@ -31,7 +33,7 @@ for variant in good missing-enable missing-disable; do
 done
 printf 'Deliberately invalid ELF test fixture\n' > "$work/invalid/libbluetoothdrv.so"
 "$cc" "${flags[@]}" -I"$here/include" "$here/test_vendor.c" -ldl -o "$work/test_vendor"
-tests=(lifecycle fd-zero close-retry missing-enable missing-disable dlopen-missing dlopen-invalid)
+tests=(lifecycle fd-zero close-retry direct-fallback missing-enable missing-disable dlopen-missing dlopen-invalid)
 [[ $probe == 0 ]] || tests+=(cleanup-disable-failure)
 failed=0
 for test in "${tests[@]}"; do

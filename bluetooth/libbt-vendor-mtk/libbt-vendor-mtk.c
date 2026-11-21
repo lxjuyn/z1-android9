@@ -19,11 +19,17 @@
 
 #include <dlfcn.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <stdint.h>
 #include <string.h>
+#include <unistd.h>
 
 #include <log/log.h>
 #include <bt_vendor_lib.h>
+
+#ifndef Z1_BT_DEVICE_PATH
+#define Z1_BT_DEVICE_PATH "/dev/stpbt"
+#endif
 
 /* Z1 factory libbluetoothdrv.so mtk_bt_enable (0x778) takes no inputs. */
 typedef int (*mtk_bt_enable_fn)(void);
@@ -35,9 +41,18 @@ static mtk_bt_disable_fn mtk_bt_disable;
 static const bt_vendor_callbacks_t *vendor_callbacks;
 static int hci_fd = -1;
 
+enum hci_fd_owner {
+  HCI_FD_NONE,
+  HCI_FD_FACTORY,
+  HCI_FD_DIRECT,
+};
+
+static enum hci_fd_owner hci_fd_owner;
+
 static void clear_driver(void) {
   mtk_bt_enable = NULL;
   mtk_bt_disable = NULL;
+  hci_fd_owner = HCI_FD_NONE;
   if (driver_handle != NULL) {
     dlclose(driver_handle);
     driver_handle = NULL;
@@ -94,6 +109,27 @@ static int z1_bt_init(const bt_vendor_callbacks_t *callbacks,
   return 0;
 }
 
+static int open_direct_h4(void) {
+  int fd;
+
+  /*
+   * stpbt's open callback starts WMT Bluetooth and registers its STP event
+   * callback. Android's H4Protocol can then perform controller setup directly.
+   * Keep this as a fallback: the factory library remains authoritative when its
+   * legacy NVRAM/GORM initialization succeeds.
+   */
+  fd = open(Z1_BT_DEVICE_PATH, O_RDWR | O_NONBLOCK | O_CLOEXEC | O_NOFOLLOW);
+  if (fd < 0) {
+    ALOGE("cannot open %s for direct H4: %s", Z1_BT_DEVICE_PATH,
+          strerror(errno));
+    return -1;
+  }
+
+  ALOGI("using direct H4 on %s after factory initialization did not return an HCI descriptor",
+        Z1_BT_DEVICE_PATH);
+  return fd;
+}
+
 static int z1_bt_userial_open(void *param) {
   int *fd_array = (int *)param;
   int fd;
@@ -109,11 +145,16 @@ static int z1_bt_userial_open(void *param) {
   /* mtk() opens stpbt (WMT func-on), then runs NVRAM/GORM HCI init. */
   fd = mtk_bt_enable();
   if (fd < 0) {
-    ALOGE("factory Bluetooth driver failed to open HCI (fd=%d)", fd);
-    return 0;
+    ALOGW("factory Bluetooth initialization failed (fd=%d); trying direct H4",
+          fd);
+    fd = open_direct_h4();
+    if (fd < 0) return 0;
+    hci_fd_owner = HCI_FD_DIRECT;
+  } else {
+    ALOGI("factory Bluetooth HCI initialization completed");
+    hci_fd_owner = HCI_FD_FACTORY;
   }
 
-  ALOGI("factory Bluetooth HCI initialization completed");
   hci_fd = fd;
   for (channel = 0; channel < CH_MAX; ++channel) fd_array[channel] = fd;
   return 1;
@@ -122,10 +163,33 @@ static int z1_bt_userial_open(void *param) {
 static int z1_bt_userial_close(void) {
   int result;
 
-  if (hci_fd < 0 || mtk_bt_disable == NULL) return 0;
+  if (hci_fd < 0) {
+    hci_fd_owner = HCI_FD_NONE;
+    return 0;
+  }
+
+  if (hci_fd_owner == HCI_FD_DIRECT) {
+    result = close(hci_fd);
+    if (result < 0)
+      ALOGE("direct H4 close failed for fd %d: %s", hci_fd, strerror(errno));
+    /* On Linux close() consumes the descriptor even when it reports EINTR. */
+    hci_fd = -1;
+    hci_fd_owner = HCI_FD_NONE;
+    return result;
+  }
+
+  if (hci_fd_owner != HCI_FD_FACTORY || mtk_bt_disable == NULL) {
+    ALOGE("invalid Bluetooth HCI descriptor owner %d", hci_fd_owner);
+    return -EINVAL;
+  }
+
   result = mtk_bt_disable(hci_fd);
-  if (result >= 0) hci_fd = -1;
-  else ALOGE("factory Bluetooth driver failed to close HCI: %d", result);
+  if (result >= 0) {
+    hci_fd = -1;
+    hci_fd_owner = HCI_FD_NONE;
+  } else {
+    ALOGE("factory Bluetooth driver failed to close HCI: %d", result);
+  }
   return result;
 }
 

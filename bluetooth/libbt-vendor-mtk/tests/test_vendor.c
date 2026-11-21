@@ -124,15 +124,23 @@ static void lifecycle(void) {
   vi->cleanup(); driver_counts(2, 2, 7);
   CHECK(vi->init(&callbacks, address) == 0);
   set_enable(-5);
-  CHECK(vi->op(BT_VND_OP_USERIAL_OPEN, fds) == 0); channels(fds, -1);
-  CHECK(vi->op(BT_VND_OP_FW_CFG, NULL) == -ENODEV);
-  CHECK(fw_ok == 1 && fw_bad == 3);
+  CHECK(vi->op(BT_VND_OP_USERIAL_OPEN, fds) == 1);
+  int direct_fd = fds[0];
+  CHECK(direct_fd >= 0);
+  channels(fds, direct_fd);
+  CHECK(vi->op(BT_VND_OP_FW_CFG, NULL) == 0);
+  CHECK(fw_ok == 2 && fw_bad == 2);
   driver_counts(3, 2, 7);
-  set_enable(8);
-  CHECK(vi->op(BT_VND_OP_USERIAL_OPEN, fds) == 1); channels(fds, 8);
-  CHECK(vi->op(BT_VND_OP_POWER_CTRL, &off) == 0);
   CHECK(vi->op(BT_VND_OP_USERIAL_CLOSE, NULL) == 0);
-  vi->cleanup(); driver_counts(4, 3, 8); loader_counts(3, 3, 3);
+  errno = 0;
+  CHECK(fcntl(direct_fd, F_GETFD) == -1 && errno == EBADF);
+  vi->cleanup();
+  set_enable(8);
+  CHECK(vi->init(&callbacks, address) == 0);
+  CHECK(vi->op(BT_VND_OP_USERIAL_OPEN, fds) == 1); channels(fds, 8);
+  CHECK(vi->op(BT_VND_OP_USERIAL_CLOSE, NULL) == 0);
+  CHECK(vi->op(BT_VND_OP_POWER_CTRL, &off) == 0);
+  vi->cleanup(); driver_counts(4, 3, 8); loader_counts(4, 4, 4);
   CHECK(vi->init(&callbacks, address) == 0);
   CHECK(vi->op(BT_VND_OP_SCO_CFG, NULL) == -EOPNOTSUPP);
   CHECK(sco_ok == 0 && sco_bad == 1);
@@ -146,7 +154,7 @@ static void lifecycle(void) {
   CHECK(vi->op(BT_VND_OP_LPM_WAKE_SET_STATE, &mode) == 0);
   CHECK(vi->op(BT_VND_OP_EPILOG, NULL) == 0);
   CHECK(epilog_ok == 1 && epilog_bad == 0);
-  vi->cleanup(); loader_counts(4, 4, 4);
+  vi->cleanup(); loader_counts(5, 5, 5);
   /* Full-size callbacks may contain null optional members. */
   bt_vendor_callbacks_t empty = {.size = sizeof(empty)};
   CHECK(vi->init(&empty, NULL) == 0);
@@ -155,7 +163,7 @@ static void lifecycle(void) {
   CHECK(vi->op(BT_VND_OP_SET_AUDIO_STATE, NULL) == -EOPNOTSUPP);
   CHECK(vi->op(BT_VND_OP_LPM_SET_MODE, NULL) == 0);
   CHECK(vi->op(BT_VND_OP_EPILOG, NULL) == 0);
-  vi->cleanup(); loader_counts(5, 5, 5);
+  vi->cleanup(); loader_counts(6, 6, 6);
 }
 static void zero_fd(void) {
   CHECK(vi->init(&callbacks, address) == 0); set_enable(0);
@@ -185,6 +193,49 @@ static void close_failure(void) {
   vi->cleanup(); driver_counts(1, 2, 7); loader_counts(1, 1, 1);
   CHECK(vi->init(&callbacks, address) == 0);
   vi->cleanup(); loader_counts(2, 2, 2);
+}
+static void direct_fallback(void) {
+  int fds[CH_MAX] = {0};
+
+  CHECK(vi->init(&callbacks, address) == 0);
+  set_enable(-ENODEV);
+  CHECK(vi->op(BT_VND_OP_USERIAL_OPEN, fds) == 1);
+  int fd = fds[0];
+  CHECK(fd >= 0);
+  if (fd < 0) return;
+  channels(fds, fd);
+  CHECK(fcntl(fd, F_GETFD) >= 0);
+  CHECK(vi->op(BT_VND_OP_FW_CFG, NULL) == 0);
+  CHECK(fw_ok == 1 && fw_bad == 0);
+  CHECK(vi->op(BT_VND_OP_USERIAL_CLOSE, NULL) == 0);
+  errno = 0;
+  CHECK(fcntl(fd, F_GETFD) == -1 && errno == EBADF);
+  vi->cleanup();
+  loader_counts(1, 1, 1);
+
+  CHECK(vi->init(&callbacks, address) == 0);
+  set_enable(-ENODEV);
+  CHECK(vi->op(BT_VND_OP_USERIAL_OPEN, fds) == 1);
+  fd = fds[0];
+  channels(fds, fd);
+  vi->cleanup();
+  errno = 0;
+  CHECK(fcntl(fd, F_GETFD) == -1 && errno == EBADF);
+  driver_counts(2, 0, -12345);
+  loader_counts(2, 2, 2);
+
+  CHECK(vi->init(&callbacks, address) == 0);
+  set_enable(-ENODEV);
+  CHECK(vi->op(BT_VND_OP_USERIAL_OPEN, fds) == 1);
+  fd = fds[0];
+  channels(fds, fd);
+  int off = BT_VND_PWR_OFF;
+  CHECK(vi->op(BT_VND_OP_POWER_CTRL, &off) == 0);
+  errno = 0;
+  CHECK(fcntl(fd, F_GETFD) == -1 && errno == EBADF);
+  vi->cleanup();
+  driver_counts(3, 0, -12345);
+  loader_counts(3, 3, 3);
 }
 static void fd_counts(int owned, int closed) {
   int actual_owned, actual_closed;
@@ -332,6 +383,7 @@ int main(int argc, char **argv) {
     if (!strcmp(test, "lifecycle")) lifecycle();
     else if (!strcmp(test, "fd-zero")) zero_fd();
     else if (!strcmp(test, "close-retry")) { close_failure(); cleanup_failure(); }
+    else if (!strcmp(test, "direct-fallback")) direct_fallback();
     else if (!strcmp(test, "cleanup-disable-failure")) cleanup_failure();
     else { fprintf(stderr, "unknown case: %s\n", test); return 2; }
   }
