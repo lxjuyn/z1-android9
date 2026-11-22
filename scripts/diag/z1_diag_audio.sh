@@ -50,12 +50,17 @@ mixer_value() {
         {
             sub(/\r$/, "", $0)
             at = index($0, name)
-            if (!at || substr($0, at) != name)
+            if (!at || (at > 1 && substr($0, at - 1, 1) !~ /[ \t]/) ||
+                    substr($0, at + length(name), 1) !~ /[ \t]/)
                 next
             value = substr($0, at + length(name))
             gsub(/^[ \t]+|[ \t]+$/, "", value)
-            print value
-            exit
+            if (value == "On" || value == "Off")
+                value = (value == "On" ? "1" : "0")
+            if (value ~ /^[0-9]+$/) {
+                print value
+                exit
+            }
         }'
 }
 
