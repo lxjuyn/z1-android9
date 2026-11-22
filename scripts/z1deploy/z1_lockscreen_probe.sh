@@ -1,6 +1,6 @@
 #!/system/bin/sh
 #
-# Exercise the Android display power path through the power key.
+# Exercise the Android display power path using explicit sleep and wake keys.
 # Run as the console shell user; root is not required.
 #
 # Prints machine-readable gate and brightness samples. Physical panel
@@ -12,6 +12,7 @@ ROOT=${Z1_ROOT:-}
 LED_DIR="$ROOT/sys/class/leds/lcd-backlight"
 BLANK="$LED_DIR/display_blank"
 BRIGHTNESS="$LED_DIR/brightness"
+BOOT_ID="$ROOT/proc/sys/kernel/random/boot_id"
 HWC=/vendor/lib/hw/hwcomposer.z1.so
 CYCLES=${1:-3}
 WAIT_SECONDS=${Z1_LOCK_TIMEOUT:-12}
@@ -40,12 +41,16 @@ wakefulness() {
         head -n 1
 }
 
-wait_for_blank() {
-    expected=$1
+wait_for_state() {
+    expected_blank=$1
+    expected_wake=$2
     waited=0
     while [ "$waited" -lt "$WAIT_SECONDS" ]; do
+        [ "$(read_value "$BOOT_ID")" = "$original_boot" ] || return 1
         actual=$(read_value "$BLANK")
-        [ "$actual" = "$expected" ] && return 0
+        if [ "$actual" = "$expected_blank" ] && [ "$(wakefulness)" = "$expected_wake" ]; then
+            return 0
+        fi
         sleep 1
         waited=$((waited + 1))
     done
@@ -78,9 +83,15 @@ if [ ! -r "$BLANK" ]; then
     exit 1
 fi
 
+original_boot=$(read_value "$BOOT_ID")
+if [ -z "$original_boot" ]; then
+    echo "summary status=FAIL reason=boot_id_unreadable"
+    exit 1
+fi
+
 settings put system screen_off_timeout 30000 >/dev/null 2>&1
 settings put global stay_on_while_plugged_in 0 >/dev/null 2>&1
-echo "Z1_LOCK_PROBE_BEGIN cycles=$CYCLES"
+echo "Z1_LOCK_PROBE_BEGIN cycles=$CYCLES boot_id=$original_boot"
 echo "hwc_sha256=$(sha256sum "$ROOT$HWC" 2>/dev/null | awk '{print $1}')"
 echo "physical_blank_confirmation=MANUAL_REQUIRED"
 
@@ -92,49 +103,46 @@ if [ -n "$EXPECT_HWC" ]; then
     fi
 fi
 
-input keyevent 224 >/dev/null 2>&1
-if ! wait_for_blank 0; then
+if ! input keyevent 224 >/dev/null 2>&1 || ! wait_for_state 0 Awake; then
     sample "initial"
     echo "summary status=FAIL reason=initial_wake_timeout"
     exit 1
 fi
-wm dismiss-keyguard >/dev/null 2>&1 || true
 sample "initial"
 
 pass=0
 fail=0
 cycle=1
 while [ "$cycle" -le "$CYCLES" ]; do
-    input keyevent 26 >/dev/null 2>&1
-    if wait_for_blank 1; then
+    if input keyevent 223 >/dev/null 2>&1 && wait_for_state 1 Asleep; then
         sample "cycle=$cycle lock"
         pass=$((pass + 1))
     else
         sample "cycle=$cycle lock"
-        echo "cycle=$cycle lock status=FAIL reason=display_blank_did_not_become_1"
+        echo "cycle=$cycle lock status=FAIL reason=lock_state_not_reached"
         fail=$((fail + 1))
         break
     fi
 
-    input keyevent 26 >/dev/null 2>&1
-    if wait_for_blank 0; then
-        wm dismiss-keyguard >/dev/null 2>&1 || true
+    if input keyevent 224 >/dev/null 2>&1 && wait_for_state 0 Awake; then
         sample "cycle=$cycle wake"
         pass=$((pass + 1))
     else
         sample "cycle=$cycle wake"
-        echo "cycle=$cycle wake status=FAIL reason=display_blank_did_not_become_0"
+        echo "cycle=$cycle wake status=FAIL reason=wake_state_not_reached"
         fail=$((fail + 1))
         break
     fi
     cycle=$((cycle + 1))
 done
 
-input keyevent 224 >/dev/null 2>&1
-wm dismiss-keyguard >/dev/null 2>&1 || true
-if [ "$fail" -eq 0 ]; then
+if [ "$fail" -eq 0 ] && [ "$(read_value "$BOOT_ID")" = "$original_boot" ]; then
     echo "summary pass=$pass fail=0 status=PASS physical_blank=UNVERIFIED"
     exit 0
 fi
-echo "summary pass=$pass fail=$fail status=FAIL physical_blank=UNVERIFIED"
+if [ "$(read_value "$BOOT_ID")" != "$original_boot" ]; then
+    echo "summary pass=$pass status=FAIL reason=boot_id_changed physical_blank=UNVERIFIED"
+else
+    echo "summary pass=$pass fail=$fail status=FAIL physical_blank=UNVERIFIED"
+fi
 exit 1

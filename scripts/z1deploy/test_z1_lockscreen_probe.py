@@ -20,18 +20,21 @@ class LockscreenProbeTest(unittest.TestCase):
         (led / "display_blank").write_text("0\n")
         (led / "brightness").write_text("2\n")
         (root / "awake").write_text("Awake\n")
+        boot = root / "proc/sys/kernel/random/boot_id"
+        boot.parent.mkdir(parents=True)
+        boot.write_text("original-boot\n")
         fake = root / "bin"
         fake.mkdir()
 
         commands = {
             "input": """#!/bin/sh
-if [ "$1" = keyevent ] && [ "$2" = 26 ] && [ "${FAKE_STUCK:-0}" != 1 ]; then
-    if [ "$(cat "$Z1_ROOT/sys/class/leds/lcd-backlight/display_blank")" = 0 ]; then
-        echo 1 > "$Z1_ROOT/sys/class/leds/lcd-backlight/display_blank"
+if [ "$1" = keyevent ] && [ "$2" = 223 ] && [ "${FAKE_STUCK:-0}" != 1 ]; then
+    echo 1 > "$Z1_ROOT/sys/class/leds/lcd-backlight/display_blank"
+    if [ "${FAKE_AWAKE:-0}" != 1 ]; then
         echo Asleep > "$Z1_ROOT/awake"
-    else
-        echo 0 > "$Z1_ROOT/sys/class/leds/lcd-backlight/display_blank"
-        echo Awake > "$Z1_ROOT/awake"
+    fi
+    if [ "${FAKE_RESET:-0}" = 1 ]; then
+        echo reset > "$Z1_ROOT/proc/sys/kernel/random/boot_id"
     fi
 elif [ "$1" = keyevent ] && [ "$2" = 224 ]; then
     echo 0 > "$Z1_ROOT/sys/class/leds/lcd-backlight/display_blank"
@@ -95,8 +98,20 @@ esac
             timeout=10,
         )
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-        self.assertIn("reason=display_blank_did_not_become_1", result.stdout)
+        self.assertIn("reason=lock_state_not_reached", result.stdout)
         self.assertIn("summary pass=0 fail=1 status=FAIL", result.stdout)
+
+    def test_blank_without_sleep_or_boot_continuity_fails(self):
+        for fault in ("FAKE_AWAKE", "FAKE_RESET"):
+            with self.subTest(fault=fault):
+                _, env = self.fixture()
+                env[fault] = "1"
+                result = subprocess.run(
+                    ["sh", str(SCRIPT), "1"], env=env, capture_output=True,
+                    text=True, timeout=10,
+                )
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn("reason=lock_state_not_reached", result.stdout)
 
     def test_zero_cycles_are_rejected(self):
         _, env = self.fixture()
