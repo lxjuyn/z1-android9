@@ -67,3 +67,9 @@ The ARM API 28 executable ran under QEMU with the R7 linker and libraries,
 including the missing-device and required-argument paths. Host socket fixtures
 covered both commands, fragmented events, rejection status, malformed command
 completion and timeout. Controller results require the board.
+
+Use `--writev` to match Android H4's two iovecs (packet type and command).
+Keep the default single `write` as the factory-path control. Run the two
+variants from equivalent radio-on cold boots with no other opener; retain
+both WMT and STP traces. A short write fails the probe instead of sending a
+second STP frame. The `OPEN` line records the selected transport.

@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/uio.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -52,20 +53,32 @@ static int read_exact(int fd, uint8_t *buf, size_t len, int64_t deadline)
     return 0;
 }
 
-static int command(int fd, uint16_t opcode, uint8_t expected_len)
+static int send_h4(int fd, uint8_t *packet, size_t size, int vectored)
+{
+    struct iovec iov[] = {{packet, 1}, {packet + 1, size - 1}};
+    ssize_t written;
+
+    /* Android H4 writes the type and command as separate iovecs. */
+    do {
+        written = vectored ? writev(fd, iov, 2) : write(fd, packet, size);
+    } while (written < 0 && errno == EINTR);
+    if (written == (ssize_t)size)
+        return 0;
+    /* Retrying a short write would send a separate STP packet. */
+    if (written >= 0)
+        errno = EIO;
+    return -1;
+}
+
+static int command(int fd, uint16_t opcode, uint8_t expected_len, int vectored)
 {
     uint8_t tx[] = { 0x01, opcode & 0xff, opcode >> 8, 0 };
     uint8_t header[3], event[255];
     int64_t start = monotonic_ms();
     if (start < 0)
         return -1;
-    /* The factory library writes each entire H4 command as one STP payload. */
-    ssize_t written = write(fd, tx, sizeof(tx));
-    if (written != (ssize_t)sizeof(tx)) {
-        if (written >= 0)
-            errno = EIO;
+    if (send_h4(fd, tx, sizeof(tx), vectored) < 0)
         return -1;
-    }
     for (;;) {
         if (read_exact(fd, header, sizeof(header), start + 3000) < 0)
             return -1;
@@ -108,21 +121,13 @@ static int command(int fd, uint16_t opcode, uint8_t expected_len)
     }
 }
 
-static int read_extended_features(int fd, uint8_t requested_page)
+static int read_extended_features(int fd, uint8_t requested_page, int vectored)
 {
     uint8_t tx[] = { 0x01, 0x04, 0x10, 0x01, requested_page };
     uint8_t header[3], event[255];
     int64_t start = monotonic_ms();
-    ssize_t written;
-
-    if (start < 0)
+    if (start < 0 || send_h4(fd, tx, sizeof(tx), vectored) < 0)
         return -1;
-    written = write(fd, tx, sizeof(tx));
-    if (written != (ssize_t)sizeof(tx)) {
-        if (written >= 0)
-            errno = EIO;
-        return -1;
-    }
     for (;;) {
         if (read_exact(fd, header, sizeof(header), start + 3000) < 0)
             return -1;
@@ -162,38 +167,40 @@ int main(int argc, char **argv)
 {
     const char *path = "/dev/stpbt";
     struct stat st;
-    int features = 0;
+    int features = 0, vectored = 0;
 
-    if (argc < 2 || strcmp(argv[1], "--exclusive-controller") != 0 ||
-        (argc == 3 && strcmp(argv[2], "--features") != 0) || argc > 3) {
-        fprintf(stderr, "Stop Android Bluetooth and confirm there is no other STP BT opener.\n"
-                        "Usage: %s --exclusive-controller [--features]\n", argv[0]);
-        return 2;
+    if (argc < 2 || strcmp(argv[1], "--exclusive-controller") != 0)
+        goto usage;
+    for (int i = 2; i < argc; ++i) {
+        if (strcmp(argv[i], "--features") == 0 && !features)
+            features = 1;
+        else if (strcmp(argv[i], "--writev") == 0 && !vectored)
+            vectored = 1;
+        else
+            goto usage;
     }
-    if (argc == 3)
-        features = 1;
     setvbuf(stdout, NULL, _IOLBF, 0);
     if (lstat(path, &st) < 0 || !S_ISCHR(st.st_mode)) {
         fprintf(stderr, "%s is not available as a character device\n", path);
         return 1;
     }
-    puts("OPEN /dev/stpbt (WMT BT power-on)");
+    printf("OPEN /dev/stpbt (WMT BT power-on) tx=%s\n", vectored ? "writev" : "write");
     int fd = open(path, O_RDWR | O_NONBLOCK | O_CLOEXEC | O_NOFOLLOW);
     if (fd < 0) {
         perror(path);
         return 1;
     }
     int result = 1;
-    if (command(fd, 0x0c03, 4) < 0)
+    if (command(fd, 0x0c03, 4, vectored) < 0)
         perror("HCI Reset");
-    else if (command(fd, 0x1001, 12) < 0)
+    else if (command(fd, 0x1001, 12, vectored) < 0)
         perror("HCI Read Local Version Information");
     else if (features) {
-        result = command(fd, 0x1002, 68) < 0;
+        result = command(fd, 0x1002, 68, vectored) < 0;
         if (result)
             perror("HCI Read Local Supported Commands");
         for (uint8_t page = 0; page < 4; ++page) {
-            if (read_extended_features(fd, page) < 0) {
+            if (read_extended_features(fd, page, vectored) < 0) {
                 perror("HCI Read Local Extended Features");
                 result = 1;
                 break;
@@ -206,4 +213,9 @@ int main(int argc, char **argv)
         result = 1;
     }
     return result;
+
+usage:
+    fprintf(stderr, "Stop Android Bluetooth and confirm there is no other STP BT opener.\n"
+                    "Usage: %s --exclusive-controller [--features] [--writev]\n", argv[0]);
+    return 2;
 }
