@@ -18,7 +18,7 @@
 extern struct audio_module HAL_MODULE_INFO_SYM;
 int *__errno(void);
 
-struct pcm { int ready; };
+struct pcm { int ready; int write_failed; };
 static struct pcm mock_pcm;
 static struct pcm_config last_config;
 static unsigned int open_calls, close_calls, write_calls, read_calls, error_logs;
@@ -50,6 +50,7 @@ struct pcm *pcm_open(unsigned int card, unsigned int device,
     last_flags = flags;
     last_config = *config;
     mock_pcm.ready = device_ready;
+    mock_pcm.write_failed = 0;
     mock_errno = device_ready ? 0 : ENOENT;
     return !device_ready && return_null ? NULL : &mock_pcm;
 }
@@ -72,6 +73,8 @@ int pcm_write(struct pcm *pcm, const void *data, unsigned int count)
     CHECK(count == sizeof(samples), "PCM byte count preserved");
     write_calls++;
     if (write_error)
+        pcm->write_failed = 1;
+    if (pcm->write_failed)
         return -EIO;
     if (count == sizeof(last_data))
         memcpy(last_data, data, count);
@@ -252,8 +255,15 @@ static void write_error_case(struct audio_stream_out *out)
     uint32_t frames = 99;
     CHECK(out->get_render_position(out, &frames) == -ENOSYS && frames == 0,
           "failed write does not claim a presentation position");
+    CHECK(close_calls == 1 && write_calls == 1 && slept_calls == 1,
+          "failed handle closed and write paced");
     write_error = 0;
-    CHECK(write_audio(out) == (ssize_t)sizeof(samples), "next successful write accepted");
+    for (int i = 0; i < 9; i++)
+        CHECK(write_audio(out) == -ENODEV, "failed stream backs off before reopening");
+    CHECK(open_calls == 1 && write_calls == 1 && slept_calls == 10,
+          "no writes to the failed handle or tight reopen loop");
+    CHECK(write_audio(out) == (ssize_t)sizeof(samples) && open_calls == 2 &&
+          write_calls == 2, "fresh PCM recovers playback after backoff");
     CHECK(out->get_render_position(out, &frames) == -ENOSYS && frames == 0,
           "successful write still lacks a DAC presentation timestamp");
     printf("write error: final submitted frames=%u (mock only)\n", frames);

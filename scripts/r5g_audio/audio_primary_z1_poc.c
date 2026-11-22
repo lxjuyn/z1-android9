@@ -277,6 +277,11 @@ static ssize_t out_write(struct audio_stream_out *stream, const void *buffer, si
          * 循环体实际只跑一次 —— 伪循环, 换部分写接口时会静默丢数据, 已删。 */
         if (pcm_write(o->pcm, buffer, bytes) != 0) {
             ALOGE("pcm_write: %s", pcm_get_error(o->pcm));
+            /* tinyalsa already handles recoverable underruns. If a write
+             * still fails, do not keep the potentially stale descriptor. */
+            pcm_close(o->pcm);
+            o->pcm = NULL;
+            o->open_retry_wait = Z1_OPEN_RETRY_EVERY - 1;
             rc = -EIO;
         } else {
             o->frames_written += bytes / (o->frame_bytes ? o->frame_bytes : 1);
