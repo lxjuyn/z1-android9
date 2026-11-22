@@ -41,7 +41,8 @@ static void klogf(int, const char *, ...) {}
 static std::string level, maximum, blank = "0\n";
 static int read_error, max_error, write_error, short_write, read_eintr, write_eintr;
 static int blank_missing, blank_write_error, blank_short_write, blank_write_eintr;
-static bool ignore_write;
+static bool ignore_write, ignore_blank_write;
+static int blank_read_error;
 static int opens, closes;
 static std::vector<int> writes;
 static int mock_open(const char *path, int flags) {
@@ -49,8 +50,12 @@ static int mock_open(const char *path, int flags) {
     CHECK(flags & O_CLOEXEC);
     if (!strcmp(path, Z1_DISPLAY_BLANK_PATH)) {
         if (blank_missing) { errno = ENOENT; return -1; }
-        if (blank_write_error) { errno = blank_write_error; return -1; }
-        return 13;
+        if ((flags & O_ACCMODE) == O_WRONLY) {
+            if (blank_write_error) { errno = blank_write_error; return -1; }
+            return 13;
+        }
+        if (blank_read_error) { errno = blank_read_error; return -1; }
+        return 14;
     }
     if (!strcmp(path, Z1_BACKLIGHT_MAX_PATH)) {
         if (max_error) { errno = max_error; return -1; }
@@ -65,9 +70,9 @@ static int mock_open(const char *path, int flags) {
     return 10;
 }
 static ssize_t mock_read(int fd, void *buf, size_t size) {
-    CHECK(fd == 10 || fd == 12);
+    CHECK(fd == 10 || fd == 12 || fd == 14);
     if (read_eintr) { --read_eintr; errno = EINTR; return -1; }
-    const auto &s = fd == 12 ? maximum : level;
+    const auto &s = fd == 14 ? blank : (fd == 12 ? maximum : level);
     size_t n = s.size() < size ? s.size() : size;
     memcpy(buf, s.data(), n); return n;
 }
@@ -76,7 +81,7 @@ static ssize_t mock_write(int fd, const void *buf, size_t size) {
     if (fd == 13) {
         if (blank_write_eintr) { --blank_write_eintr; errno = EINTR; return -1; }
         if (blank_short_write) return size - 1;
-        blank = std::string(static_cast<const char *>(buf), size);
+        if (!ignore_blank_write) blank = std::string(static_cast<const char *>(buf), size);
         return size;
     }
     if (write_eintr) { --write_eintr; errno = EINTR; return -1; }
@@ -86,7 +91,7 @@ static ssize_t mock_write(int fd, const void *buf, size_t size) {
     if (!ignore_write) level = s;
     return size;
 }
-static int mock_close(int fd) { CHECK(fd >= 10 && fd <= 13); ++closes; return 0; }
+static int mock_close(int fd) { CHECK(fd >= 10 && fd <= 14); ++closes; return 0; }
 #define open mock_open
 #define read mock_read
 #define write mock_write
@@ -101,7 +106,8 @@ static void reset() {
     level = "2\n"; maximum = "6\n"; blank = "0\n";
     read_error = max_error = write_error = short_write = read_eintr = write_eintr = 0;
     blank_missing = blank_write_error = blank_short_write = blank_write_eintr = 0;
-    opens = closes = 0; ignore_write = false; writes.clear();
+    blank_read_error = 0;
+    opens = closes = 0; ignore_write = ignore_blank_write = false; writes.clear();
 }
 static void valid_power_cycle() {
     z1_hwc2 h;
@@ -125,13 +131,13 @@ static void repeated_on_preserves_user_level() {
     z1_hwc2 h; level = "1\n";
     CHECK(power(h, HWC2_POWER_MODE_ON) == HWC2_ERROR_NONE);
     CHECK(power(h, HWC2_POWER_MODE_ON) == HWC2_ERROR_NONE);
-    CHECK(opens == 2 && closes == 2 && writes.empty() && level == "1\n");
+    CHECK(opens == closes && writes.empty() && level == "1\n");
 }
 static void new_hwc_instance_clears_latched_gate() {
     z1_hwc2 h; blank = "1\n";
     CHECK(power(h, HWC2_POWER_MODE_ON) == HWC2_ERROR_NONE);
     CHECK(h.powered_on && blank == "0\n" && writes.empty());
-    CHECK(opens == 1 && closes == 1);
+    CHECK(opens == closes);
 }
 static void repeated_off_keeps_restore_level() {
     z1_hwc2 h; CHECK(power(h, HWC2_POWER_MODE_OFF) == HWC2_ERROR_NONE);
@@ -193,6 +199,26 @@ static void short_write_does_not_claim_success() {
     CHECK(h.powered_on && !h.backlight_blank_applied && blank == "0\n");
     CHECK(opens == closes);
 }
+static void gate_readback_mismatch_keeps_previous_mode() {
+    z1_hwc2 h;
+    ignore_blank_write = true;
+    CHECK(power(h, HWC2_POWER_MODE_OFF) == HWC2_ERROR_NO_RESOURCES);
+    CHECK(h.powered_on && blank == "0\n" && writes.empty());
+    ignore_blank_write = false;
+    CHECK(power(h, HWC2_POWER_MODE_OFF) == HWC2_ERROR_NONE);
+    ignore_blank_write = true;
+    CHECK(power(h, HWC2_POWER_MODE_ON) == HWC2_ERROR_NO_RESOURCES);
+    CHECK(!h.powered_on && blank == "1\n" && writes.empty());
+    ignore_blank_write = false;
+    CHECK(power(h, HWC2_POWER_MODE_ON) == HWC2_ERROR_NONE);
+    CHECK(h.powered_on && blank == "0\n" && opens == closes);
+}
+static void gate_vanished_during_confirmation_is_not_legacy_kernel() {
+    z1_hwc2 h;
+    blank_read_error = ENOENT;
+    CHECK(power(h, HWC2_POWER_MODE_OFF) == HWC2_ERROR_NO_RESOURCES);
+    CHECK(h.powered_on && writes.empty());
+}
 static void hardware_readback_mismatch() {
     z1_hwc2 h; blank_missing = 1; ignore_write = true;
     CHECK(power(h, HWC2_POWER_MODE_OFF) == HWC2_ERROR_NO_RESOURCES);
@@ -231,6 +257,8 @@ int main() {
         CASE(wake_permission_failure_and_retry), CASE(gate_works_without_brightness_files),
         CASE(no_restore_source_refuses_off),
         CASE(short_write_does_not_claim_success), CASE(hardware_readback_mismatch),
+        CASE(gate_readback_mismatch_keeps_previous_mode),
+        CASE(gate_vanished_during_confirmation_is_not_legacy_kernel),
         CASE(interrupted_io_retries), CASE(old_kernel_brightness_fallback),
         CASE(malformed_sysfs_values)};
     int failures = 0;

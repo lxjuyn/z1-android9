@@ -2115,7 +2115,16 @@ static int z1_display_blank_write(int value)
 	} while (n < 0 && errno == EINTR);
 	int error = n < 0 ? -errno : n != length ? -EIO : 0;
 	close(fd);
-	return error;
+	if (error)
+		return error;
+
+	/* Only an absent node at the initial open selects the legacy path.
+	 * Once a gate write was accepted, require its state to agree. */
+	int actual;
+	error = z1_backlight_read(Z1_DISPLAY_BLANK_PATH, &actual);
+	if (error == -ENOENT)
+		return -EIO;
+	return error ? error : actual != value ? -EIO : 0;
 }
 
 static int32_t z1_set_power_mode(hwc2_device_t *d, hwc2_display_t display,
