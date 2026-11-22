@@ -12,6 +12,8 @@
 #include <sys/ioctl.h>
 #include <linux/sync_file.h>
 #include <map>
+#include <mutex>
+#include <thread>
 #include <poll.h>
 #include <pthread.h>
 #include <stdexcept>
@@ -28,7 +30,7 @@ using hwc2_function_pointer_t = void (*)();
 struct hwc2_device_t {};
 struct hwc_rect_t { int left, top, right, bottom; };
 struct hwc_frect_t { float left, top, right, bottom; };
-struct drmModeModeInfo { int unused; };
+struct drmModeModeInfo { int unused; uint32_t vrefresh; };
 struct drmModeAtomicReq { int unused; };
 constexpr uint32_t DRM_MODE_ATOMIC_ALLOW_MODESET = 0x400;
 constexpr uint32_t DRM_FORMAT_ABGR8888 = 1, DRM_FORMAT_ARGB8888 = 2;
@@ -57,7 +59,7 @@ static int g_verbose;
 static drmModeAtomicReq request;
 static int mock_clock_gettime(clockid_t id, timespec *ts) {
     if (real_syscalls) return ::clock_gettime(id, ts);
-    CHECK(id == CLOCK_MONOTONIC);
+    CHECK(id == CLOCK_MONOTONIC || id == CLOCK_THREAD_CPUTIME_ID);
     if (clock_error) { errno = clock_error; return -1; }
     ts->tv_sec = clock_ns / 1000000000;
     ts->tv_nsec = clock_ns % 1000000000;
@@ -80,6 +82,7 @@ static int mock_poll(pollfd *pfd, nfds_t n, int timeout) {
 static int mock_close(int fd) { closed_fds.push_back(fd); return 0; }
 static z1_hwc2 *H(hwc2_device_t *d) { return static_cast<z1_hwc2 *>(d); }
 static void klogf(int, const char *, ...) {}
+static int hal_bpp(int format) { return format == 1 ? 4 : 0; }
 static int copy_into_dumb(z1_hwc2 *h, z1_dumb *d, buffer_handle_t) {
     ++copies;
     copied_slots.push_back(h->client_copy_slot);
@@ -178,6 +181,44 @@ static void layer(z1_hwc2 &h, int id, int fd, bool staging = true) {
     l.handle = &handle; l.frame = {0, 0, 32, 32}; l.alpha = 1;
     h.layers[id] = l;
 }
+static void dump_contract_queries_then_copies() {
+    auto h = display();
+    layer(h, 1, -1);
+    h.opened_ms = 900; h.frames = 2; h.present_ok = 2;
+    h.copy_bytes = 4096;
+    char canary = 'x';
+    uint32_t needed = 1;
+    z1_dump(&h, &needed, &canary);
+    CHECK(needed == 0 && canary == 'x');
+    z1_dump(&h, &needed, nullptr);
+    CHECK(needed > 0);
+    CHECK(h.dump_text.size() == needed);
+    CHECK(h.dump_text.find("z1hwc2_metrics version=") == 0);
+    CHECK(h.dump_text.find("copy_bytes=4096") != std::string::npos);
+
+    h.copy_bytes = 8192;
+    std::vector<char> short_buffer(needed - 17u);
+    uint32_t capacity = static_cast<uint32_t>(short_buffer.size());
+    z1_dump(&h, &capacity, short_buffer.data());
+    CHECK(capacity == short_buffer.size());
+    CHECK(!memcmp(short_buffer.data(), h.dump_text.data(), capacity));
+
+    std::vector<char> full(needed);
+    capacity = needed;
+    z1_dump(&h, &capacity, full.data());
+    CHECK(capacity == needed);
+    CHECK(!memcmp(full.data(), h.dump_text.data(), needed));
+    CHECK(h.dump_text.find("copy_bytes=4096") != std::string::npos);
+
+    // A dump must not stall waiting for an in-flight present or read its
+    // mutable counters without acquiring the lock.
+    std::lock_guard<std::mutex> present(present_stats_lock);
+    std::thread dump([&] {
+        z1_dump(&h, &needed, nullptr);
+        CHECK(h.dump_text == "z1hwc2_metrics unavailable=present_in_progress\n");
+    });
+    dump.join();
+}
 static void no_present_side_effects(const z1_hwc2 &h, int fence) {
     CHECK(fence == -1); CHECK(commits == 0); CHECK(allocations == 0);
     CHECK(small_copies == 0); CHECK(plane_calls == 0);
@@ -258,6 +299,9 @@ static void present_layer_timeout() {
     int32_t fence = 999;
     CHECK(z1_present_display(&h, 0, &fence) == HWC2_ERROR_NO_RESOURCES);
     no_present_side_effects(h, fence);
+    CHECK(h.present_calls == 1 && h.present_error == 1);
+    CHECK(h.acquire_waits == 1 && h.acquire_wait_fail == 1);
+    CHECK(h.copy_calls == 0 && h.commit_calls == 0);
     CHECK(imports == 0); CHECK(copies == 0); CHECK(closed_fds.empty());
     CHECK(h.layers[1].acquire_fence == 10); CHECK(h.layers[2].acquire_fence == 11);
     CHECK(h.client_acquire_fence == 12); CHECK(polled_fds == std::vector<int>{10});
@@ -326,6 +370,12 @@ static void present_success_after_retry() {
     step_index = 0;
     CHECK(z1_present_display(&h, 0, &fence) == HWC2_ERROR_NONE);
     CHECK(commits == 1); CHECK(allocations == 1); CHECK(small_copies == 1);
+    CHECK(h.present_calls == 2 && h.present_ok == 1);
+    CHECK(h.present_error == 1 && h.client_frames == 1);
+    CHECK(h.acquire_waits == 3 && h.acquire_wait_fail == 1);
+    CHECK(h.copy_calls == 2 && h.copy_ok == 2 &&
+          h.copy_bytes == 2u * 32u * 32u * 4u);
+    CHECK(h.commit_calls == 1 && h.commit_ok == 1);
     CHECK(imports == 0); CHECK(closed_fds == (std::vector<int>{10, 12}));
     CHECK(h.layers[1].acquire_fence == -1); CHECK(h.client_acquire_fence == -1);
     CHECK(fence == 91); CHECK(h.pending_release.empty()); CHECK(removed_fbs == 0);
@@ -353,6 +403,9 @@ static void present_client_copy_success() {
     import_result = -EINVAL; int32_t fence = 999;
     CHECK(z1_present_display(&h, 0, &fence) == HWC2_ERROR_NONE);
     CHECK(commits == 1); CHECK(imports == 0); CHECK(copies == 1);
+    CHECK(h.copy_calls == 1 && h.copy_ok == 1);
+    CHECK(h.copy_bytes == 32u * 32u * 4u);
+    CHECK(h.present_ok == 1 && h.client_frames == 1);
 }
 static void present_bad_display() {
     auto h = display(); int32_t fence = 999;
@@ -364,6 +417,7 @@ static void present_power_off() {
     CHECK(z1_present_display(&h, 0, &fence) == HWC2_ERROR_NONE);
     CHECK(fence == -1); CHECK(commits == 0); CHECK(timeouts.empty());
     CHECK(h.layers[1].acquire_fence == 10);
+    CHECK(h.present_calls == 1 && h.present_skipped == 1);
 }
 static void completion_retires_only_submitted() {
     auto h = display(); h.submitted_release.push_back({73, 74}); h.commit_fence = 91;
@@ -501,6 +555,7 @@ int main() {
     struct Test { const char *name; void (*run)(); };
 #define CASE(x) {#x, x}
     const Test tests[] = {
+        CASE(dump_contract_queries_then_copies),
         CASE(absent_fence), CASE(timeout_budget), CASE(signaled), CASE(interrupted_success),
         CASE(interrupted_timeout), CASE(interrupted_at_deadline), CASE(many_interruptions),
         CASE(submillisecond_budget), CASE(poll_syscall_error), CASE(pollnval), CASE(pollerr),

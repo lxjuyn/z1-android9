@@ -70,6 +70,8 @@
 
 #include <algorithm>
 #include <map>
+#include <mutex>
+#include <string>
 #include <vector>
 
 #include <sys/ioctl.h>
@@ -110,7 +112,7 @@ extern "C" int __android_log_write(int prio, const char *tag, const char *text);
 #define LOG_TAG "z1hwc2"
 #include <log/log.h>
 
-#define Z1_HWC_VERSION "2026-11-20-r19"
+#define Z1_HWC_VERSION "2026-11-22-r20-metrics"
 #define Z1_BACKLIGHT_PATH "/sys/class/leds/lcd-backlight/brightness"
 #define Z1_BACKLIGHT_MAX_PATH "/sys/class/leds/lcd-backlight/max_brightness"
 #define Z1_DISPLAY_BLANK_PATH "/sys/class/leds/lcd-backlight/display_blank"
@@ -474,18 +476,63 @@ struct z1_hwc2 : public hwc2_device_t {
 	pthread_t vsync_thread;
 	bool vsync_started;
 	uint64_t last_present_ms;
-	uint64_t last_vblank_ms;	/* last vblank timestamp seen (monotonic ms) */
 
-	/* stats */
+
+	/* Cumulative statistics, reset when the HWC device instance opens. */
+	uint64_t opened_ms;
 	uint64_t frames;
 	uint64_t commit_fail;
+	uint64_t present_calls;
+	uint64_t present_ok;
+	uint64_t present_busy;
+	uint64_t present_error;
+	uint64_t present_skipped;
+	uint64_t device_only_frames;
+	uint64_t client_frames;
 	uint32_t last_device_layers;
 	uint32_t last_client_layers;
+	uint64_t device_layers_total;
+	uint64_t client_layers_total;
+	uint32_t max_device_layers;
+	uint32_t max_client_layers;
+	uint64_t acquire_waits;
+	uint64_t acquire_wait_ok;
+	uint64_t acquire_wait_fail;
+	uint64_t acquire_wait_ns;
+	uint64_t acquire_wait_max_ns;
+	uint64_t copy_calls;
+	uint64_t copy_ok;
+	uint64_t copy_fail;
+	uint64_t copy_bytes;
+	uint64_t copy_wall_ns;
+	uint64_t copy_cpu_ns;
+	uint64_t copy_wall_max_ns;
+	uint64_t copy_cpu_max_ns;
+	uint64_t commit_calls;
+	uint64_t commit_ok;
+	uint64_t commit_wall_ns;
+	uint64_t commit_wall_max_ns;
+	uint64_t kms_waits;
+	uint64_t kms_wait_ok;
+	uint64_t kms_wait_fail;
+	uint64_t kms_wait_ns;
+	uint64_t kms_wait_max_ns;
+	uint32_t vsync_callbacks;
+	uint32_t vsync_failures;
+	uint32_t vsync_intervals;
+	uint64_t vsync_interval_ns;
+	uint64_t vsync_interval_max_ns;
+	std::string dump_text;
 	bool first_commit_logged;
 	int mode_force_client;		/* debug.z1.hwc.mode == 0 */
 };
 
 /* ----------------------------------------------------- commit completion --- */
+
+/* Composer debug dumps can run outside the display command thread. Keep
+ * diagnostics synchronized without ever taking the present lock in vsync. */
+static std::mutex present_stats_lock;
+static std::mutex vsync_stats_lock;
 
 static uint64_t now_ms(void)
 {
@@ -493,6 +540,66 @@ static uint64_t now_ms(void)
 
 	clock_gettime(CLOCK_MONOTONIC, &ts);
 	return (uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u;
+}
+
+static uint64_t read_clock_ns(clockid_t id)
+{
+	struct timespec ts;
+
+	if (clock_gettime(id, &ts) != 0)
+		return 0;
+	return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+}
+
+static uint64_t elapsed_ns(uint64_t start, uint64_t end)
+{
+	return start && end >= start ? end - start : 0;
+}
+
+static void record_copy(z1_hwc2 *h, size_t bytes, uint64_t wall_start,
+			uint64_t wall_end, uint64_t cpu_start,
+			uint64_t cpu_end, int ret)
+{
+	uint64_t wall = elapsed_ns(wall_start, wall_end);
+	uint64_t cpu = elapsed_ns(cpu_start, cpu_end);
+
+	h->copy_calls++;
+	h->copy_wall_ns += wall;
+	h->copy_cpu_ns += cpu;
+	h->copy_wall_max_ns = std::max(h->copy_wall_max_ns, wall);
+	h->copy_cpu_max_ns = std::max(h->copy_cpu_max_ns, cpu);
+	if (ret == 0) {
+		h->copy_ok++;
+		h->copy_bytes += bytes;
+	} else {
+		h->copy_fail++;
+	}
+}
+
+static void record_acquire_wait(z1_hwc2 *h, uint64_t start, int ret)
+{
+	uint64_t duration = elapsed_ns(start, read_clock_ns(CLOCK_MONOTONIC));
+
+	h->acquire_waits++;
+	h->acquire_wait_ns += duration;
+	h->acquire_wait_max_ns = std::max(h->acquire_wait_max_ns, duration);
+	if (ret == 0)
+		h->acquire_wait_ok++;
+	else
+		h->acquire_wait_fail++;
+}
+
+static void record_commit(z1_hwc2 *h, uint64_t start, int ret)
+{
+	int saved_errno = errno;
+	uint64_t duration = elapsed_ns(start, read_clock_ns(CLOCK_MONOTONIC));
+
+	h->commit_calls++;
+	h->commit_wall_ns += duration;
+	h->commit_wall_max_ns = std::max(h->commit_wall_max_ns, duration);
+	if (ret == 0)
+		h->commit_ok++;
+	errno = saved_errno;
 }
 
 /*
@@ -510,11 +617,13 @@ static uint64_t now_ms(void)
 static void *vsync_thread_fn(void *arg)
 {
 	z1_hwc2 *h = static_cast<z1_hwc2 *>(arg);
+	uint64_t last_vblank_ns = 0;
 
 	while (!h->vsync_stop) {
 		drmVBlank vbl;
 
 		if (!h->vsync_on) {
+			last_vblank_ns = 0;
 			usleep(5 * 1000);
 			continue;
 		}
@@ -528,26 +637,40 @@ static void *vsync_thread_fn(void *arg)
 		 */
 		vbl.request.sequence = 1;
 		if (ioctl(h->drm_fd, DRM_IOCTL_WAIT_VBLANK, &vbl) != 0) {
+			int err = errno;
+			last_vblank_ns = 0;
+			__atomic_fetch_add(&h->vsync_failures, 1, __ATOMIC_RELAXED);
 			if (!h->vsync_err_logged) {
 				h->vsync_err_logged = true;
 				klogf(1, "z1hwc2: WAIT_VBLANK failed: %s\n",
-				      strerror(errno));
+				      strerror(err));
 			}
 			usleep(5 * 1000);
 			continue;
 		}
-		h->last_vblank_ms = now_ms();
+		const uint64_t vblank_ns = (uint64_t)vbl.reply.tval_sec * 1000000000ull +
+					  (uint64_t)vbl.reply.tval_usec * 1000ull;
+		if (last_vblank_ns && vblank_ns > last_vblank_ns) {
+			uint64_t interval = vblank_ns - last_vblank_ns;
+			std::lock_guard<std::mutex> lock(vsync_stats_lock);
+
+			h->vsync_interval_ns += interval;
+			h->vsync_interval_max_ns =
+				std::max(h->vsync_interval_max_ns, interval);
+			h->vsync_intervals++;
+		}
+		last_vblank_ns = vblank_ns;
 		if (h->cb_vsync) {
 			typedef void (*vsync_fn)(hwc2_callback_data_t,
 						 hwc2_display_t, int64_t);
-			int64_t ts = (int64_t)vbl.reply.tval_sec * 1000000000LL +
-				     (int64_t)vbl.reply.tval_usec * 1000LL;
+			int64_t ts = (int64_t)vblank_ns;
 
 			if (!h->vsync_reported) {
 				h->vsync_reported = true;
 				klogf(1, "z1hwc2: first vsync ts=%lld\n",
 				      (long long)ts);
 			}
+			__atomic_fetch_add(&h->vsync_callbacks, 1, __ATOMIC_RELAXED);
 			((vsync_fn)h->cb_vsync)(h->cb_data, 0, ts);
 		}
 	}
@@ -1158,8 +1281,24 @@ static bool complete_commit(z1_hwc2 *h, int timeout_ms)
 	if (h->commit_broken)
 		return false;
 	if (h->commit_fence >= 0) {
+		uint64_t start = read_clock_ns(CLOCK_MONOTONIC);
 		int ret = wait_fence(h->commit_fence, timeout_ms);
 
+		/* A zero-time poll after a fresh commit normally returns -ETIME.
+		 * Keep that expected probe out of the failure counters. */
+		if (timeout_ms > 0 || ret != -ETIME) {
+			uint64_t duration =
+				elapsed_ns(start, read_clock_ns(CLOCK_MONOTONIC));
+
+			h->kms_waits++;
+			h->kms_wait_ns += duration;
+			h->kms_wait_max_ns =
+				std::max(h->kms_wait_max_ns, duration);
+			if (ret == 0)
+				h->kms_wait_ok++;
+			else
+				h->kms_wait_fail++;
+		}
 		if (ret < 0) {
 			if (ret != -ETIME)
 				h->commit_broken = true;
@@ -2391,11 +2530,15 @@ static int32_t z1_present_display(hwc2_device_t *d, hwc2_display_t display,
 	*out_retire_fence = -1;
 	if (display != 0)
 		return HWC2_ERROR_BAD_DISPLAY;
+	std::lock_guard<std::mutex> stats_lock(present_stats_lock);
+	h->present_calls++;
 	if (!h->powered_on) {
+		h->present_skipped++;
 		klogf(3, "z1hwc2: present skipped (display off)\n");
 		return HWC2_ERROR_NONE;
 	}
 	if (!h->crtc_out_fence_prop || !complete_commit(h, 100)) {
+		h->present_busy++;
 		klogf(0, "z1hwc2: previous commit is incomplete or invalid; retaining scanout\n");
 		return HWC2_ERROR_NO_RESOURCES;
 	}
@@ -2410,8 +2553,13 @@ static int32_t z1_present_display(hwc2_device_t *d, hwc2_display_t display,
 		if (l->composition != HWC2_COMPOSITION_DEVICE)
 			continue;
 		if (l->acquire_fence >= 0) {
+			uint64_t wait_start =
+				read_clock_ns(CLOCK_MONOTONIC);
+
 			ret = wait_fence(l->acquire_fence, 100);
+			record_acquire_wait(h, wait_start, ret);
 			if (ret < 0) {
+				h->present_error++;
 				klogf(0, "z1hwc2: layer %" PRIu64
 				      " acquire fence fd=%d failed: %s\n",
 				      (uint64_t)l->id, l->acquire_fence,
@@ -2426,8 +2574,12 @@ static int32_t z1_present_display(hwc2_device_t *d, hwc2_display_t display,
 		}
 	}
 	if (h->client_expected && h->client_acquire_fence >= 0) {
+		uint64_t wait_start = read_clock_ns(CLOCK_MONOTONIC);
+
 		ret = wait_fence(h->client_acquire_fence, 100);
+		record_acquire_wait(h, wait_start, ret);
 		if (ret < 0) {
+			h->present_error++;
 			klogf(0, "z1hwc2: client target acquire fence fd=%d "
 			      "failed: %s\n", h->client_acquire_fence,
 			      strerror(-ret));
@@ -2443,9 +2595,20 @@ static int32_t z1_present_display(hwc2_device_t *d, hwc2_display_t display,
 		client_fb = 0;
 		client_how = "unused (all layers on hardware planes)";
 	} else {
+		const z1_handle *cgh = (const z1_handle *)h->client_target;
+
+		uint64_t wall_start = read_clock_ns(CLOCK_MONOTONIC);
+		uint64_t cpu_start = read_clock_ns(CLOCK_THREAD_CPUTIME_ID);
+
 		ret = client_target_fb(h, &client_fb, &client_w, &client_h,
 				      &client_how);
+		size_t copy_bytes = !ret && client_fb && cgh
+			? (size_t)client_w * client_h * hal_bpp(cgh->format) : 0;
+		record_copy(h, copy_bytes, wall_start,
+			    read_clock_ns(CLOCK_MONOTONIC), cpu_start,
+			    read_clock_ns(CLOCK_THREAD_CPUTIME_ID), ret);
 		if (ret != 0 || !client_fb) {
+			h->present_error++;
 			/* A required target may also be absent (success with fb=0).
 			 * Neither failure permits a partial/blank frame commit. */
 			klogf(0, "z1hwc2: required client target unavailable "
@@ -2479,8 +2642,10 @@ static int32_t z1_present_display(hwc2_device_t *d, hwc2_display_t display,
 		  });
 
 	req = drmModeAtomicAlloc();
-	if (!req)
+	if (!req) {
+		h->present_error++;
 		return HWC2_ERROR_NO_RESOURCES;
+	}
 
 	if (!h->modeset_done && h->connector_crtc_prop && h->crtc_mode_prop &&
 	    h->crtc_active_prop) {
@@ -2519,13 +2684,23 @@ static int32_t z1_present_display(hwc2_device_t *d, hwc2_display_t display,
 	for (size_t i = 0; i < device_layers.size() &&
 			   slot < h->plane_count; i++) {
 		z1_layer *l = device_layers[i];
+		auto gh = (const z1_handle *)l->handle;
 
-		if (layer_copy_sync(h, l)) {
+		uint64_t wall_start = read_clock_ns(CLOCK_MONOTONIC);
+		uint64_t cpu_start = read_clock_ns(CLOCK_THREAD_CPUTIME_ID);
+		int copy_ret = layer_copy_sync(h, l);
+		size_t copy_bytes = !copy_ret
+			? (size_t)gh->width * gh->height * hal_bpp(gh->format) : 0;
+
+		record_copy(h, copy_bytes, wall_start,
+			    read_clock_ns(CLOCK_MONOTONIC), cpu_start,
+			    read_clock_ns(CLOCK_THREAD_CPUTIME_ID), copy_ret);
+		if (copy_ret) {
+			h->present_error++;
 			l->lost_fb = true;
 			drmModeAtomicFree(req);
 			return HWC2_ERROR_NO_RESOURCES;
 		}
-		auto gh = (const z1_handle *)l->handle;
 		z1_dumb *copy = &l->staging[l->copy_slot];
 		hwc_frect_t whole{};
 		whole.right = (float)gh->width;
@@ -2545,14 +2720,21 @@ static int32_t z1_present_display(hwc2_device_t *d, hwc2_display_t display,
 		plane_ok &= program_plane(h, req, p, 0, 0, 0, 0, 0, nullptr, 1.0f, 0, false);
 
 	if (scanned.size() != device_layers.size() || !plane_ok) {
+		h->present_error++;
 		drmModeAtomicFree(req);
 		return HWC2_ERROR_NO_RESOURCES;
 	}
 	if (!reserve_fence_slots(h->drm_fd, 1, &fence_slots)) {
+		h->present_error++;
 		drmModeAtomicFree(req);
 		return HWC2_ERROR_NO_RESOURCES;
 	}
-	ret = commit_with_fence(h, req, flags, &commit_fence);
+	{
+		uint64_t commit_start = read_clock_ns(CLOCK_MONOTONIC);
+
+		ret = commit_with_fence(h, req, flags, &commit_fence);
+		record_commit(h, commit_start, ret);
+	}
 	if (ret) {
 		int err = errno;
 
@@ -2603,7 +2785,16 @@ static int32_t z1_present_display(hwc2_device_t *d, hwc2_display_t display,
 						      nullptr, 1.0f, 0, false);
 				if (commit_fence >= 0)
 					close(commit_fence);
-				ret = plane_ok ? commit_with_fence(h, req, 0, &commit_fence) : -1;
+				{
+					uint64_t commit_start =
+						read_clock_ns(CLOCK_MONOTONIC);
+
+					ret = plane_ok
+						? commit_with_fence(h, req, 0,
+								    &commit_fence)
+						: -1;
+					record_commit(h, commit_start, ret);
+				}
 				if (ret == 0) {
 					klogf(1, "z1hwc2: plane-only commit "
 					     "accepted (no modeset)\n");
@@ -2613,6 +2804,7 @@ static int32_t z1_present_display(hwc2_device_t *d, hwc2_display_t display,
 			}
 		}
 		if (ret) {
+			h->present_error++;
 			drmModeAtomicFree(req);
 			close_fence_slots(&fence_slots);
 			if (commit_fence >= 0)
@@ -2633,6 +2825,7 @@ static int32_t z1_present_display(hwc2_device_t *d, hwc2_display_t display,
 	 * delayed. A following present must pass complete_commit() before it
 	 * can copy another frame or retire these framebuffer objects. */
 	if (commit_fence < 0) {
+		h->present_error++;
 		h->commit_broken = true;
 		close_fence_slots(&fence_slots);
 		klogf(0, "z1hwc2: successful commit returned no completion fence\n");
@@ -2644,6 +2837,7 @@ static int32_t z1_present_display(hwc2_device_t *d, hwc2_display_t display,
 			copied = dup3(commit_fence, fd, O_CLOEXEC);
 		} while (copied < 0 && (errno == EINTR || errno == EBUSY));
 		if (copied < 0) {
+			h->present_error++;
 			h->commit_broken = true;
 			h->commit_fence = commit_fence;
 			close_fence_slots(&fence_slots);
@@ -2701,13 +2895,6 @@ static int32_t z1_present_display(hwc2_device_t *d, hwc2_display_t display,
 			      h->modeset_tries);
 		}
 	}
-	if (!h->first_commit_logged ||
-	    h->frames % 600 == 0) {
-		h->first_commit_logged = true;
-		klogf(1, "z1hwc2: frame %" PRIu64 ": device=%zu client=%s "
-		     "plane0=%s\n", h->frames, device_layers.size(), client_how,
-		      client_fb ? "used" : "none");
-	}
 	h->last_device_layers = (uint32_t)device_layers.size();
 	{
 		uint32_t client_layers = 0;
@@ -2719,6 +2906,26 @@ static int32_t z1_present_display(hwc2_device_t *d, hwc2_display_t display,
 			    HWC2_COMPOSITION_CLIENT)
 				client_layers++;
 		h->last_client_layers = client_layers;
+		h->present_ok++;
+		h->device_layers_total += device_layers.size();
+		h->client_layers_total += client_layers;
+		h->max_device_layers =
+			std::max(h->max_device_layers, h->last_device_layers);
+		h->max_client_layers =
+			std::max(h->max_client_layers, h->last_client_layers);
+		if (h->client_expected)
+			h->client_frames++;
+		else
+			h->device_only_frames++;
+	}
+	if (!h->first_commit_logged || h->frames % 600 == 0) {
+		h->first_commit_logged = true;
+		klogf(1, "z1hwc2: frame %" PRIu64 ": device=%zu client=%s "
+		     "plane0=%s copies=%" PRIu64 " bytes=%" PRIu64
+		     " copy_wall_ns=%" PRIu64 " copy_cpu_ns=%" PRIu64 "\n",
+		      h->frames, device_layers.size(), client_how,
+		      client_fb ? "used" : "none", h->copy_calls,
+		      h->copy_bytes, h->copy_wall_ns, h->copy_cpu_ns);
 	}
 	return HWC2_ERROR_NONE;
 }
@@ -2726,20 +2933,112 @@ static int32_t z1_present_display(hwc2_device_t *d, hwc2_display_t display,
 static void z1_dump(hwc2_device_t *d, uint32_t *out_size, char *out_buffer)
 {
 	z1_hwc2 *h = H(d);
-	int n = 0;
 
-	if (out_buffer && out_size && *out_size > 0) {
-		n = snprintf(out_buffer, *out_size,
-			     "z1hwc2 %s: %ux%u crtc=%u conn=%u planes=%d "
-			     "layers=%zu frames=%" PRIu64 " commit_fail=%" PRIu64
-			     " device=%u client=%u modeset=%d\n",
-			     Z1_HWC_VERSION, h->width, h->height, h->crtc_id,
-			     h->connector_id, h->plane_count, h->layers.size(),
-			     h->frames, h->commit_fail, h->last_device_layers,
-			     h->last_client_layers, h->modeset_done ? 1 : 0);
+	if (!out_size)
+		return;
+
+	auto build_dump = [&]() {
+		char text[4096];
+		std::unique_lock<std::mutex> stats(present_stats_lock, std::try_to_lock);
+		if (!stats.owns_lock()) {
+			h->dump_text = "z1hwc2_metrics unavailable=present_in_progress\n";
+			return;
+		}
+		uint64_t now = now_ms();
+		uint64_t uptime = now >= h->opened_ms
+			? now - h->opened_ms : 0;
+		uint64_t copy_bps = uptime
+			? h->copy_bytes * 1000ull / uptime : 0;
+		uint32_t vsync_callbacks =
+			__atomic_load_n(&h->vsync_callbacks, __ATOMIC_RELAXED);
+		uint32_t vsync_failures =
+			__atomic_load_n(&h->vsync_failures, __ATOMIC_RELAXED);
+		uint32_t vsync_intervals;
+		uint64_t avg_vsync_ns, max_vsync_ns;
+		{
+			std::lock_guard<std::mutex> lock(vsync_stats_lock);
+			vsync_intervals = h->vsync_intervals;
+			avg_vsync_ns = vsync_intervals
+				? h->vsync_interval_ns / vsync_intervals : 0;
+			max_vsync_ns = h->vsync_interval_max_ns;
+		}
+		int n;
+
+		n = snprintf(text, sizeof(text),
+			"z1hwc2_metrics version=%s opened_ms=%" PRIu64
+			" uptime_ms=%" PRIu64
+			" config=%ux%u@%u crtc=%u conn=%u planes=%d"
+			" frames=%" PRIu64 " present_calls=%" PRIu64
+			" present_ok=%" PRIu64 " present_busy=%" PRIu64
+			" present_error=%" PRIu64 " present_skipped=%" PRIu64
+			" commit_calls=%" PRIu64 " commit_ok=%" PRIu64
+			" commit_fail=%" PRIu64
+			" composition_last_device=%u composition_last_client=%u"
+			" composition_max_device=%u composition_max_client=%u"
+			" device_only_frames=%" PRIu64 " client_frames=%" PRIu64
+			" device_layers_total=%" PRIu64
+			" client_layers_total=%" PRIu64
+			" direct_import=0 copy_path=1"
+			" copy_calls=%" PRIu64 " copy_ok=%" PRIu64
+			" copy_fail=%" PRIu64 " copy_bytes=%" PRIu64
+			" copy_wall_ns=%" PRIu64 " copy_cpu_ns=%" PRIu64
+			" copy_wall_max_ns=%" PRIu64 " copy_cpu_max_ns=%" PRIu64
+			" copy_bytes_per_sec=%" PRIu64
+			" acquire_waits=%" PRIu64 " acquire_wait_ok=%" PRIu64
+			" acquire_wait_fail=%" PRIu64
+			" acquire_wait_ns=%" PRIu64
+			" acquire_wait_max_ns=%" PRIu64
+			" kms_waits=%" PRIu64 " kms_wait_ok=%" PRIu64
+			" kms_wait_fail=%" PRIu64 " kms_wait_ns=%" PRIu64
+			" kms_wait_max_ns=%" PRIu64
+			" commit_wall_ns=%" PRIu64
+			" commit_wall_max_ns=%" PRIu64
+			" vsync_callbacks=%u vsync_failures=%u"
+			" vsync_intervals=%u vsync_avg_interval_ns=%" PRIu64
+			" vsync_max_interval_ns=%" PRIu64 "\n",
+			Z1_HWC_VERSION, h->opened_ms, uptime, h->width,
+			h->height, h->mode.vrefresh, h->crtc_id, h->connector_id,
+			h->plane_count, h->frames, h->present_calls,
+			h->present_ok, h->present_busy, h->present_error,
+			h->present_skipped, h->commit_calls, h->commit_ok,
+			h->commit_fail, h->last_device_layers,
+			h->last_client_layers, h->max_device_layers,
+			h->max_client_layers, h->device_only_frames,
+			h->client_frames, h->device_layers_total,
+			h->client_layers_total, h->copy_calls, h->copy_ok,
+			h->copy_fail, h->copy_bytes, h->copy_wall_ns,
+			h->copy_cpu_ns, h->copy_wall_max_ns,
+			h->copy_cpu_max_ns, copy_bps, h->acquire_waits,
+			h->acquire_wait_ok, h->acquire_wait_fail,
+			h->acquire_wait_ns, h->acquire_wait_max_ns,
+			h->kms_waits, h->kms_wait_ok, h->kms_wait_fail,
+			h->kms_wait_ns, h->kms_wait_max_ns,
+			h->commit_wall_ns, h->commit_wall_max_ns,
+			vsync_callbacks, vsync_failures, vsync_intervals,
+			avg_vsync_ns, max_vsync_ns);
+		if (n < 0)
+			n = 0;
+		if (n >= (int)sizeof(text))
+			n = (int)sizeof(text) - 1;
+
+		h->dump_text.assign(text, (size_t)n);
+	};
+
+	static std::mutex dump_lock;
+	std::lock_guard<std::mutex> dump_guard(dump_lock);
+	if (!out_buffer) {
+		build_dump();
+		*out_size = (uint32_t)h->dump_text.size();
+		return;
+	}
+	{
+		size_t n = h->dump_text.size();
+
+		if (n > *out_size)
+			n = *out_size;
+		if (n)
+			memcpy(out_buffer, h->dump_text.data(), n);
 		*out_size = (uint32_t)n;
-	} else if (out_size) {
-		*out_size = 256;
 	}
 }
 
@@ -2854,8 +3153,11 @@ static int z1_close(hw_device_t *dev)
 {
 	z1_hwc2 *h = reinterpret_cast<z1_hwc2 *>(dev);
 
-	klogf(1, "z1hwc2: close (frames=%" PRIu64 " commit_fail=%" PRIu64 ")\n",
-	      h->frames, h->commit_fail);
+	klogf(1, "z1hwc2: close (frames=%" PRIu64 " present_ok=%" PRIu64
+	      " commit_fail=%" PRIu64 " copy_bytes=%" PRIu64
+	      " acquire_wait_fail=%" PRIu64 " kms_wait_fail=%" PRIu64 ")\n",
+	      h->frames, h->present_ok, h->commit_fail, h->copy_bytes,
+	      h->acquire_wait_fail, h->kms_wait_fail);
 	h->vsync_on = false;	/* let a blocked WAIT_VBLANK wake up first */
 	h->vsync_stop = 1;
 	if (h->vsync_started) {
@@ -2943,6 +3245,7 @@ static int z1_open(const hw_module_t *module, const char *name,
 	h->client_copy_slot = 0;
 	h->next_layer_id = 1;
 	h->powered_on = true;
+	h->opened_ms = now_ms();
 	/* Cache the initial level in case the light HAL clears it before OFF. */
 	(void)z1_backlight_read(Z1_BACKLIGHT_PATH, &h->backlight_saved);
 	h->mode_force_client = 0;

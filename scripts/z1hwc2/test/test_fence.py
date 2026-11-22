@@ -39,14 +39,18 @@ def main():
         if len(blocks) != 1:
             raise ValueError('Expected exactly one local enum: ' + name)
         definitions.append(blocks[0])
-    for name in ('Z1_HANDLE_MAGIC', 'Z1_MAX_PLANES'):
+    for name in ('Z1_HWC_VERSION', 'Z1_HANDLE_MAGIC', 'Z1_MAX_PLANES'):
         definitions.append(re.search(r'^#define ' + name + r'\s+[^\n]+', src, re.M).group(0))
     for name in ('z1_handle', 'z1_plane', 'z1_fb', 'z1_dumb', 'z1_layer', 'z1_hwc2'):
         definitions.append(re.search(r'^struct ' + name + r'\b[^{}]*\{.*?^\};', src, re.M | re.S).group(0))
-    bodies = '\n\n'.join(function(src, name) for name in
-                         ('now_ms', 'wait_fence', 'complete_commit', 'close_fence_slots',
+    bodies = re.search(r'^static std::mutex present_stats_lock;\nstatic std::mutex vsync_stats_lock;', src, re.M).group(0) + '\n'
+    bodies += '\n\n'.join(function(src, name) for name in
+                         ('now_ms', 'read_clock_ns', 'elapsed_ns', 'record_copy',
+                          'record_acquire_wait', 'record_commit',
+                          'wait_fence', 'complete_commit', 'close_fence_slots',
                           'reserve_fence_slots', 'commit_with_fence',
-                          'client_target_fb', 'z1_get_release_fences', 'z1_present_display'))
+                          'client_target_fb', 'z1_get_release_fences',
+                          'z1_present_display', 'z1_dump'))
     template = (here / 'test_fence_mock.cpp').read_text()
     generated = template.replace('/* PRODUCTION_TYPES */', '\n\n'.join(definitions))
     generated = generated.replace('/* PRODUCTION_FUNCTIONS */', bodies)
