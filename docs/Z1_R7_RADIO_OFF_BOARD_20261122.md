@@ -1,0 +1,14 @@
+# Z1 R7 wireless isolation: whole-device restart still reproduces
+
+On November 22, 2026, only `bootimg` was replaced by the radio-off build (`0840aee45d58f56230cc294fb4c97d0365349eae90cff4c6382600b819629260`). The complete 6,291,456-byte partition was read back and the first 5,986,304 bytes matched the image. `system` and `/data` were not flashed.
+
+- The first boot reached `sys.boot_completed=1` at 217.2 s. At 242.6 s, `zygote` PID 634 and `system_server` PID 978 were both alive, Activity Manager answered, and `/proc/modules` had no matching WMT/STP/BTIF/WLAN modules. The same UART stream returns to Preloader immediately after Linux's 245.19 s messages. Preloader reports `RGU STA: 0` and `WDT does not trigger reboot`; this does not establish the source of the reset. No panic or framework fatal signal is evident in the captured transition.
+- The input driver logged repeated swipe coordinates before the reset. The user still observed severe lag and an unusable UI. This proves that the controller delivered touch samples, but does not establish that Android dispatched them or that frames reached the panel.
+- The second boot reached `boot_completed` at 219.6 s. One earlier `top` sample, at 119.75 s, showed the composer at 34.4%, SurfaceFlinger at 13.7%, and aggregate I/O wait at 62 points out of the 200-point dual-core total. That is a boot-time sample; it does not quantify desktop frame pacing. UART continued past 670 s on this boot, so the first restart was not reproduced on a fixed timer.
+- The reported restart therefore does not require the wireless modules. This run does not settle whether wireless activity contributes to the separate framework crash seen in the earlier ART build. Audio playback, lock-screen blanking, and Bluetooth remain unqualified.
+
+UART source: `mainline_recon/z1_boot_mainline_20261122_154148.log`, lines 2260 (first boot completed), 2433–2477 (input, state sample, and restart transition), 2523–2530 (reset flags), 3100 (second boot), 4335–4356 (load snapshot), and 4436 (second boot completed).
+
+Next checks: recover prior-boot ramoops as early as possible and sample battery/PMIC and eMMC state before the next reset. Record `gfxinfo` frame timing and SurfaceFlinger state on the same swipe path once the console can answer reliably. Change only one storage, display or power variable per comparison. Keep the corrected ART image available as a rollback and retain the off-device boot partition readback.
+
+Flash tool issue: the first attempt's erase returned `Formatted sector 84992 with sector count 12288.` and exit status 0, yet the wrapper classified it as a failure. It restored the previous ART boot and verified that rollback. A separate locked direct write/read then installed the target successfully. The wrapper truncated the erase transcript, so the exact line that caused the false rejection is not yet established.
