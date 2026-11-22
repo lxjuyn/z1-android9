@@ -6,11 +6,29 @@ import array
 import fcntl
 import os
 from pathlib import Path
+import re
 import select
 import termios
 import time
 
 ROOT = Path(__file__).resolve().parent.parent
+CRASH_TRIGGER_TAIL = 8192
+CRASH_TRIGGER_PATTERNS = (
+    ('system_server', re.compile(
+        rb"init: Service 'system_server' \(pid \d+\) received signal \d+")),
+    ('zygote', re.compile(
+        rb"init: Service 'zygote' \(pid \d+\) received signal \d+")),
+    ('fatal', re.compile(
+        rb"Fatal signal (?:6|11).{0,2048}(?:system_server|zygote)", re.DOTALL)),
+)
+
+
+def find_crash_trigger(previous, chunk):
+    sample = (previous + chunk)[-CRASH_TRIGGER_TAIL:]
+    for label, pattern in CRASH_TRIGGER_PATTERNS:
+        if pattern.search(sample):
+            return label
+    return None
 
 
 def identify(expected=('0e8d', '2006', 'Z1DIAG20261001')):
@@ -33,13 +51,19 @@ def main():
     parser.add_argument('--seconds', type=int, default=180)
     parser.add_argument('--wait', type=int, default=120, help='seconds to wait for enumeration')
     parser.add_argument('--tombstones', action='store_true',
-                        help='request read-only tombstone export halfway through capture (at most 60s)')
+                        help='request bounded read-only tombstone export on the first detected crash')
+    parser.add_argument('--tombstones-at', type=float, metavar='SECONDS',
+                        help='fallback tombstone request time after attach (requires --tombstones)')
     parser.add_argument('--status', action='store_true',
                         help='request bounded read-only boot/service/storage status every 60s (M6+)')
     parser.add_argument('--stock', action='store_true', help='capture exact stock S1 legacy ACM identity')
     args = parser.parse_args()
     if args.seconds <= 0 or args.wait < 0:
         parser.error('seconds must be positive and wait must be nonnegative')
+    if args.tombstones_at is not None and not args.tombstones:
+        parser.error('--tombstones-at requires --tombstones')
+    if args.tombstones_at is not None and not 0 <= args.tombstones_at < args.seconds:
+        parser.error('--tombstones-at must be between zero and --seconds')
     deadline = time.monotonic() + args.wait
     expected = ('17ef', '7439', 'Z1STOCK20261003') if args.stock else ('0e8d', '2006', 'Z1DIAG20261001')
     print(f'Waiting for Z1 {expected[0]}:{expected[1]} serial {expected[2]}; attach USB after kernel starts.', flush=True)
@@ -76,8 +100,15 @@ def main():
                 raise OSError('could not request Z1 log replay')
             print(f'[acm] ready: port={port} log={path}', flush=True)
             deadline = time.monotonic() + args.seconds
-            tombstones_at = time.monotonic() + min(60, args.seconds / 2)
-            tombstones_sent = False
+            if args.tombstones_at is None:
+                tombstones_at = time.monotonic() + min(60, args.seconds / 2)
+            else:
+                tombstones_at = time.monotonic() + args.tombstones_at
+            scheduled_tombstones_sent = False
+            tombstone_trigger_at = None
+            tombstone_reason = None
+            crash_tombstones_sent = False
+            trigger_tail = b''
             replay_retry_at = time.monotonic() + 1
             replay_retries = 0
             status_at = time.monotonic()
@@ -92,11 +123,19 @@ def main():
                         raise OSError('could not request Z1 status')
                     status_at = time.monotonic() + 60
                     print('[acm] requested bounded read-only status', flush=True)
-                if args.tombstones and total > 0 and not tombstones_sent and time.monotonic() >= tombstones_at:
+                now = time.monotonic()
+                if args.tombstones and total > 0 and not scheduled_tombstones_sent and now >= tombstones_at:
                     if os.write(fd, b'T') != 1:
                         raise OSError('could not request Z1 tombstone export')
-                    tombstones_sent = True
-                    print('[acm] requested read-only tombstone export', flush=True)
+                    scheduled_tombstones_sent = True
+                    print('[acm] requested read-only tombstone export on fallback schedule', flush=True)
+                if (args.tombstones and total > 0 and not crash_tombstones_sent and
+                        tombstone_trigger_at is not None and now >= tombstone_trigger_at):
+                    if os.write(fd, b'T') != 1:
+                        raise OSError('could not request Z1 tombstone export')
+                    crash_tombstones_sent = True
+                    print(f'[acm] requested read-only tombstone export after {tombstone_reason} crash',
+                          flush=True)
                 if not select.select([fd], [], [], min(.5, deadline-time.monotonic()))[0]:
                     continue
                 try:
@@ -109,6 +148,16 @@ def main():
                 if not chunk:
                     print('[acm] device closed the stream', flush=True)
                     break
+                if args.tombstones and not crash_tombstones_sent and tombstone_trigger_at is None:
+                    trigger_tail = (trigger_tail + chunk)[-CRASH_TRIGGER_TAIL:]
+                    tombstone_reason = find_crash_trigger(b'', trigger_tail)
+                    if tombstone_reason:
+                        tombstone_trigger_at = time.monotonic() + 2
+                        print(
+                            f'[acm] detected {tombstone_reason} crash; '
+                            'tombstone export queued',
+                            flush=True,
+                        )
                 out.write(chunk)
                 out.flush()
                 total += len(chunk)
