@@ -151,25 +151,37 @@ ROUTE_ACTIVE=0
 
 restore_playback_route() {
     [ "${ROUTE_ACTIVE:-0}" -eq 1 ] || return 0
-    [ -z "${HP_SWITCH_BEFORE:-}" ] ||
-        tinymix "Headphone Switch" "$HP_SWITCH_BEFORE" >/dev/null 2>&1 || true
-    [ -z "${SPK_ROUTE_BEFORE:-}" ] ||
-        tinymix "Speaker Route Switch" "$SPK_ROUTE_BEFORE" >/dev/null 2>&1 || true
-    [ -z "${SPK_SWITCH_BEFORE:-}" ] ||
-        tinymix "Speaker Switch" "$SPK_SWITCH_BEFORE" >/dev/null 2>&1 || true
-    [ -z "${SPK_VOLUME_BEFORE:-}" ] ||
-        tinymix "Speaker Volume" "$SPK_VOLUME_BEFORE" >/dev/null 2>&1 || true
+    restore_rc=0
+    tinymix "Speaker Volume" "$SPK_VOLUME_BEFORE" >> "$CUR" 2>&1 || restore_rc=1
+    tinymix "Speaker Switch" "$SPK_SWITCH_BEFORE" >> "$CUR" 2>&1 || restore_rc=1
+    tinymix "Speaker Route Switch" "$SPK_ROUTE_BEFORE" >> "$CUR" 2>&1 || restore_rc=1
+    tinymix "Headphone Switch" "$HP_SWITCH_BEFORE" >> "$CUR" 2>&1 || restore_rc=1
     ROUTE_ACTIVE=0
-    printf 'playback route restored\n' >> "$CUR"
+    fact SPEAKER_ROUTE_RESTORE_RC "$restore_rc"
+    [ "$restore_rc" -eq 0 ] || TRIGGER_FAIL=1
 }
-trap restore_playback_route 0 1 2 15
+stop_playback() {
+    if [ -n "${ppid:-}" ]; then
+        kill "$ppid" 2>/dev/null || true
+        wait "$ppid" 2>/dev/null || true
+    fi
+    exit 130
+}
+trap restore_playback_route 0
+trap stop_playback 1 2 15
 
 cap "$CUR" "mixer before speaker-only route" "tinymix 2>&1 | head -n 200"
-ROUTE_ACTIVE=1
-mixer_set HEADPHONE_OFF "Headphone Switch" 0
-mixer_set SPEAKER_ROUTE_ON "Speaker Route Switch" 1
-mixer_set SPEAKER_SWITCH_ON "Speaker Switch" 1
-mixer_set SPEAKER_VOLUME "Speaker Volume" 2
+if [ -n "$HP_SWITCH_BEFORE" ] && [ -n "$SPK_ROUTE_BEFORE" ] &&
+        [ -n "$SPK_SWITCH_BEFORE" ] && [ -n "$SPK_VOLUME_BEFORE" ]; then
+    ROUTE_ACTIVE=1
+    mixer_set HEADPHONE_OFF "Headphone Switch" 0
+    mixer_set SPEAKER_ROUTE_ON "Speaker Route Switch" 1
+    mixer_set SPEAKER_SWITCH_ON "Speaker Switch" 1
+    mixer_set SPEAKER_VOLUME "Speaker Volume" 2
+else
+    say "could not save complete speaker route; leaving mixer unchanged"
+    TRIGGER_FAIL=1
+fi
 cap "$CUR" "mixer during speaker-only route" "tinymix 2>&1 | head -n 200"
 fact SPEAKER_ONLY_ROUTE "$([ "$TRIGGER_FAIL" -eq 0 ] && echo ready || echo failed)"
 
@@ -211,16 +223,24 @@ if [ -x /system/bin/tinyplay ] && [ "$wav_bytes" -eq 576044 ] &&
     ppid=$!
     i=0
     PCM_RUNNING=0
+    PCM_ADVANCING=0
+    LAST_HW_PTR=
     while [ $i -lt 12 ]; do
         kill -0 "$ppid" 2>/dev/null || break
-        for s in /proc/asound/card*/pcm*p/sub0/status; do
-            [ -r "$s" ] || continue
-            state=$(head -n 1 "$s" 2>/dev/null)
-            printf '%s: %s\n' "$s" "$state" >> "$PLAY" 2>/dev/null
-            case "$state" in
-                *RUNNING*) PCM_RUNNING=1 ;;
-            esac
-        done
+        status=$(cat /proc/asound/card0/pcm0p/sub0/status 2>/dev/null)
+        printf '%s\n' "$status" >> "$PLAY"
+        case "$status" in
+            *'state: RUNNING'*)
+                PCM_RUNNING=1
+                hw_ptr=$(printf '%s\n' "$status" | awk '$1 == "hw_ptr" && $2 == ":" && $3 ~ /^[0-9]+$/ { print $3; exit }')
+                if [ -n "$hw_ptr" ]; then
+                    if [ -n "$LAST_HW_PTR" ] && [ "$LAST_HW_PTR" != "$hw_ptr" ]; then
+                        PCM_ADVANCING=1
+                    fi
+                    LAST_HW_PTR=$hw_ptr
+                fi
+                ;;
+        esac
         find /sys/kernel/debug/asoc -type f \
             \( -path '*/dapm/Speaker' -o -path '*/dapm/Speaker Driver' \) \
             -print 2>/dev/null |
@@ -241,11 +261,14 @@ if [ -x /system/bin/tinyplay ] && [ "$wav_bytes" -eq 576044 ] &&
     done
     wait "$ppid" 2>/dev/null
     play_rc=$?
+    ppid=
     restore_playback_route
     fact TRIGGER_PATH1_RC "$play_rc"
     fact PCM_RUNNING "$PCM_RUNNING"
+    fact PCM_HW_PTR_ADVANCING "$PCM_ADVANCING"
     [ "$play_rc" -eq 0 ] || TRIGGER_FAIL=1
     [ "$PCM_RUNNING" -eq 1 ] || TRIGGER_FAIL=1
+    [ "$PCM_ADVANCING" -eq 1 ] || TRIGGER_FAIL=1
     if grep -q 'Speaker: On' "$PLAY"; then
         fact SPEAKER_DAPM On
     else
@@ -293,6 +316,7 @@ if [ -x /system/bin/tinyplay ] && [ "$wav_bytes" -eq 576044 ] &&
 else
     say "PATH1 skipped: speaker route, usable WAV, tinyplay and timeout are all required"
     fact TRIGGER_PATH1 absent
+    restore_playback_route
     TRIGGER_FAIL=1
 fi
 
