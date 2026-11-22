@@ -152,7 +152,7 @@ def main():
                     trigger_tail = (trigger_tail + chunk)[-CRASH_TRIGGER_TAIL:]
                     tombstone_reason = find_crash_trigger(b'', trigger_tail)
                     if tombstone_reason:
-                        tombstone_trigger_at = time.monotonic() + 2
+                        tombstone_trigger_at = time.monotonic() + 5
                         print(
                             f'[acm] detected {tombstone_reason} crash; '
                             'tombstone export queued',

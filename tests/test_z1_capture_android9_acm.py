@@ -19,7 +19,7 @@ class CrashTriggerTests(unittest.TestCase):
 
     def test_zygote_signal_split_across_reads_triggers_export(self):
         previous = b"[z1logcat]= init: Service 'zygote' (pid 941)"
-        chunk = b" received signal 11\n"
+        chunk = b" received signal 9\n"
         self.assertEqual(CAPTURE.find_crash_trigger(previous, chunk), "zygote")
 
     def test_fatal_signal_with_process_identity_triggers_export(self):
