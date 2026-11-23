@@ -1,0 +1,23 @@
+{
+  "identical_connectivity_patches": {
+    "/etc/firmware/mt6572_82_patch_e1_0_hdr.bin": true,
+    "/etc/firmware/mt6572_82_patch_e1_1_hdr.bin": true
+  },
+  "r7_gnss_payload_sha256": {
+    "/lib/modules/z1-radio/mtk_stp_gps_soc.ko": "3d5d834a0d36ca30d59520d5303f22d6685009ff53e5ce21add3db7e951eb599",
+    "/lib/modules/z1-radio/mtk_stp_wmt_soc.ko": "c9c62c26bc6027982f522ccba99ce0183ce976506e6432a311c682b895c7b07e",
+    "/lib/modules/z1-radio/z1_gpsdrv.ko": "5cab8a98e9bad3fc7cfa369af2b850dc9c271cd81678150b77279d22667de717",
+    "/vendor/bin/hw/android.hardware.gnss@1.0-service": "0f5be792a6b7c12f102df059578753774e139c1dacfdef67b27a1cc9b1e6e724",
+    "/vendor/bin/mnld": "53044bfe42868f4b4703be14ff2141fd4e3361b3db4d035a2ad8a500f8dd56d7",
+    "/vendor/bin/mtk_agpsd": "0fe7ab24ee22d89e58878a7f6c0613706215942f7d11372488dd191444b3b688",
+    "/vendor/lib/hw/gps.default.so": "306e5c5097be5e0a2b12e42a7121a907b2b737021705793611e3c30b851bb18c",
+    "/vendor/lib/hw/gps.z1stock.so": "5a9f1bb021d7145bbe4e998f3dd6d43dafcd232d21fed0e6b4921483b3a9f257",
+    "/xbin/libmnlp_mt6572": "decc1d75d732ec4a0f10b0e3487126f6ce784e197ee50896a570c82385fe5340"
+  },
+  "r7_standard_path_md1_sha256": null,
+  "stock_md1_required_memory": 8388608,
+  "stock_md1_sha256": "5264c9c2b567189bedd49c3ff03ebe13664c2e8e09349db8f6d3d9483b1ee4f6",
+  "stock_md1_size": 2399148,
+  "vendor_gnss_rc_services": [],
+  "vendor_manifest_gnss_transports": []
+}
