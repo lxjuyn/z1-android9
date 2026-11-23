@@ -331,6 +331,24 @@ int main(void)
 		cases.push_back(c);
 	}
 
+	/* A spare plane must not eliminate the client target when the bottom
+	 * layer cannot cover the screen opaquely. Higher layers still use OVL. */
+	z1_policy_layer stack[] = { make_layer(1, 0, Z1_TYPE_DEVICE),
+				    make_layer(2, 1, Z1_TYPE_DEVICE) };
+	z1_policy_result composition[2];
+	if (!z1_policy_with_client_target(stack, 2, 4, 0, false, composition) ||
+	    composition[0].type != Z1_POLICY_CLIENT || !composition[0].report ||
+	    composition[1].type != Z1_POLICY_DEVICE) {
+		fprintf(stderr, "FAIL: bottom layer did not get a client target\n");
+		failures++;
+	}
+	if (z1_policy_with_client_target(stack, 2, 4, 0, true, composition) ||
+	    composition[0].type != Z1_POLICY_DEVICE ||
+	    composition[1].type != Z1_POLICY_DEVICE) {
+		fprintf(stderr, "FAIL: opaque stack did not keep both device layers\n");
+		failures++;
+	}
+
 	printf("== z1 policy test: %zu cases\n", cases.size());
 	for (size_t i = 0; i < cases.size(); i++)
 		run(cases[i]);

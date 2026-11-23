@@ -113,7 +113,7 @@ extern "C" int __android_log_write(int prio, const char *tag, const char *text);
 #define LOG_TAG "z1hwc2"
 #include <log/log.h>
 
-#define Z1_HWC_VERSION "2026-11-23-r21-abi"
+#define Z1_HWC_VERSION "2026-11-23-r22-compose"
 #define Z1_BACKLIGHT_PATH "/sys/class/leds/lcd-backlight/brightness"
 #define Z1_BACKLIGHT_MAX_PATH "/sys/class/leds/lcd-backlight/max_brightness"
 #define Z1_DISPLAY_BLANK_PATH "/sys/class/leds/lcd-backlight/display_blank"
@@ -2338,7 +2338,7 @@ static bool layer_can_be_background(const z1_layer *l, uint32_t w, uint32_t h)
 		return false;
 	if (l->frame.right < (int)w || l->frame.bottom < (int)h)
 		return false;
-	if (l->alpha < 0.999f)
+	if (l->alpha != 1.0f || l->blend != HWC2_BLEND_MODE_NONE)
 		return false;
 	return true;
 }
@@ -2351,8 +2351,6 @@ static int32_t z1_validate_display(hwc2_device_t *d, hwc2_display_t display,
 	std::vector<z1_layer *> order;
 	std::vector<z1_policy_layer> pl;
 	std::vector<z1_policy_result> pr;
-	int device_slots;
-	int used;
 
 	*out_num_types = 0;
 	*out_num_requests = 0;
@@ -2417,59 +2415,13 @@ static int32_t z1_validate_display(hwc2_device_t *d, hwc2_display_t display,
 		}
 	}
 
-	/*
-	 * How many planes may the DEVICE layers use?
-	 *
-	 * The point of this HAL is to put every layer on the OVL, so plane 0 is
-	 * only reserved for the client target when a client target will actually
-	 * exist and be visible:
-	 *
-	 *   - First try all planes.  If every layer fits as DEVICE *and* the
-	 *     bottom layer covers the whole display opaquely, SurfaceFlinger has
-	 *     no client composition at all, never calls setClientTarget(), and
-	 *     plane 0 is free for a device layer.
-	 *   - Otherwise reserve plane 0 for the client target and decide again
-	 *     (the demoted layers are always the bottom of the stack, which is
-	 *     exactly what the client target shows).
-	 *
-	 * Note that SurfaceFlinger calls setClientTarget() *after*
-	 * validateDisplay(), so h->client_target is still the previous frame's
-	 * buffer at this point; that is why the decision is made here and
-	 * remembered in h->client_expected instead of being inferred later.
-	 */
-	{
-		int n = (int)pl.size();
-
-		device_slots = h->plane_count;
-		if (device_slots < 0)
-			device_slots = 0;
-		used = z1_policy_decide(pl.data(), n, device_slots,
-					h->mode_force_client || h->color_transform,
-					pr.data());
-		if (n > 0 && used == n &&
-		    layer_can_be_background(order[0], h->width, h->height)) {
-			h->client_expected = false;
-			if (g_verbose >= 1 &&
-			    (h->frames < 3 || h->frames % 600 == 0))
-				klogf(1, "z1hwc2: all %d layer(s) on hardware "
-				     "planes, no client target\n", n);
-		} else {
-			device_slots = h->plane_count - 1;
-			if (device_slots < 0)
-				device_slots = 0;
-			used = z1_policy_decide(pl.data(), n, device_slots,
-						h->mode_force_client ||
-							h->color_transform,
-						pr.data());
-			/*
-			 * Even in this pass every layer may have fitted (n <=
-			 * plane_count - 1).  Then SurfaceFlinger has no client
-			 * composition and will not draw a new client target, so
-			 * showing the stale one would be wrong.
-			 */
-			h->client_expected = (used != n);
-		}
-	}
+	/* setClientTarget runs after validate. Never infer the current frame's
+	 * client composition from the previous frame's buffer. */
+	h->client_expected = z1_policy_with_client_target(
+		pl.data(), (int)pl.size(), h->plane_count,
+		h->mode_force_client || h->color_transform,
+		!order.empty() && layer_can_be_background(order[0], h->width, h->height),
+		pr.data());
 
 	for (size_t i = 0; i < order.size(); i++) {
 		z1_layer *l = order[i];
@@ -2520,10 +2472,14 @@ static int32_t z1_validate_display(hwc2_device_t *d, hwc2_display_t display,
 	*out_num_types = (uint32_t)h->changed.size();
 	*out_num_requests = 0;
 	if (g_verbose >= 1 &&
-	    (h->frames < 3 || !h->changed.empty() || h->frames % 600 == 0))
-		klogf(1, "z1hwc2: validate: layers=%zu device=%d client=%zu "
+	    (h->frames < 3 || !h->changed.empty() || h->frames % 600 == 0)) {
+		size_t used = std::count_if(pr.begin(), pr.end(), [](const z1_policy_result &r) {
+			return r.type == Z1_POLICY_DEVICE;
+		});
+		klogf(1, "z1hwc2: validate: layers=%zu device=%zu client=%zu "
 		     "changes=%zu frame=%" PRIu64 "\n", order.size(), used,
-		      order.size() - (size_t)used, h->changed.size(), h->frames);
+		      order.size() - used, h->changed.size(), h->frames);
+	}
 	return h->changed.empty() ? HWC2_ERROR_NONE : HWC2_ERROR_HAS_CHANGES;
 }
 

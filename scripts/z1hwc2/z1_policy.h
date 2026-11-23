@@ -201,4 +201,23 @@ static inline int z1_policy_decide(const struct z1_policy_layer *layers, int n,
 	return used;
 }
 
+/* Return whether SurfaceFlinger must draw a client target. A translucent
+ * or partial bottom layer needs a client target even if all layers fit. */
+static inline bool z1_policy_with_client_target(
+	const struct z1_policy_layer *layers, int n, int planes, int force_client,
+	bool opaque_background, struct z1_policy_result *out)
+{
+	if (n == 0)
+		return false;
+	if (opaque_background && z1_policy_decide(layers, n, planes,
+						   force_client, out) == n)
+		return false;
+
+	int slots = planes > 0 ? planes - 1 : 0;
+	if (slots >= n)
+		slots = n - 1;
+	z1_policy_decide(layers, n, slots, force_client, out);
+	return true;
+}
+
 #endif /* Z1_POLICY_H */
