@@ -39,6 +39,14 @@ static const unsigned char samples[16] = {
     } \
 } while (0)
 
+static const char *mode_property = "1";
+int __system_property_get(const char *key, char *value)
+{
+    CHECK(!strcmp(key, "persist.sys.z1.spk_high"), "persistent property key");
+    strcpy(value, mode_property);
+    return strlen(value);
+}
+
 int *__errno(void) { return &mock_errno; }
 
 struct pcm *pcm_open(unsigned int card, unsigned int device,
@@ -245,6 +253,24 @@ static void volume_case(struct audio_hw_device *dev, struct audio_stream_out *ou
     CHECK(dev->get_master_volume(dev, &initial) == -ENOTSUP && initial == -7.0f,
           "do not seed framework with fabricated hardware gain");
     CHECK(open_calls == 0 && write_calls == 0, "volume callbacks do not touch PCM");
+    device_ready = 1;
+    const int16_t original[] = {-32768, -7, -2, -1, 0, 1, 7, 32767};
+    const int16_t half[] = {-16384, -3, -1, 0, 0, 0, 3, 16383};
+    mode_property = "";
+    dev->set_parameters(dev, "z1_speaker_high_volume=0");
+    out->write(out, original, sizeof(original));
+    CHECK(!memcmp(last_data, half, sizeof(half)), "default speaker half amplitude");
+    mode_property = "1";
+    dev->set_parameters(dev, "z1_speaker_high_volume=1");
+    out->write(out, original, sizeof(original));
+    CHECK(!memcmp(last_data, original, sizeof(original)), "hot full-scale speaker");
+    mode_property = "0";
+    out->common.set_parameters(&out->common, "z1_speaker_high_volume=0;routing=8");
+    out->write(out, original, sizeof(original));
+    CHECK(!memcmp(last_data, original, sizeof(original)), "headphones bypass speaker cap");
+    out->common.set_parameters(&out->common, "routing=2");
+    out->write(out, original, sizeof(original));
+    CHECK(!memcmp(last_data, half, sizeof(half)), "route switch restores cap");
     printf("volume callbacks checked at 0.0, 0.4, and 1.0; failures=%d\n", failures);
 }
 static void write_error_case(struct audio_stream_out *out)

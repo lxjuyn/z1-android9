@@ -56,6 +56,7 @@
  * 而板上 bionic libc.so (API28) 只导出 __errno (nm -D 实测, 无 __errno_location)。
  * bionic 的 __errno 与 glibc 的 __errno_location 语义相同 (取 per-thread errno 指针),
  * 运行期 strerror(errno)/-errno 全部走它。必须放在所有系统头之后。 */
+extern int __system_property_get(const char *key, char *value);
 extern int *__errno(void);
 #undef errno
 #define errno (*__errno())
@@ -86,6 +87,9 @@ static const uint32_t z1_input_rates[] = { 8000, 16000, 32000, 48000 };
 
 struct z1_stream_out {
     struct audio_stream_out stream;
+    struct z1_audio_device *adev;
+    int16_t *scaled;
+    size_t scaled_bytes;
     pthread_mutex_t lock;
     struct pcm     *pcm;
     uint32_t        rate;
@@ -116,6 +120,7 @@ struct z1_audio_device {
     pthread_mutex_t        lock;
     int                    in_call;
     bool                   mic_mute;
+    bool                   speaker_high;
 };
 
 /* ---- ABI 断言: A9 (SDK28) 布局, 本轮用 arm-linux-gnueabihf-gcc 探针实算
@@ -207,13 +212,52 @@ static int out_standby(struct audio_stream *s)
 static int out_dump(const struct audio_stream *s, int fd) { (void)s; (void)fd; return 0; }
 
 static audio_devices_t out_get_device(const struct audio_stream *s)
-{ return ((const struct z1_stream_out *)s)->device; }
+{
+    const struct z1_stream_out *o = (const struct z1_stream_out *)s;
+    return __atomic_load_n(&o->device, __ATOMIC_RELAXED);
+}
 
-static int out_set_device(struct audio_stream *s, audio_devices_t d)
-{ ((struct z1_stream_out *)s)->device = d; return 0; }
+static int out_set_device(struct audio_stream *s, audio_devices_t device)
+{
+    struct z1_stream_out *o = (struct z1_stream_out *)s;
+    __atomic_store_n(&o->device, device, __ATOMIC_RELAXED);
+    return 0;
+}
+
+/* Legacy AudioFlinger sends routing in a semicolon-delimited parameter list. */
+static const char *parameter(const char *kv, const char *key)
+{
+    size_t length = strlen(key);
+    while (kv && *kv) {
+        if (!strncmp(kv, key, length) && kv[length] == '=')
+            return kv + length + 1;
+        kv = strchr(kv, ';');
+        if (kv) kv++;
+    }
+    return NULL;
+}
+
+static void refresh_speaker_mode(struct z1_audio_device *dev)
+{
+    char value[92] = {0}; /* Bionic PROP_VALUE_MAX */
+    __system_property_get("persist.sys.z1.spk_high", value);
+    __atomic_store_n(&dev->speaker_high, !strcmp(value, "1"), __ATOMIC_RELAXED);
+}
 
 static int out_set_parameters(struct audio_stream *s, const char *kv)
-{ (void)s; (void)kv; return 0; }
+{
+    const char *route = parameter(kv, "routing");
+    if (route) {
+        char *end;
+        unsigned long device = strtoul(route, &end, 10);
+        if (end == route || (*end && *end != ';'))
+            return -EINVAL;
+        out_set_device(s, device);
+    }
+    if (parameter(kv, "z1_speaker_high_volume"))
+        refresh_speaker_mode(((struct z1_stream_out *)s)->adev);
+    return 0;
+}
 
 static char *out_get_parameters(const struct audio_stream *s, const char *k)
 { (void)s; (void)k; return strdup(""); }
@@ -271,6 +315,26 @@ static ssize_t out_write(struct audio_stream_out *stream, const void *buffer, si
     int rc;
     pthread_mutex_lock(&o->lock);
     rc = pcm_ensure_open(o);
+    if (rc == 0 && out_get_device(&stream->common) == AUDIO_DEVICE_OUT_SPEAKER &&
+        !__atomic_load_n(&o->adev->speaker_high, __ATOMIC_RELAXED)) {
+        if (bytes % sizeof(int16_t))
+            rc = -EINVAL;
+        else if (bytes > o->scaled_bytes) {
+            int16_t *scaled = realloc(o->scaled, bytes);
+            if (scaled) {
+                o->scaled = scaled;
+                o->scaled_bytes = bytes;
+            } else {
+                rc = -ENOMEM;
+            }
+        }
+        if (!rc && bytes) {
+            const int16_t *pcm = buffer;
+            for (size_t i = 0; i < bytes / sizeof(*pcm); ++i)
+                o->scaled[i] = pcm[i] / 2;
+            buffer = o->scaled;
+        }
+    }
     if (rc == 0) {
         /* [必改1] tinyalsa pcm_write 为全量阻塞写 (内部把整个 buffer 写完),
          * 单次调用即可。r5d 版 "done += bytes - done" 恒等于 done=bytes,
@@ -558,7 +622,11 @@ static int adev_get_mic_mute(const struct audio_hw_device *dev, bool *s)
 }
 
 static int adev_set_parameters(struct audio_hw_device *dev, const char *kv)
-{ (void)dev; (void)kv; return 0; }
+{
+    if (parameter(kv, "z1_speaker_high_volume"))
+        refresh_speaker_mode((struct z1_audio_device *)dev);
+    return 0;
+}
 static char *adev_get_parameters(const struct audio_hw_device *dev, const char *keys)
 { (void)dev; (void)keys; return strdup(""); }
 
@@ -590,6 +658,8 @@ static int adev_open_output_stream(struct audio_hw_device *dev,
     o->channels = (popcount_mask(config->channel_mask) == 1) ? 1 : Z1_DEFAULT_CHANNELS;
     o->frame_bytes = o->channels * sizeof(int16_t);
     o->device   = devices;
+    o->adev = (struct z1_audio_device *)dev;
+    refresh_speaker_mode(o->adev);
     config->format       = AUDIO_FORMAT_PCM_16_BIT;
     config->sample_rate  = o->rate;
     config->channel_mask = (o->channels == 1) ? AUDIO_CHANNEL_OUT_MONO : AUDIO_CHANNEL_OUT_STEREO;
@@ -631,6 +701,7 @@ static void adev_close_output_stream(struct audio_hw_device *dev, struct audio_s
     if (!o) return;
     out_standby(&o->stream.common);
     pthread_mutex_destroy(&o->lock);
+    free(o->scaled);
     free(o);
 }
 
