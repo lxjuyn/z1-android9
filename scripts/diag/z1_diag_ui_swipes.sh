@@ -1,6 +1,6 @@
 #!/system/bin/sh
 # Run from an unlocked Z1 shell with the chosen launcher or scrollable app open.
-# Usage: sh z1_diag_ui_swipes.sh PACKAGE [RUN_LABEL]
+# Usage: sh z1_diag_ui_swipes.sh PACKAGE [RUN_LABEL] [EXACT_SF_LAYER]
 set -u
 
 fail() { printf 'Z1_UI_END valid=0 reason=%s\n' "$*" >&2; exit 1; }
@@ -8,6 +8,7 @@ clock() { awk '{print $1}' /proc/uptime; }
 boot_identity() { cat /proc/sys/kernel/random/boot_id; }
 pkg=${1:-}
 label=${2:-baseline}
+layer=${3:-}
 case "$pkg" in ''|*[!a-zA-Z0-9_.]*) fail 'provide an Android package name';; esac
 case "$label" in ''|*[!a-zA-Z0-9_.-]*) fail 'invalid run label';; esac
 
@@ -58,6 +59,30 @@ snapshot() {
     awk '$3 == "mmcblk0" { print "Z1_UI_DISKSTAT " $0 }' /proc/diskstats
 }
 
+# Pie --latency reports desired-present, actual-present and frame-ready in ns.
+# Subtract the pre-swipe ring by desired timestamp, including pending rows.
+layer_rows() {
+    awk -v swipe="$1" '
+        $0 == "AFTER" { after=1; next }
+        NF==1 && $1~/^[0-9]+$/ && $1+0>0 {
+            if(after) period=$1; else baseline_period=$1
+            next
+        }
+        NF!=3 || $1!~/^[0-9]+$/ || $1+0<=0 { next }
+        !after { old["t"$1]=1; next }
+        ("t"$1) in old { next }
+        $2~/^[0-9]+$/ && $3~/^[0-9]+$/ && $2+0>0 && $3+0>0 &&
+            $2+0<9e18 && $3+0<9e18 {
+            print "Z1_UI_LAYER_FRAME", "index="swipe, "desired_ns="$1, "present_ns="$2, "ready_ns="$3
+            n++
+        }
+        END {
+            if(!baseline_period || !period || period!=baseline_period) exit 1
+            print "Z1_UI_LAYER_SWIPE", "index="swipe, "refresh_ns="period, "samples="n+0
+        }
+    '
+}
+
 check_input
 check_foreground
 boot=$(boot_identity) || fail 'cannot identify boot'
@@ -74,6 +99,13 @@ x=$((width / 2))
 lo=$((height * 3 / 10))
 hi=$((height * 7 / 10))
 
+if [ -n "$layer" ]; then
+    layers=$(dump_state SurfaceFlinger --list) || fail 'cannot list SurfaceFlinger layers'
+    printf '%s\n' "$layers" | grep -Fxq -- "$layer" || fail 'exact layer unavailable'
+    case "$layer" in "$pkg/"*) ;; *" $pkg/"*) ;; *) fail 'layer does not belong to package';; esac
+    printf 'Z1_UI_LAYER name=%s\n' "$layer"
+    layer_total=0
+fi
 printf 'Z1_UI_BEGIN label=%s package=%s size=%s swipes=15 duration_ms=300 boot=%s system_server=%s app=%s surfaceflinger=%s\n' \
     "$label" "$pkg" "$size" "$boot" "$server" "$app" "$composer"
 for p in /sys/devices/system/cpu/cpufreq/policy0/scaling_governor \
@@ -87,6 +119,9 @@ dump_state gfxinfo "$pkg" reset >/dev/null || fail 'cannot reset app frame count
 snapshot before
 i=0
 while [ "$i" -lt 15 ]; do
+    if [ -n "$layer" ]; then
+        prior=$(dump_state SurfaceFlinger --latency "$layer") || fail 'layer baseline unavailable'
+    fi
     printf 'Z1_UI_SWIPE index=%s phase=begin uptime=%s\n' "$i" "$(clock)"
     if [ $((i % 2)) -eq 0 ]; then
         timeout 8 input touchscreen swipe "$x" "$hi" "$x" "$lo" 300 || fail 'input swipe failed'
@@ -95,8 +130,18 @@ while [ "$i" -lt 15 ]; do
     fi
     printf 'Z1_UI_SWIPE index=%s phase=end uptime=%s\n' "$i" "$(clock)"
     sleep 1
+    if [ -n "$layer" ]; then
+        current=$(dump_state SurfaceFlinger --latency "$layer") || fail 'layer sample unavailable'
+        rows=$(printf '%s\nAFTER\n%s\n' "$prior" "$current" | layer_rows "$i") || fail 'invalid layer latency response'
+        printf '%s\n' "$rows"
+        count=${rows##*samples=}
+        layer_total=$((layer_total + count))
+    fi
     i=$((i + 1))
 done
+if [ -n "$layer" ]; then
+    [ "$layer_total" -gt 0 ] || fail 'no new completed frames on selected layer'
+fi
 snapshot after
 check_input
 [ "$(boot_identity)" = "$boot" ] || fail 'boot changed during run'
