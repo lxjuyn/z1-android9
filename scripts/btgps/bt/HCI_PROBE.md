@@ -75,3 +75,33 @@ Keep the default single `write` as the factory-path control. Run the two
 variants from equivalent radio-on cold boots with no other opener; retain
 both WMT and STP traces. A short write fails the probe instead of sending a
 second STP frame. The `OPEN` line records the selected transport.
+
+## Cold-boot transport gate
+
+The host wrapper pushes the pinned probe and an on-device gate over the
+existing serial deployment channel. It requires `Z1LOG` to name the active
+append-only UART capture:
+
+```sh
+Z1LOG=/path/to/active-capture.log \
+  z1a9_gpt/scripts/btgps/bt/z1_bt_transport_host.sh write
+
+# Power-cycle the Z1, wait for boot completion, then run:
+Z1LOG=/path/to/active-capture.log \
+  z1a9_gpt/scripts/btgps/bt/z1_bt_transport_host.sh writev
+```
+
+Run each command after a separate cold boot. The device gate records the
+kernel `boot_id` in `/data/local/tmp/z1_bt_transport_boot_state` and refuses
+to compare `write` and `writev` on the same boot. It stops the Android
+Bluetooth package and `vendor.bluetooth-1-0`, waits until no process still
+has `/dev/stpbt` open, and then runs one probe mode. It records the probe,
+adapter, `libbluetooth`, STP/WMT/BTIF module hashes and the relevant kernel
+log around `HCI Reset` and `Read Local Version Information`.
+
+A pass requires `probe_rc=0`, `HCI_RESET=PASS`, and
+`HCI_LOCAL_VERSION=PASS`. The wrapper preserves each run under
+`out/r7_bt_transport_<mode>_<timestamp>.log`. A successful raw-H4 result
+still proves only the kernel transport path; Android framework enable,
+discovery, pairing, reconnect, Wi-Fi coexistence, SCO and A2DP remain
+separate gates.
