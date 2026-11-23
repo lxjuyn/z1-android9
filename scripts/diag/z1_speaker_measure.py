@@ -313,54 +313,64 @@ def _run_with_command(args: argparse.Namespace) -> int:
     command_log = args.command_log or args.output.with_suffix(".command.log")
     command_log.parent.mkdir(parents=True, exist_ok=True)
     started = datetime.datetime.now().astimezone().isoformat()
+    result = None
+    command_error = None
+    command_timed_out = False
     try:
         # Give arecord time to reach its read loop before the board trigger.
         time.sleep(0.4)
         if recorder.poll() is not None:
-            print("record process exited before the board command started", file=sys.stderr)
-            return 2
-        print("BOARD_COMMAND=" + shlex.join(command), flush=True)
-        try:
-            result = subprocess.run(
-                command,
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=args.command_timeout,
-            )
-        except subprocess.TimeoutExpired as error:
-            with command_log.open("w") as log:
-                log.write(f"START={started}\n")
-                log.write(f"COMMAND={shlex.join(command)}\n")
-                log.write(f"TIMEOUT_SECONDS={args.command_timeout}\n")
-                log.write("STDOUT_BEGIN\n")
-                log.write((error.stdout or b"").decode(errors="replace"))
-                log.write("\nSTDOUT_END\nSTDERR_BEGIN\n")
-                log.write((error.stderr or b"").decode(errors="replace"))
-                log.write("\nSTDERR_END\n")
-            print(
-                f"board command exceeded {args.command_timeout}s; capture preserved",
-                file=sys.stderr,
-            )
-            return 2
-
-        with command_log.open("w") as log:
-            log.write(f"START={started}\n")
-            log.write(f"COMMAND={shlex.join(command)}\n")
-            log.write(f"EXIT_STATUS={result.returncode}\n")
-            log.write("STDOUT_BEGIN\n")
-            log.write(result.stdout)
-            log.write("\nSTDOUT_END\nSTDERR_BEGIN\n")
-            log.write(result.stderr)
-            log.write("\nSTDERR_END\n")
-        if result.stdout:
-            print(result.stdout, end="" if result.stdout.endswith("\n") else "\n")
-        if result.stderr:
-            print(
-                result.stderr,
-                end="" if result.stderr.endswith("\n") else "\n",
-                file=sys.stderr,
-            )
+            command_error = "record process exited before the board command started"
+        else:
+            print("BOARD_COMMAND=" + shlex.join(command), flush=True)
+            try:
+                result = subprocess.run(
+                    command,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=args.command_timeout,
+                )
+            except subprocess.TimeoutExpired as error:
+                command_timed_out = True
+                stdout = error.stdout or ""
+                stderr = error.stderr or ""
+                if isinstance(stdout, bytes):
+                    stdout = stdout.decode(errors="replace")
+                if isinstance(stderr, bytes):
+                    stderr = stderr.decode(errors="replace")
+                with command_log.open("w") as log:
+                    log.write(f"START={started}\n")
+                    log.write(f"COMMAND={shlex.join(command)}\n")
+                    log.write(f"TIMEOUT_SECONDS={args.command_timeout}\n")
+                    log.write("STDOUT_BEGIN\n")
+                    log.write(stdout)
+                    log.write("\nSTDOUT_END\nSTDERR_BEGIN\n")
+                    log.write(stderr)
+                    log.write("\nSTDERR_END\n")
+                command_error = f"board command exceeded {args.command_timeout}s"
+            else:
+                with command_log.open("w") as log:
+                    log.write(f"START={started}\n")
+                    log.write(f"COMMAND={shlex.join(command)}\n")
+                    log.write(f"EXIT_STATUS={result.returncode}\n")
+                    log.write("STDOUT_BEGIN\n")
+                    log.write(result.stdout)
+                    log.write("\nSTDOUT_END\nSTDERR_BEGIN\n")
+                    log.write(result.stderr)
+                    log.write("\nSTDERR_END\n")
+                if result.stdout:
+                    print(result.stdout, end="" if result.stdout.endswith("\n") else "\n")
+                if result.stderr:
+                    print(
+                        result.stderr,
+                        end="" if result.stderr.endswith("\n") else "\n",
+                        file=sys.stderr,
+                    )
+                if result.returncode != 0:
+                    command_error = f"board command exited with status {result.returncode}"
+                elif args.require_rootcmd_success and not _serial_command_succeeded(result.stdout):
+                    command_error = "board command did not produce one successful rootcmd status"
     finally:
         try:
             record_result = recorder.wait(timeout=args.seconds + 10)
@@ -374,13 +384,6 @@ def _run_with_command(args: argparse.Namespace) -> int:
 
     if record_result != 0:
         print(f"arecord exited with status {record_result}", file=sys.stderr)
-        return 2
-    if result.returncode != 0:
-        print(f"board command exited with status {result.returncode}", file=sys.stderr)
-        return 2
-
-    if args.require_rootcmd_success and not _serial_command_succeeded(result.stdout):
-        print("board command did not produce one successful rootcmd status", file=sys.stderr)
         return 2
 
     frequencies = _frequency_values(args.frequency)
@@ -400,8 +403,23 @@ def _run_with_command(args: argparse.Namespace) -> int:
     except (OSError, ValueError, wave.Error) as error:
         print(f"analyze: {error}", file=sys.stderr)
         return 2
+    report["command"] = {
+        "timed_out": command_timed_out,
+        "returncode": result.returncode if result is not None else None,
+        "rootcmd_success_required": args.require_rootcmd_success,
+        "rootcmd_success": (
+            _serial_command_succeeded(result.stdout)
+            if result is not None and args.require_rootcmd_success
+            else None
+        ),
+        "completed": command_error is None,
+        "error": command_error,
+    }
     report_path = args.report or args.output.with_suffix(".json")
     _write_report(report, report_path)
+    if command_error is not None:
+        print(command_error, file=sys.stderr)
+        return 2
     return 0 if report["result"] == "PASS" else 1
 
 

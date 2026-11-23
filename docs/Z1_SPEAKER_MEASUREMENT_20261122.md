@@ -1,6 +1,6 @@
 # Z1 speaker acoustic measurement
 
-Status: `HOST_HARNESS_VALIDATED / BOARD_PENDING`.
+Status: `HOST_HARNESS_VALIDATED / PARTIAL_CAPTURE_SUPPORTED / BOARD_PENDING`.
 
 The existing diagnostic can prove that PCM is running and that DAPM, GPIO140
 and PMIC registers moved. It cannot prove that the physical speaker produced
@@ -96,18 +96,78 @@ python3 z1a9_gpt/scripts/diag/z1_speaker_measure.py analyze \
 
 For serial `run`, require the board command’s own `###RC=0` marker; `z1push.sh` transport success alone is insufficient.
 
+The `run` command still analyzes the WAV when the board command exits
+unsuccessfully or times out. Its JSON report records the command return code,
+timeout state, root-command gate and completion error under `command`. The
+process exits `2` for an incomplete board command even if the recording
+contains the expected tone, so an acoustic hit cannot hide a reset.
+
 Exit status `0` means the acoustic gate passed, `1` means no sustained tone was
 measured, and `2` means capture or input validation failed.
 
+## Reset staircase
+
+The November 23 attempts reset too early to distinguish mixer access, PCM open,
+playback and concurrent register inspection. Use the staircase for the next
+active board attempt:
+
+```sh
+cd /home/lxj/claude/6572
+TONE=out/audio_runtime_probe_root_20261115/tone_s16_48k_amp4000.wav
+
+z1a9_gpt/scripts/z1deploy/z1push.sh --mode 0644 \
+    "$TONE" z1_audio_tone.wav
+z1a9_gpt/scripts/z1deploy/z1push.sh --mode 0755 \
+    z1a9_gpt/scripts/diag/z1_audio_staircase.sh z1_audio_staircase.sh
+
+python3 z1a9_gpt/scripts/diag/z1_speaker_measure.py run \
+    --device default --seconds 30 --command-timeout 45 --frequency 500 \
+    --require-rootcmd-success \
+    --output out/z1_speaker_staircase.wav \
+    -- bash z1a9_gpt/scripts/z1deploy/z1push.sh --wait 35 --rootcmd \
+    'sh /data/local/tmp/z1stage/z1_audio_staircase.sh /data/local/tmp/z1stage/z1_audio_tone.wav'
+```
+
+The staircase writes `[z1audio-stair]` markers to the serial log and appends
+the same records to
+`/data/local/tmp/z1stage/z1_audio_staircase.progress`. The serial capture is
+the authoritative reset record; the progress file is best effort and can be
+forced through storage with `Z1_AUDIO_STAIRCASE_SYNC=1` when the added I/O is
+an acceptable diagnostic variable. The script deliberately omits register,
+DAPM and dmesg sampling during playback. If the board resets, the last marker
+identifies the first failed boundary:
+
+- before `STEP_00_START`: root daemon or shell startup;
+- through `STEP_02_MIXER_READ_DONE`: control access;
+- between `STEP_03` and `STEP_06`: an individual mixer write;
+- around `STEP_07`: PCM information/control open;
+- after `STEP_08_TINYPLAY_BEFORE`: tinyplay/PCM/codec activation;
+- after `STEP_11_TINYPLAY_DONE`: playback completed and reset occurred later.
+
+After the next boot, read the best-effort progress file:
+
+```sh
+z1a9_gpt/scripts/z1deploy/z1push.sh --cmd \
+    'cat /data/local/tmp/z1stage/z1_audio_staircase.progress'
+```
+
+The known tone is 2 seconds of 48 kHz stereo PCM16 at peak amplitude 4000,
+SHA256 `4d937007e703131fb5548207b71c89bc7ed73cc610deda5a0afe7dfaaf74894c`.
+The staircase reports no physical pass; audible confirmation still belongs to
+the separate acoustic gate.
+
 ## Current board blocker
 
-At review time the CH340 disappeared from USB enumeration
+During the first review the CH340 disappeared from USB enumeration
 (`Cannot enable`, `Maybe the USB cable is bad`, then `unable to enumerate USB
-device`), and neither `/dev/ttyUSB*` nor `/dev/ttyACM*` was present. No board
-command or tone could therefore run. The host microphone itself was verified
-at 48 kHz stereo, a host acoustic loopback produced a sustained 660 Hz
-detection, and an eight-second quiet capture produced no sustained 440, 500 or
-660 Hz tone.
+device`), and neither `/dev/ttyUSB*` nor `/dev/ttyACM*` was present. The host
+microphone itself was verified at 48 kHz stereo, a host acoustic loopback
+produced a sustained 660 Hz detection, and an eight-second quiet capture
+produced no sustained 440, 500 or 660 Hz tone.
+
+On November 23 the CH340 returned as `/dev/ttyUSB0`, but a read-only console
+probe received no response. The later staircase remains the next active test
+once the board is powered and its Android console is reachable.
 
 The board result remains unknown until the serial link is restored and the two
 commands above are executed. Do not convert `BOARD_PENDING` into a speaker pass

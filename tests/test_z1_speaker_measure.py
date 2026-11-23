@@ -3,6 +3,7 @@
 import importlib.util
 import json
 import math
+import os
 from pathlib import Path
 import struct
 import subprocess
@@ -61,6 +62,22 @@ class SpeakerMeasureTests(unittest.TestCase):
             baseline_ms=250,
             **kwargs,
         )
+
+    def install_fake_arecord(self, fake_wav, *, delay=1):
+        fake_bin = self.root / "bin"
+        fake_bin.mkdir(exist_ok=True)
+        fake_arecord = fake_bin / "arecord"
+        fake_arecord.write_text(
+            "#!/bin/sh\n"
+            f"sleep {delay}\n"
+            "for arg do out=$arg; done\n"
+            'cp "$FAKE_WAV" "$out"\n'
+        )
+        fake_arecord.chmod(0o755)
+        env = os.environ.copy()
+        env["PATH"] = f"{fake_bin}:{env['PATH']}"
+        env["FAKE_WAV"] = str(fake_wav)
+        return env
 
     def test_sustained_tone_after_quiet_baseline_passes(self):
         path = self.root / "tone.wav"
@@ -149,6 +166,90 @@ class SpeakerMeasureTests(unittest.TestCase):
         report = json.loads(report_path.read_text())
         self.assertEqual(report["schema"], MODULE.SCHEMA)
         self.assertEqual(report["result"], "PASS")
+
+    def test_board_failure_still_analyzes_and_records_partial_capture(self):
+        wav_path = self.root / "capture.wav"
+        report_path = self.root / "result.json"
+        fake_wav = self.root / "fake.wav"
+        write_pcm16_wav(
+            fake_wav,
+            [silence(0.5) + tone(500, 1.0, 2000) + silence(0.5)],
+        )
+
+        env = self.install_fake_arecord(fake_wav)
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(SOURCE),
+                "run",
+                "--device",
+                "fake",
+                "--seconds",
+                "2",
+                "--output",
+                str(wav_path),
+                "--report",
+                str(report_path),
+                "--frequency",
+                "500",
+                "--",
+                "sh",
+                "-c",
+                "exit 7",
+            ],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+
+        self.assertEqual(result.returncode, 2, result.stderr)
+        report = json.loads(report_path.read_text())
+        self.assertEqual(report["result"], "PASS")
+        self.assertFalse(report["command"]["completed"])
+        self.assertEqual(report["command"]["returncode"], 7)
+        self.assertEqual(report["command"]["error"], "board command exited with status 7")
+
+    def test_board_timeout_still_analyzes_and_records_partial_capture(self):
+        wav_path = self.root / "capture.wav"
+        report_path = self.root / "result.json"
+        fake_wav = self.root / "fake.wav"
+        write_pcm16_wav(
+            fake_wav,
+            [silence(0.5) + tone(500, 1.0, 2000) + silence(0.5)],
+        )
+        env = self.install_fake_arecord(fake_wav, delay=2)
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(SOURCE),
+                "run",
+                "--device",
+                "fake",
+                "--seconds",
+                "2",
+                "--command-timeout",
+                "1",
+                "--output",
+                str(wav_path),
+                "--report",
+                str(report_path),
+                "--frequency",
+                "500",
+                "--",
+                "sleep",
+                "4",
+            ],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+
+        self.assertEqual(result.returncode, 2, result.stderr)
+        report = json.loads(report_path.read_text())
+        self.assertEqual(report["result"], "PASS")
+        self.assertTrue(report["command"]["timed_out"])
+        self.assertIsNone(report["command"]["returncode"])
+        self.assertEqual(report["command"]["error"], "board command exceeded 1s")
 
 
 if __name__ == "__main__":
