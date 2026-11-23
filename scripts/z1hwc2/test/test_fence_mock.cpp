@@ -1,6 +1,8 @@
 /* Template consumed by test_fence.py. Production bodies/types are inserted
  * verbatim; only external dependencies are mocked. Never touches a device. */
 #include <algorithm>
+#include <atomic>
+#include <condition_variable>
 #include <cerrno>
 #include <climits>
 #include <cinttypes>
@@ -165,14 +167,12 @@ static void reset() {
 }
 static z1_handle handle = {0, 1, 12, 81, Z1_HANDLE_MAGIC, 0, 4096, 0,
                            0, 0, 32, 32, 32, 1, 0};
-static z1_hwc2 display() {
-    z1_hwc2 h{};
+static void setup_display(z1_hwc2 &h) {
     h.powered_on = true; h.validated = true; h.modeset_done = true;
     h.plane_count = 4; h.width = 240; h.height = 320;
     h.client_acquire_fence = -1; h.commit_fence = -1; h.crtc_out_fence_prop = 44;
     h.last_present_ms = 17;
     h.pending_release.push_back({71, 72});
-    return h;
 }
 static void layer(z1_hwc2 &h, int id, int fd, bool staging = true) {
     z1_layer l{};
@@ -182,7 +182,7 @@ static void layer(z1_hwc2 &h, int id, int fd, bool staging = true) {
     h.layers[id] = l;
 }
 static void dump_contract_queries_then_copies() {
-    auto h = display();
+    z1_hwc2 h{}; setup_display(h);
     layer(h, 1, -1);
     h.opened_ms = 900; h.frames = 2; h.present_ok = 2;
     h.copy_bytes = 4096;
@@ -294,7 +294,7 @@ static void large_budget() {
     CHECK(timeouts == (std::vector<int>{INT_MAX, INT_MAX - 1}));
 }
 static void present_layer_timeout() {
-    auto h = display(); layer(h, 1, 10); layer(h, 2, 11);
+    z1_hwc2 h{}; setup_display(h); layer(h, 1, 10); layer(h, 2, 11);
     h.client_expected = true; h.client_target = &handle; h.client_acquire_fence = 12;
     int32_t fence = 999;
     CHECK(z1_present_display(&h, 0, &fence) == HWC2_ERROR_NO_RESOURCES);
@@ -307,7 +307,7 @@ static void present_layer_timeout() {
     CHECK(h.client_acquire_fence == 12); CHECK(polled_fds == std::vector<int>{10});
 }
 static void present_layer_error() {
-    auto h = display(); layer(h, 1, 10);
+    z1_hwc2 h{}; setup_display(h); layer(h, 1, 10);
     steps = {{1, short(POLLIN | POLLERR), 0, 0}};
     int32_t fence = 999;
     CHECK(z1_present_display(&h, 0, &fence) == HWC2_ERROR_NO_RESOURCES);
@@ -315,7 +315,7 @@ static void present_layer_error() {
     CHECK(imports == 0); CHECK(copies == 0); CHECK(h.layers[1].acquire_fence == 10);
 }
 static void present_later_layer_failure() {
-    auto h = display(); layer(h, 1, 10); layer(h, 2, 11);
+    z1_hwc2 h{}; setup_display(h); layer(h, 1, 10); layer(h, 2, 11);
     steps = {{1, POLLIN, 0, 0}, {1, POLLHUP, 0, 0}};
     int32_t fence = 999;
     CHECK(z1_present_display(&h, 0, &fence) == HWC2_ERROR_NO_RESOURCES);
@@ -324,7 +324,7 @@ static void present_later_layer_failure() {
     CHECK(h.layers[1].acquire_fence == -1); CHECK(h.layers[2].acquire_fence == 11);
 }
 static void present_client_timeout() {
-    auto h = display(); layer(h, 1, 10);
+    z1_hwc2 h{}; setup_display(h); layer(h, 1, 10);
     h.client_expected = true; h.client_target = &handle; h.client_acquire_fence = 12;
     steps = {{1, POLLIN, 0, 0}, {0, 0, 0, 100000000}};
     int32_t fence = 999;
@@ -333,7 +333,7 @@ static void present_client_timeout() {
     CHECK(closed_fds == std::vector<int>{10}); CHECK(h.client_acquire_fence == 12);
 }
 static void present_client_error() {
-    auto h = display(); h.client_expected = true; h.client_target = &handle;
+    z1_hwc2 h{}; setup_display(h); h.client_expected = true; h.client_target = &handle;
     h.client_acquire_fence = 12; steps = {{1, POLLNVAL, 0, 0}};
     int32_t fence = 999;
     CHECK(z1_present_display(&h, 0, &fence) == HWC2_ERROR_NO_RESOURCES);
@@ -341,26 +341,26 @@ static void present_client_error() {
     CHECK(closed_fds.empty()); CHECK(h.client_acquire_fence == 12);
 }
 static void present_missing_required_client() {
-    auto h = display(); h.client_expected = true; layer(h, 1, -1);
+    z1_hwc2 h{}; setup_display(h); h.client_expected = true; layer(h, 1, -1);
     int32_t fence = 999;
     CHECK(z1_present_display(&h, 0, &fence) == HWC2_ERROR_NO_RESOURCES);
     no_present_side_effects(h, fence); CHECK(imports == 0); CHECK(copies == 0);
 }
 static void present_unusable_required_client() {
-    auto h = display(); h.client_expected = true; h.client_target = &handle;
+    z1_hwc2 h{}; setup_display(h); h.client_expected = true; h.client_target = &handle;
     layer(h, 1, -1); import_result = -EINVAL; copy_result = -ENOMEM;
     int32_t fence = 999;
     CHECK(z1_present_display(&h, 0, &fence) == HWC2_ERROR_NO_RESOURCES);
     no_present_side_effects(h, fence); CHECK(imports == 0); CHECK(copies == 1);
 }
 static void present_zero_required_fb() {
-    auto h = display(); h.client_expected = true; h.client_target = &handle; zero_fb = true;
+    z1_hwc2 h{}; setup_display(h); h.client_expected = true; h.client_target = &handle; zero_fb = true;
     int32_t fence = 999;
     CHECK(z1_present_display(&h, 0, &fence) == HWC2_ERROR_NO_RESOURCES);
     no_present_side_effects(h, fence); CHECK(imports == 0);
 }
 static void present_success_after_retry() {
-    auto h = display(); layer(h, 1, 10);
+    z1_hwc2 h{}; setup_display(h); layer(h, 1, 10);
     h.client_expected = true; h.client_target = &handle; h.client_acquire_fence = 12;
     steps = {{0, 0, 0, 100000000}};
     int32_t fence = 999;
@@ -382,7 +382,7 @@ static void present_success_after_retry() {
     CHECK(h.submitted_release.size() == 1); CHECK(h.commit_fence == 200);
 }
 static void present_client_retry() {
-    auto h = display(); h.client_expected = true; h.client_target = &handle;
+    z1_hwc2 h{}; setup_display(h); h.client_expected = true; h.client_target = &handle;
     h.client_acquire_fence = 12; int32_t fence = 999;
     CHECK(z1_present_display(&h, 0, &fence) == HWC2_ERROR_NO_RESOURCES);
     no_present_side_effects(h, fence); CHECK(closed_fds.empty());
@@ -391,7 +391,7 @@ static void present_client_retry() {
     CHECK(commits == 1); CHECK(closed_fds == std::vector<int>{12});
 }
 static void present_unused_client() {
-    auto h = display(); layer(h, 1, -1, false);
+    z1_hwc2 h{}; setup_display(h); layer(h, 1, -1, false);
     h.client_expected = false; h.client_target = &handle; h.client_acquire_fence = 12;
     int32_t fence = 999;
     CHECK(z1_present_display(&h, 0, &fence) == HWC2_ERROR_NONE);
@@ -399,7 +399,7 @@ static void present_unused_client() {
     CHECK(h.client_acquire_fence == 12); CHECK(copies == 0);
 }
 static void present_client_copy_success() {
-    auto h = display(); h.client_expected = true; h.client_target = &handle;
+    z1_hwc2 h{}; setup_display(h); h.client_expected = true; h.client_target = &handle;
     import_result = -EINVAL; int32_t fence = 999;
     CHECK(z1_present_display(&h, 0, &fence) == HWC2_ERROR_NONE);
     CHECK(commits == 1); CHECK(imports == 0); CHECK(copies == 1);
@@ -408,19 +408,19 @@ static void present_client_copy_success() {
     CHECK(h.present_ok == 1 && h.client_frames == 1);
 }
 static void present_bad_display() {
-    auto h = display(); int32_t fence = 999;
+    z1_hwc2 h{}; setup_display(h); int32_t fence = 999;
     CHECK(z1_present_display(&h, 1, &fence) == HWC2_ERROR_BAD_DISPLAY);
     CHECK(fence == -1); CHECK(commits == 0); CHECK(timeouts.empty());
 }
 static void present_power_off() {
-    auto h = display(); h.powered_on = false; layer(h, 1, 10); int32_t fence = 999;
+    z1_hwc2 h{}; setup_display(h); h.powered_on = false; layer(h, 1, 10); int32_t fence = 999;
     CHECK(z1_present_display(&h, 0, &fence) == HWC2_ERROR_NONE);
     CHECK(fence == -1); CHECK(commits == 0); CHECK(timeouts.empty());
     CHECK(h.layers[1].acquire_fence == 10);
     CHECK(h.present_calls == 1 && h.present_skipped == 1);
 }
 static void completion_retires_only_submitted() {
-    auto h = display(); h.submitted_release.push_back({73, 74}); h.commit_fence = 91;
+    z1_hwc2 h{}; setup_display(h); h.submitted_release.push_back({73, 74}); h.commit_fence = 91;
     CHECK(!complete_commit(&h, 0)); CHECK(removed_fbs == 0);
     CHECK(h.pending_release.size() == 1); CHECK(h.submitted_release.size() == 1);
     steps = {{1, POLLIN, 0, 0}}; step_index = 0;
@@ -429,7 +429,7 @@ static void completion_retires_only_submitted() {
     CHECK(h.submitted_release.empty()); CHECK(h.commit_fence == -1);
 }
 static void previous_commit_timeout_preserves_slots() {
-    auto h = display(); layer(h, 1, -1); h.commit_fence = 91;
+    z1_hwc2 h{}; setup_display(h); layer(h, 1, -1); h.commit_fence = 91;
     h.submitted_release.push_back({73, 74}); int32_t f = 8;
     CHECK(z1_present_display(&h, 0, &f) == HWC2_ERROR_NO_RESOURCES);
     CHECK(commits == 0); CHECK(copies == 0); CHECK(small_copies == 0);
@@ -437,13 +437,13 @@ static void previous_commit_timeout_preserves_slots() {
     CHECK(removed_fbs == 0); CHECK(f == -1); CHECK(!h.commit_broken);
 }
 static void previous_commit_error_fails_closed() {
-    auto h = display(); layer(h, 1, -1); h.commit_fence = 91;
+    z1_hwc2 h{}; setup_display(h); layer(h, 1, -1); h.commit_fence = 91;
     steps = {{1, POLLNVAL, 0, 0}}; int32_t f = 8;
     CHECK(z1_present_display(&h, 0, &f) == HWC2_ERROR_NO_RESOURCES);
     CHECK(h.commit_broken); CHECK(small_copies == 0); CHECK(commits == 0);
 }
 static void commit_failure_does_not_flip() {
-    auto h = display(); layer(h, 1, -1); h.client_expected = true; h.client_target = &handle;
+    z1_hwc2 h{}; setup_display(h); layer(h, 1, -1); h.client_expected = true; h.client_target = &handle;
     commit_failures = 1; int32_t f = 8;
     CHECK(z1_present_display(&h, 0, &f) == HWC2_ERROR_NO_RESOURCES);
     CHECK(commits == 1); CHECK(h.layers[1].copy_slot == 0);
@@ -452,7 +452,7 @@ static void commit_failure_does_not_flip() {
     CHECK(closed_fds == std::vector<int>{200});
 }
 static void copied_frames_use_only_inactive_slot() {
-    auto h = display(); layer(h, 1, -1); h.client_expected = true; h.client_target = &handle;
+    z1_hwc2 h{}; setup_display(h); layer(h, 1, -1); h.client_expected = true; h.client_target = &handle;
     int32_t f = 8;
     CHECK(z1_present_display(&h, 0, &f) == HWC2_ERROR_NONE);
     CHECK(h.layers[1].copy_slot == 1); CHECK(h.client_copy_slot == 1);
@@ -465,46 +465,46 @@ static void copied_frames_use_only_inactive_slot() {
     CHECK(h.layers[1].copy_slot == 0); CHECK(h.client_copy_slot == 0);
 }
 static void no_fence_freezes_private_copies() {
-    auto h = display(); layer(h, 1, -1); no_commit_fence = 1; int32_t f = 8;
+    z1_hwc2 h{}; setup_display(h); layer(h, 1, -1); no_commit_fence = 1; int32_t f = 8;
     CHECK(z1_present_display(&h, 0, &f) == HWC2_ERROR_NO_RESOURCES);
     CHECK(h.commit_broken); CHECK(h.layers[1].copy_slot == 0);
     CHECK(z1_present_display(&h, 0, &f) == HWC2_ERROR_NO_RESOURCES);
     CHECK(small_copies == 1); CHECK(commits == 1); CHECK(imports == 0);
 }
 static void descriptor_reservation_failure_precedes_commit() {
-    auto h = display(); layer(h, 1, -1); reserve_failure = 1; int32_t f = 8;
+    z1_hwc2 h{}; setup_display(h); layer(h, 1, -1); reserve_failure = 1; int32_t f = 8;
     CHECK(z1_present_display(&h, 0, &f) == HWC2_ERROR_NO_RESOURCES);
     CHECK(commits == 0); CHECK(h.layers[1].copy_slot == 0);
 }
 static void interrupted_dup_retries() {
-    auto h = display(); layer(h, 1, -1); dup_interruptions = 2; int32_t f = 8;
+    z1_hwc2 h{}; setup_display(h); layer(h, 1, -1); dup_interruptions = 2; int32_t f = 8;
     CHECK(z1_present_display(&h, 0, &f) == HWC2_ERROR_NONE);
     CHECK(dup_calls == 3); CHECK(f == 91); CHECK(!h.commit_broken);
 }
 static void failed_dup_freezes_private_copies() {
-    auto h = display(); layer(h, 1, -1); dup_failure = 1; int32_t f = 8;
+    z1_hwc2 h{}; setup_display(h); layer(h, 1, -1); dup_failure = 1; int32_t f = 8;
     CHECK(z1_present_display(&h, 0, &f) == HWC2_ERROR_NO_RESOURCES);
     CHECK(h.commit_broken); CHECK(h.commit_fence == 91); CHECK(f == -1);
     CHECK(z1_present_display(&h, 0, &f) == HWC2_ERROR_NO_RESOURCES);
     CHECK(small_copies == 1); CHECK(commits == 1);
 }
 static void copy_failure_never_commits_partial_frame() {
-    auto h = display(); layer(h, 1, -1); small_result = -EIO; int32_t f = 8;
+    z1_hwc2 h{}; setup_display(h); layer(h, 1, -1); small_result = -EIO; int32_t f = 8;
     CHECK(z1_present_display(&h, 0, &f) == HWC2_ERROR_NO_RESOURCES);
     CHECK(commits == 0); CHECK(h.layers[1].copy_slot == 0);
 }
 static void plane_failure_never_commits() {
-    auto h = display(); layer(h, 1, -1); program_failure = 1; int32_t f = 8;
+    z1_hwc2 h{}; setup_display(h); layer(h, 1, -1); program_failure = 1; int32_t f = 8;
     CHECK(z1_present_display(&h, 0, &f) == HWC2_ERROR_NO_RESOURCES);
     CHECK(commits == 0); CHECK(dup_calls == 0);
 }
 static void out_fence_property_failure_never_commits() {
-    auto h = display(); layer(h, 1, -1); add_failure = 1; int32_t f = 8;
+    z1_hwc2 h{}; setup_display(h); layer(h, 1, -1); add_failure = 1; int32_t f = 8;
     CHECK(z1_present_display(&h, 0, &f) == HWC2_ERROR_NO_RESOURCES);
     CHECK(commits == 0); CHECK(h.layers[1].copy_slot == 0);
 }
 static void fallback_preserves_prepared_small_crop() {
-    auto h = display(); layer(h, 1, -1); h.modeset_done = false;
+    z1_hwc2 h{}; setup_display(h); layer(h, 1, -1); h.modeset_done = false;
     commit_failures = 1; int32_t f = 8;
     CHECK(z1_present_display(&h, 0, &f) == HWC2_ERROR_NONE);
     CHECK(commits == 2); CHECK(commit_flags[1] == 0);
@@ -512,7 +512,7 @@ static void fallback_preserves_prepared_small_crop() {
     CHECK(programmed[0].second.right == 32); CHECK(programmed[4].second.right == 32);
 }
 static void copies_release_sources_without_waiting_for_scanout() {
-    auto h = display(); layer(h, 1, -1); int32_t f = 8;
+    z1_hwc2 h{}; setup_display(h); layer(h, 1, -1); int32_t f = 8;
     CHECK(z1_present_display(&h, 0, &f) == HWC2_ERROR_NONE);
     uint32_t n = 0; CHECK(z1_get_release_fences(&h, 0, &n, nullptr, nullptr) == HWC2_ERROR_NONE);
     CHECK(n == 1); hwc2_layer_t id = 0; int32_t release = 7;
@@ -522,7 +522,7 @@ static void copies_release_sources_without_waiting_for_scanout() {
     CHECK(imports == 0);
 }
 static void readable_failed_sync_is_not_completion() {
-    auto h = display(); h.commit_fence = 91; h.submitted_release.push_back({73, 74});
+    z1_hwc2 h{}; setup_display(h); h.commit_fence = 91; h.submitted_release.push_back({73, 74});
     sync_status = -ETIMEDOUT; steps = {{1, POLLIN, 0, 0}};
     CHECK(!complete_commit(&h, 100)); CHECK(h.commit_broken);
     CHECK(removed_fbs == 0); CHECK(h.submitted_release.size() == 1);
