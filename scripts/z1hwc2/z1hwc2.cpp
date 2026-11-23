@@ -72,6 +72,7 @@
 #include <map>
 #include <mutex>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 #include <sys/ioctl.h>
@@ -112,7 +113,7 @@ extern "C" int __android_log_write(int prio, const char *tag, const char *text);
 #define LOG_TAG "z1hwc2"
 #include <log/log.h>
 
-#define Z1_HWC_VERSION "2026-11-22-r20-metrics"
+#define Z1_HWC_VERSION "2026-11-23-r21-abi"
 #define Z1_BACKLIGHT_PATH "/sys/class/leds/lcd-backlight/brightness"
 #define Z1_BACKLIGHT_MAX_PATH "/sys/class/leds/lcd-backlight/max_brightness"
 #define Z1_DISPLAY_BLANK_PATH "/sys/class/leds/lcd-backlight/display_blank"
@@ -1482,7 +1483,7 @@ static void z1_get_capabilities(hwc2_device_t *d, uint32_t *out_count,
 	*out_count = 0;
 }
 
-static void z1_register_callback(hwc2_device_t *d, int32_t descriptor,
+static int32_t z1_register_callback(hwc2_device_t *d, int32_t descriptor,
 				 hwc2_callback_data_t data,
 				 hwc2_function_pointer_t fn)
 {
@@ -1512,9 +1513,14 @@ static void z1_register_callback(hwc2_device_t *d, int32_t descriptor,
 	default:
 		klogf(1, "z1hwc2: register_callback: unknown descriptor %d\n",
 		      descriptor);
-		break;
+		return HWC2_ERROR_BAD_PARAMETER;
 	}
+	return HWC2_ERROR_NONE;
 }
+
+static_assert(std::is_same<decltype(&z1_register_callback),
+			   HWC2_PFN_REGISTER_CALLBACK>::value,
+	      "registerCallback must match the HWC2 ABI");
 
 static int32_t z1_accept_display_changes(hwc2_device_t *d,
 					 hwc2_display_t display)
@@ -1531,7 +1537,7 @@ static int32_t z1_accept_display_changes(hwc2_device_t *d,
 }
 
 static int32_t z1_create_layer(hwc2_device_t *d, hwc2_display_t display,
-			       uint32_t *out_layer)
+			       hwc2_layer_t *out_layer)
 {
 	z1_hwc2 *h = H(d);
 
@@ -1557,6 +1563,10 @@ static int32_t z1_create_layer(hwc2_device_t *d, hwc2_display_t display,
 	klogf(2, "z1hwc2: createLayer -> %" PRIu64 "\n", (uint64_t)id);
 	return HWC2_ERROR_NONE;
 }
+
+static_assert(std::is_same<decltype(&z1_create_layer),
+			   HWC2_PFN_CREATE_LAYER>::value,
+	      "createLayer must match the HWC2 ABI");
 
 static z1_layer *layer_get(z1_hwc2 *h, hwc2_layer_t id)
 {
