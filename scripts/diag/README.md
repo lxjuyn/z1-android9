@@ -265,10 +265,14 @@ AUDIO_HAL_LIB/AUDIO_LOADER`、`FB0_NAME/DRI_NODES`、`INPUT_KPD/INPUT_TPD/INPUT_
 | `AUDIO_CARDS=0`（`/proc/asound/cards` 是 "no soundcards"） | ASoC 机器驱动没注册（gabin8/MT6572 未 bind） | 先确认 `AUDIO_LOADER=1`（`/system/lib/modules/load_audio.sh` 存在并跑过）；再看 dmesg `snd`/`asoc`/`dai` |
 | cards>0 但 `AUDIO_SND_NODES=0` | 卡在但 PCM 没注册 | `/proc/asound/pcm`、dts 里 DAI link |
 | `tinymix` 有控件但 `tinyplay` 完成却无声 | codec 供电/路由/外部 PA、MT6323 电源 | `tinymix` 里 DAC/PA 是否 unmute；PMIC regulator |
-| `dumpsys media.audio_flinger` 无 output track / HAL load 失败 | 用户态 HAL 没加载 | `09_audio` 的 HAL 清单——注意 HAL 有两个名字：`audio.primary.mt6572.so`（legacy）和 `android.hardware.audio@2.0-impl.so`（HIDL），脚本两个都查 |
+| `AUDIO_FLINGER_SERVICE` / `AUDIO_POLICY_SERVICE` 显示 not found | 用户态音频服务没注册 | 看 `09_audio` 的 HAL 清单和 logcat；HAL 有 `audio.primary.mt6572.so`（legacy）与 `android.hardware.audio@2.0-impl.so`（HIDL）两个名字 |
 | dmesg 无任何 `snd`/`afe` 行 | 音频驱动压根没编进内核 | 先确认内核 config/模块 |
 
 > 脚本能证明"内核 PCM 通不通"，**不能**证明喇叭出声——最后一步永远要人站在机器前面。
+
+> `media.audio_flinger` / `media.audio_policy` 的完整 `dumpsys` 不要放进自动取证：
+> A9 的 `IAudioFlinger` binder 事务有 5 秒 `TimeCheck`，Z1 上完整 dump 会超时并让
+> `audioserver` SIGABRT。脚本改用 `service check` 查注册，详情从 logcat 取。
 
 ### 5.5 显示 / GPU
 
@@ -355,6 +359,10 @@ Z1DIAG_DEVS="/dev/input/event2" sh /data/local/z1diag/z1_diag_keys.sh all  # 只
 6. **日志有行数上限**（dmesg 4 万行、logcat 6000 行），目的是防 /data 塞满和串口传太慢。
    要更全就单独 `dmesg > /data/local/z1diag/full_dmesg.txt`。
 7. **不改 system.img / boot.img**，脚本只落 `/data/local/z1diag/`。
+8. **AudioFlinger / AudioPolicy 的完整 `dumpsys` 会杀 `audioserver`**：
+   2026-11-23 实测 `dumpsys media.audio_flinger` 从 uptime 119.57 s 开始，
+   125.84 s `TimeCheckThread` 报 `TimeCheck timeout for IAudioFlinger` 并 SIGABRT。
+   自动取证只查 service 注册；不要把这个 dump 当作安全只读命令。
 
 ---
 

@@ -1,6 +1,6 @@
 # Z1 speaker playback differential - 2026-11-22
 
-Status: `HOST_VALIDATED / BOARD_PENDING`.
+Status: `HOST_VALIDATED / SERVICE_DUMP_GUARDED / BOARD_PENDING`.
 
 The R7 priority boot reset before any tone ran, so the existing mixer dump did
 not identify whether a failure belongs to PCM, DAPM, GPIO140, the MT6323
@@ -22,6 +22,29 @@ The script reports the first observable failure through
 `PLAYBACK_DIFFERENTIAL_FAIL`. It always leaves the physical result as
 `user_confirmation_required`; a running PCM and powered DAPM widget do not
 prove that the speaker is audible.
+
+## Live service-dump guard
+
+Android 9 on this image wraps every `IAudioFlinger` binder transaction with a
+five-second `TimeCheck`. The full `dumpsys media.audio_flinger` transaction
+crossed that limit on the 2026-11-23 live boot: the command began at uptime
+119.57 s, and `audioserver` received SIGABRT at 125.84 s.
+
+The tombstone names `TimeCheckThread` and reports:
+
+```text
+Abort message: 'TimeCheck timeout for IAudioFlinger: 1598311760'
+```
+
+The service was restarted immediately. This failure is caused by the
+diagnostic dump path, so it is not evidence that direct PCM playback or the
+speaker failed.
+
+`z1_diag_audio.sh` and `z1_diag_all.sh` therefore use `service check` for
+AudioFlinger and AudioPolicy liveness. They collect `/proc/asound`, PCM state,
+mixer state, HAL identity and logcat without issuing those service dumps.
+Treat a manual service dump as a separate diagnostic that may restart
+`audioserver`, and capture the preloader, kmsg and crash buffers around it.
 
 ## Host validation
 

@@ -16,7 +16,8 @@
 #      generated low-level PCM tone through tinyplay
 #   2. record PCM, Speaker DAPM, GPIO140 and optional MT6323/AFE registers
 #   3. tinycap   (capture path)
-#   4. dumpsys media.audio_flinger  (passive; use a real app for playback)
+#   4. service-manager registration checks (binder dumps are intentionally
+#      omitted because a slow AudioFlinger dump trips the 5-second TimeCheck)
 # Nothing outside /data/local/z1diag is written.
 # ---------------------------------------------------------------------------
 
@@ -75,9 +76,6 @@ mixer_set() {
     [ "$_rc" -eq 0 ] || TRIGGER_FAIL=1
 }
 
-TO=
-have timeout && TO="timeout 60"
-
 mkdir -p "$OUT" 2>/dev/null || { echo "cannot create $OUT"; exit 1; }
 FACTS=$OUT/facts.txt
 : > "$FACTS" 2>/dev/null || true
@@ -119,8 +117,11 @@ cap "$CUR" "tinymix dump" "tinymix 2>&1 | head -n 200"
 cap "$CUR" "tinypcminfo if present" "tinypcminfo -D 0 2>&1 | head -n 60"
 cap "$CUR" "dmesg audio lines" \
     "dmesg 2>/dev/null | grep -i -E 'snd|asoc|afe|mt6323|mt-soc|gabin|dai|codec' | tail -n 400"
-cap "$CUR" "dumpsys media.audio_flinger head" "$TO dumpsys media.audio_flinger | head -n 150"
-cap "$CUR" "dumpsys media.audio_policy head" "$TO dumpsys media.audio_policy | head -n 120"
+# A full media.audio_flinger or media.audio_policy dump can exceed Android's
+# five-second IAudioFlinger TimeCheck on Z1 and abort audioserver. Service
+# manager registration checks provide the safe liveness signal here.
+cap "$CUR" "audio binder service registration (dumps intentionally omitted)" \
+    'for svc in media.audio_flinger media.audio_policy; do printf "%s: " "$svc"; service check "$svc" 2>&1 || true; done'
 cap "$CUR" "logcat audio lines" \
     "logcat -d 2>/dev/null | grep -i -E 'audio|AudioFlinger|AudioPolicy|ASoC|tinyalsa' | tail -n 400"
 
@@ -131,6 +132,8 @@ fact AUDIO_HAL_LIBS "$(ls /vendor/lib/hw/*audio*.so /system/lib/hw/*audio*.so /v
 fact AUDIO_LOADER "$(ls /system/lib/modules/load_audio.sh 2>/dev/null | wc -l)"
 fact AUDIO_TINYMIX "$(ls /system/bin/tinymix 2>/dev/null | wc -l)"
 fact AUDIO_TINYPLAY "$(ls /system/bin/tinyplay 2>/dev/null | wc -l)"
+fact AUDIO_FLINGER_SERVICE "$(service check media.audio_flinger 2>/dev/null)"
+fact AUDIO_POLICY_SERVICE "$(service check media.audio_policy 2>/dev/null)"
 
 if [ "$MODE" != "trigger" ]; then
     say "passive mode done: $OUT"

@@ -360,8 +360,11 @@ cap "$CUR" "audio policy xml" \
     "ls -l /vendor/etc/audio_policy_configuration.xml /system/etc/audio_policy_configuration.xml 2>/dev/null"
 cap "$CUR" "dmesg snd/afe/mt6323 lines" \
     "dmesg 2>/dev/null | grep -i -E 'snd|asoc|afe|mt6323|mt-soc|gabin|dai' | tail -n 400"
-cap "$CUR" "dumpsys media.audio_flinger (capped)" "$TO dumpsys media.audio_flinger | head -n 200"
-cap "$CUR" "dumpsys media.audio_policy (capped)" "$TO dumpsys media.audio_policy | head -n 120"
+# Full AudioFlinger/AudioPolicy dumps can exceed Android's five-second
+# IAudioFlinger TimeCheck on Z1 and abort audioserver. Keep live collection to
+# service-manager registration checks; inspect logcat for details instead.
+cap "$CUR" "audio binder service registration (dumps intentionally omitted)" \
+    'for svc in media.audio_flinger media.audio_policy; do printf "%s: " "$svc"; service check "$svc" 2>&1 || true; done'
 cap "$CUR" "dumpsys audio (capped)" "$TO dumpsys audio | head -n 120"
 cap "$CUR" "logcat audio lines" \
     "logcat -d 2>/dev/null | grep -i -E 'audio|AudioFlinger|AudioPolicy|tinyalsa|ASoC' | tail -n 400"
@@ -370,6 +373,8 @@ fact AUDIO_SND_NODES "$(ls /dev/snd 2>/dev/null | wc -l)"
 fact AUDIO_HAL_LIB "$(ls /vendor/lib/hw/*audio*.so /system/lib/hw/*audio*.so /vendor/lib/hw/android.hardware.audio* 2>/dev/null | wc -l)"
 fact AUDIO_LOADER "$(ls /system/lib/modules/load_audio.sh 2>/dev/null | wc -l)"
 fact AUDIO_TINYMIX "$(p /system/bin/tinymix)"
+fact AUDIO_FLINGER_SERVICE "$(service check media.audio_flinger 2>/dev/null)"
+fact AUDIO_POLICY_SERVICE "$(service check media.audio_policy 2>/dev/null)"
 
 # ---------------------------------------------------------------------------
 # 10 display - framebuffer, DRI/GPU, SurfaceFlinger/composer
