@@ -1,0 +1,9 @@
+# Z1 lock and wake candidate for the radio-off baseline
+
+The read-back `0840aee4…` boot carries HWC r19 (`5e1294de…`). Commit `1b5756b` adds readback of `display_blank` before committing the composer's power state. Without readback, a successful sysfs write could leave the composer reporting sleep while the gate still reads open. The new candidate carries this fix and the compositor timing counters from `c790691`.
+
+The candidate is `z1-archive/r7-radio-off-hwc-gate-20261123_151346/package/boot.img` on the project HDD. It is 5,990,400 bytes with SHA-256 `3a2c4a35c61d7ea5db681259d84651d8580d245a59fd8ae0490b7826a84e1aa5`. Pair it with the current `f4832272…` system. Its rollback boot is `0840aee4…`. Reloading that rollback boot uses the same staging path and returns to the r19 module when the ramdisk candidate is selected.
+
+Rebuilding from `inputs.json` produces an identical boot. Extracting both images confirms the same zImage and that `hwcomposer.z1.so` is the only changed ramdisk file. The HWC payload SHA-256 is `5f9a66c33d36f8f7b694fcda437e725000dc2dcf3d4805a04393a1d7ea9150e5`. The appended DTB differs only in the initrd end address. All 19 mock power scenarios pass, including readback mismatch, gate disappearance, and HWC restart while the panel is blanked. The archive includes the SHA-256 manifest and power test output.
+
+After the idle R3/R7 comparison, test this boot with the same R7 system. Verify `z1stage.hwcomposer.sha` and the mapped vendor HWC against the candidate hash. Check the physical panel during several lock and wake cycles and verify that the first new frame appears after wake. Then use the compositor timing counters and completed foreground app frame samples during a repeatable swipe. Record compositor presentation timings alongside app timings before assigning slow frames to GPU rendering or buffer staging. Physical display behavior and frame rate require board validation.
