@@ -299,6 +299,7 @@ class R4RuntimeManifestTest(unittest.TestCase):
         self.write("sys/class/leds/lcd-backlight/display_blank", "0\n")
         self.write_bytes("data/nvram/APCFG/APRDEB/BT_Addr", 66)
         self.write_bytes("data/nvram/APCFG/APRDEB/WIFI", 514)
+        self.write_bytes("data/nvram/APCFG/APRDCL/FILE_VER", 3404)
         socket_dir = self.root / "dev/socket"
         socket_dir.mkdir(parents=True)
         server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -311,7 +312,7 @@ class R4RuntimeManifestTest(unittest.TestCase):
         self.assertIn(
             "schema=z1-r7-bt-runtime/v1 candidate=r7-bt-20261120",
             result.stdout)
-        self.assertIn("summary pass=66 fail=0 status=PASS", result.stdout)
+        self.assertIn("summary pass=67 fail=0 status=PASS", result.stdout)
 
         self.write("data/nvram/APCFG/APRDEB/BT_Addr", "short\n")
         result = self.run_probe("--r7-bt")

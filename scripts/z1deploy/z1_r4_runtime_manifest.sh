@@ -47,7 +47,7 @@ case "${1:-}" in
         codec_sha=3fa88d5aa0734612aefec8f45de1b4cabc24a86f67a383fb39f85481663f03cc
         audio_sha=3f1b3a841aea4eedd7cb7ba5c22ebe12e6062b6ec88ec5d28eed6864251e1722
         wlan_sha=143c5611267eb4c5e20135fffdd39db491753147ef295278c3a69330c1fbf80f
-        radio_sha=9e0b4268725f04bd494ad1ab5a9615ed46d69db113c232f2e3ce71e637cd6924
+        radio_sha=718cb40441d7ab1acdc50733d5135f403c93b2f2b01a56a07b0a74af16d7260c
         probe_sha=b0f783c0f295e183ec78454a4b410d7cc33fdb331f3e434384e443389096940e
         diag_sha=96201f608e633b4da2a3877cecbeeabc4428f8369af10f63c2bf0f18ccbebbe6
         ;;
@@ -439,7 +439,8 @@ if [ "$candidate" = r7-bt-20261120 ] ||
         /data/nvram/APCFG/APRDEB/BT_Addr 64 66
     check_regular_size wifi-nvram-record \
         /data/nvram/APCFG/APRDEB/WIFI 512 514
-    if [ "$candidate" = r7-bt-nvram-20261121 ]; then
+    if [ "$candidate" = r7-bt-20261120 ] ||
+       [ "$candidate" = r7-bt-nvram-20261121 ]; then
         check_regular_size nvram-version-table \
             /data/nvram/APCFG/APRDCL/FILE_VER 3404
     fi
