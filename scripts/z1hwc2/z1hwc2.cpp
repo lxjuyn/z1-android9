@@ -69,6 +69,8 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <atomic>
+#include <condition_variable>
 #include <map>
 #include <mutex>
 #include <string>
@@ -113,7 +115,7 @@ extern "C" int __android_log_write(int prio, const char *tag, const char *text);
 #define LOG_TAG "z1hwc2"
 #include <log/log.h>
 
-#define Z1_HWC_VERSION "2026-11-23-r23-crop"
+#define Z1_HWC_VERSION "2026-11-23-r24-vsync"
 #define Z1_BACKLIGHT_PATH "/sys/class/leds/lcd-backlight/brightness"
 #define Z1_BACKLIGHT_MAX_PATH "/sys/class/leds/lcd-backlight/max_brightness"
 #define Z1_DISPLAY_BLANK_PATH "/sys/class/leds/lcd-backlight/display_blank"
@@ -416,7 +418,13 @@ struct z1_layer {
 
 struct z1_hwc2 : public hwc2_device_t {
 	/* callbacks */
-	hwc2_callback_data_t cb_data;
+	std::mutex callback_registration_lock;
+	std::mutex vsync_callback_lock;
+	std::condition_variable vsync_callback_idle;
+	bool vsync_callback_active;
+	hwc2_callback_data_t hotplug_data;
+	hwc2_callback_data_t vsync_data;
+	hwc2_callback_data_t refresh_data;
 	hwc2_function_pointer_t cb_hotplug;
 	hwc2_function_pointer_t cb_vsync;
 	hwc2_function_pointer_t cb_refresh;
@@ -470,10 +478,10 @@ struct z1_hwc2 : public hwc2_device_t {
 	bool commit_broken;	/* missing/invalid KMS completion: refuse new writes */
 	int modeset_tries;
 	/* Vsync callbacks are independent of commit completion. */
-	volatile bool vsync_on;	/* SurfaceFlinger asked for vsync reports */
+	std::atomic<bool> vsync_on{false};	/* SurfaceFlinger asked for vsync reports */
 	bool vsync_err_logged;	/* one-shot error report */
 	bool vsync_reported;	/* first delivered vsync logged */
-	volatile int vsync_stop;
+	std::atomic<bool> vsync_stop{false};
 	pthread_t vsync_thread;
 	bool vsync_started;
 	uint64_t last_present_ms;
@@ -661,7 +669,17 @@ static void *vsync_thread_fn(void *arg)
 			h->vsync_intervals++;
 		}
 		last_vblank_ns = vblank_ns;
-		if (h->cb_vsync) {
+		hwc2_function_pointer_t callback;
+		hwc2_callback_data_t data;
+		{
+			std::lock_guard<std::mutex> lock(h->vsync_callback_lock);
+			if (!h->vsync_on || h->vsync_stop || !h->cb_vsync)
+				continue;
+			callback = h->cb_vsync;
+			data = h->vsync_data;
+			h->vsync_callback_active = true;
+		}
+		{
 			typedef void (*vsync_fn)(hwc2_callback_data_t,
 						 hwc2_display_t, int64_t);
 			int64_t ts = (int64_t)vblank_ns;
@@ -672,8 +690,13 @@ static void *vsync_thread_fn(void *arg)
 				      (long long)ts);
 			}
 			__atomic_fetch_add(&h->vsync_callbacks, 1, __ATOMIC_RELAXED);
-			((vsync_fn)h->cb_vsync)(h->cb_data, 0, ts);
+			((vsync_fn)callback)(data, 0, ts);
 		}
+		{
+			std::lock_guard<std::mutex> lock(h->vsync_callback_lock);
+			h->vsync_callback_active = false;
+		}
+		h->vsync_callback_idle.notify_one();
 	}
 	return nullptr;
 }
@@ -1492,7 +1515,7 @@ static int32_t z1_register_callback(hwc2_device_t *d, int32_t descriptor,
 	switch (descriptor) {
 	case HWC2_CALLBACK_HOTPLUG:
 		h->cb_hotplug = fn;
-		h->cb_data = data;
+		h->hotplug_data = data;
 		if (fn) {
 			typedef void (*hotplug_fn)(hwc2_callback_data_t,
 						  hwc2_display_t, int32_t);
@@ -1504,12 +1527,18 @@ static int32_t z1_register_callback(hwc2_device_t *d, int32_t descriptor,
 		break;
 	case HWC2_CALLBACK_REFRESH:
 		h->cb_refresh = fn;
-		h->cb_data = data;
+		h->refresh_data = data;
 		break;
-	case HWC2_CALLBACK_VSYNC:
+	case HWC2_CALLBACK_VSYNC: {
+		std::lock_guard<std::mutex> registration(h->callback_registration_lock);
+		std::unique_lock<std::mutex> lock(h->vsync_callback_lock);
+		/* HwcHal can destroy the old receiver as soon as this returns. */
+		h->cb_vsync = nullptr;
+		h->vsync_callback_idle.wait(lock, [h] { return !h->vsync_callback_active; });
+		h->vsync_data = data;
 		h->cb_vsync = fn;
-		h->cb_data = data;
 		break;
+	}
 	default:
 		klogf(1, "z1hwc2: register_callback: unknown descriptor %d\n",
 		      descriptor);
@@ -3136,7 +3165,7 @@ static int z1_close(hw_device_t *dev)
 	      h->frames, h->present_ok, h->commit_fail, h->copy_bytes,
 	      h->acquire_wait_fail, h->kms_wait_fail);
 	h->vsync_on = false;	/* let a blocked WAIT_VBLANK wake up first */
-	h->vsync_stop = 1;
+	h->vsync_stop = true;
 	if (h->vsync_started) {
 		pthread_join(h->vsync_thread, nullptr);
 		h->vsync_started = false;
