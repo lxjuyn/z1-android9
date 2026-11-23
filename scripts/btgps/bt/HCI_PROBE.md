@@ -17,10 +17,12 @@ Android NDK:
 z1a9_gpt/scripts/btgps/bt/build_probe.sh /tmp/z1-bt-probe-output
 ```
 
-The current verified build is installed as `/system/bin/z1_bt_hci_probe` in
-the `r7-bt-20261120` system candidate. It is Android ARM API 28, depends only
-on `libc.so` and `libdl.so`, and has SHA256
-`b0f783c0f295e183ec78454a4b410d7cc33fdb331f3e434384e443389096940e`.
+The reproducible build of the current source is Android ARM API 28, depends
+only on `libc.so` and `libdl.so`, and has SHA256
+`5f9ef202b68e8b77924435c17ec54aa0a19399d28b523b4e02e69203591c9f36`.
+It adds the `--writev` mode used by the next transport comparison. Existing
+packages that pin `b0f783c0...` contain the older probe and cannot exercise
+that mode.
 
 On the Z1, disable Android Bluetooth and confirm the Bluetooth HAL has
 released `/dev/stpbt` before running the probe. Opening and closing the node
