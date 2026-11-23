@@ -169,7 +169,10 @@ static int z1_bt_userial_open(void *param) {
   char ready[PROP_VALUE_MAX] = {0};
   int factory_ready = __system_property_get("sys.z1.radio.bt_nvram_ready", ready) == 1 &&
                       ready[0] == '1';
-  if (factory_ready) {
+  char transport[PROP_VALUE_MAX] = {0};
+  int force_direct = __system_property_get("debug.z1.bt.transport", transport) == 6 &&
+                     strcmp(transport, "direct") == 0;
+  if (factory_ready && !force_direct) {
     fd = mtk_bt_enable();
     if (fd >= 0) {
       ALOGI("factory Bluetooth HCI initialization completed");
@@ -180,7 +183,11 @@ static int z1_bt_userial_open(void *param) {
       fd = open_direct_h4();
     }
   } else {
-    ALOGW("factory Bluetooth NVRAM unavailable; trying direct H4");
+    if (force_direct) {
+      ALOGI("diagnostic direct H4 selected (factory NVRAM ready=%d)", factory_ready);
+    } else {
+      ALOGW("factory Bluetooth NVRAM unavailable; trying direct H4");
+    }
     fd = open_direct_h4();
     /* BT_open() returns ENODEV when WMT function-on fails or STP is not ready. */
     if (fd == -ENODEV) {

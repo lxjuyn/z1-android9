@@ -33,7 +33,7 @@ for variant in good missing-enable missing-disable; do
 done
 printf 'Deliberately invalid ELF test fixture\n' > "$work/invalid/libbluetoothdrv.so"
 "$cc" "${flags[@]}" -I"$here/include" "$here/test_vendor.c" -ldl -o "$work/test_vendor"
-tests=(lifecycle fd-zero close-retry direct-fallback unready-nvram missing-enable missing-disable dlopen-missing dlopen-invalid)
+tests=(lifecycle fd-zero close-retry direct-fallback unready-nvram force-direct-ready missing-enable missing-disable dlopen-missing dlopen-invalid)
 [[ $probe == 0 ]] || tests+=(cleanup-disable-failure)
 failed=0
 for test in "${tests[@]}"; do
@@ -46,7 +46,10 @@ for test in "${tests[@]}"; do
   # Absolute path redirection prevents fallback to a real system/vendor library.
   ready=1
   [[ $test != unready-nvram ]] || ready=0
-  if ! env -u LD_PRELOAD -u LD_LIBRARY_PATH Z1_TEST_NVRAM_READY="$ready" Z1_TEST_DRIVER="$fixture" \
+  transport=
+  [[ $test != force-direct-ready ]] || transport=direct
+  if ! env -u LD_PRELOAD -u LD_LIBRARY_PATH Z1_TEST_NVRAM_READY="$ready" \
+      Z1_TEST_BT_TRANSPORT="$transport" Z1_TEST_DRIVER="$fixture" \
       timeout 20 "$work/test_vendor" "$work/libbt-vendor-host.so" "$test" \
       "$work/good/libbluetoothdrv.so"; then failed=$((failed + 1)); fi
 done

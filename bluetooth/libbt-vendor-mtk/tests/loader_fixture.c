@@ -4,6 +4,7 @@
 #include <dlfcn.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/system_properties.h>
 
 void *__real_dlopen(const char *, int);
 int __real_dlclose(void *);
@@ -30,9 +31,16 @@ void test_loader_stats(int *tries, int *opens, int *closes, int *bad) {
 }
 
 int __system_property_get(const char *name, char *value) {
-  const char *ready = getenv("Z1_TEST_NVRAM_READY");
-  if (strcmp(name, "sys.z1.radio.bt_nvram_ready") != 0 || !ready) return 0;
-  value[0] = ready[0];
-  value[1] = '\0';
-  return ready[0] ? 1 : 0;
+  const char *setting;
+  if (strcmp(name, "sys.z1.radio.bt_nvram_ready") == 0)
+    setting = getenv("Z1_TEST_NVRAM_READY");
+  else if (strcmp(name, "debug.z1.bt.transport") == 0)
+    setting = getenv("Z1_TEST_BT_TRANSPORT");
+  else
+    return 0;
+  if (!setting) return 0;
+  size_t size = strlen(setting);
+  if (size >= PROP_VALUE_MAX) return 0;
+  memcpy(value, setting, size + 1);
+  return (int)size;
 }
