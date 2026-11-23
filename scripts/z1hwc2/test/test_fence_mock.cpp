@@ -145,6 +145,7 @@ static int mock_ioctl(int fd, unsigned long command, sync_file_info *info) {
 #define poll mock_poll
 #define clock_gettime mock_clock_gettime
 #define close mock_close
+static int32_t z1_retry_pending_wake(z1_hwc2 *) { return HWC2_ERROR_NONE; }
 /* PRODUCTION_FUNCTIONS */
 #undef ioctl
 #undef fcntl

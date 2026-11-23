@@ -30,7 +30,7 @@ MOCK = r'''
 using hwc2_display_t = uint64_t;
 struct hwc2_device_t {};
 struct z1_hwc2 : hwc2_device_t {
-    bool powered_on = true, backlight_blank_applied = false;
+    bool powered_on = true, wake_pending = false, backlight_blank_applied = false;
     bool backlight_gate_applied = false;
     int backlight_saved = 0;
 };
@@ -177,9 +177,19 @@ static void wake_permission_failure_and_retry() {
     z1_hwc2 h; CHECK(power(h, HWC2_POWER_MODE_OFF) == HWC2_ERROR_NONE);
     blank_write_error = EACCES;
     CHECK(power(h, HWC2_POWER_MODE_ON) == HWC2_ERROR_NO_RESOURCES);
-    CHECK(!h.powered_on && h.backlight_blank_applied);
-    blank_write_error = 0; CHECK(power(h, HWC2_POWER_MODE_ON) == HWC2_ERROR_NONE);
-    CHECK(blank == "0\n" && h.powered_on);
+    CHECK(!h.powered_on && h.backlight_blank_applied && h.wake_pending);
+    CHECK(z1_retry_pending_wake(&h) == HWC2_ERROR_NO_RESOURCES);
+    blank_write_error = 0; CHECK(z1_retry_pending_wake(&h) == HWC2_ERROR_NONE);
+    CHECK(blank == "0\n" && h.powered_on && !h.wake_pending);
+}
+static void new_off_cancels_pending_wake() {
+    z1_hwc2 h; CHECK(power(h, HWC2_POWER_MODE_OFF) == HWC2_ERROR_NONE);
+    blank_write_error = EACCES;
+    CHECK(power(h, HWC2_POWER_MODE_ON) == HWC2_ERROR_NO_RESOURCES && h.wake_pending);
+    blank_write_error = 0;
+    CHECK(power(h, HWC2_POWER_MODE_OFF) == HWC2_ERROR_NONE && !h.wake_pending);
+    CHECK(z1_retry_pending_wake(&h) == HWC2_ERROR_NONE);
+    CHECK(blank == "1\n" && !h.powered_on);
 }
 static void gate_works_without_brightness_files() {
     z1_hwc2 h; read_error = ENOENT; max_error = ENOENT;
@@ -254,7 +264,8 @@ int main() {
         CASE(repeated_off_keeps_restore_level),
         CASE(wake_preserves_new_light_hal_level), CASE(light_hal_cleared_before_off),
         CASE(old_kernel_zero_without_cache_uses_maximum), CASE(off_permission_failure_and_retry),
-        CASE(wake_permission_failure_and_retry), CASE(gate_works_without_brightness_files),
+        CASE(wake_permission_failure_and_retry), CASE(new_off_cancels_pending_wake),
+        CASE(gate_works_without_brightness_files),
         CASE(no_restore_source_refuses_off),
         CASE(short_write_does_not_claim_success), CASE(hardware_readback_mismatch),
         CASE(gate_readback_mismatch_keeps_previous_mode),
@@ -289,7 +300,8 @@ def main():
         definitions.append(re.search(r'^#define ' + name + r'\s+[^\n]+', src, re.M).group(0))
     bodies = '\n\n'.join(function(src, name) for name in
                          ('z1_backlight_read', 'z1_backlight_write',
-                          'z1_display_blank_write', 'z1_set_power_mode'))
+                          'z1_display_blank_write', 'z1_set_power_mode',
+                          'z1_retry_pending_wake'))
     generated = MOCK.replace('/* DEFINITIONS */', '\n'.join(definitions))
     generated = generated.replace('/* FUNCTIONS */', bodies)
     cpp = out / 'power.cpp'

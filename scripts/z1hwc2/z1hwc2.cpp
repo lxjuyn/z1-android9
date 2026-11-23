@@ -115,7 +115,7 @@ extern "C" int __android_log_write(int prio, const char *tag, const char *text);
 #define LOG_TAG "z1hwc2"
 #include <log/log.h>
 
-#define Z1_HWC_VERSION "2026-11-23-r24-vsync"
+#define Z1_HWC_VERSION "2026-11-23-r25-wake"
 #define Z1_BACKLIGHT_PATH "/sys/class/leds/lcd-backlight/brightness"
 #define Z1_BACKLIGHT_MAX_PATH "/sys/class/leds/lcd-backlight/max_brightness"
 #define Z1_DISPLAY_BLANK_PATH "/sys/class/leds/lcd-backlight/display_blank"
@@ -461,6 +461,7 @@ struct z1_hwc2 : public hwc2_device_t {
 	uint32_t mode_blob;
 	bool modeset_done;
 	bool powered_on;
+	bool wake_pending;
 	bool backlight_blank_applied;
 	bool backlight_gate_applied;
 	int backlight_saved;
@@ -2223,6 +2224,7 @@ static int32_t z1_set_power_mode(hwc2_device_t *d, hwc2_display_t display,
 			h->backlight_gate_applied = false;
 		}
 	}
+	h->wake_pending = error && mode == HWC2_POWER_MODE_ON;
 	if (error) {
 		klogf(0, "z1hwc2: setPowerMode %d backlight failed: %s\n",
 		      mode, strerror(-error));
@@ -2232,6 +2234,14 @@ static int32_t z1_set_power_mode(hwc2_device_t *d, hwc2_display_t display,
 	klogf(1, "z1hwc2: setPowerMode %d -> %s (backlight saved=%d)\n", mode,
 	      h->powered_on ? "ON" : "OFF", h->backlight_saved);
 	return HWC2_ERROR_NONE;
+}
+
+/* Pie records the ON request even if the HAL cannot clear the gate. Retry
+ * before the next frame, since SurfaceFlinger may never send another ON. */
+static int32_t z1_retry_pending_wake(z1_hwc2 *h)
+{
+	return h->wake_pending ? z1_set_power_mode(h, 0, HWC2_POWER_MODE_ON)
+			       : HWC2_ERROR_NONE;
 }
 
 static int32_t z1_set_vsync_enabled(hwc2_device_t *d, hwc2_display_t display,
@@ -2538,6 +2548,10 @@ static int32_t z1_present_display(hwc2_device_t *d, hwc2_display_t display,
 		return HWC2_ERROR_BAD_DISPLAY;
 	std::lock_guard<std::mutex> stats_lock(present_stats_lock);
 	h->present_calls++;
+	if (z1_retry_pending_wake(h) != HWC2_ERROR_NONE) {
+		h->present_error++;
+		return HWC2_ERROR_NO_RESOURCES;
+	}
 	if (!h->powered_on) {
 		h->present_skipped++;
 		klogf(3, "z1hwc2: present skipped (display off)\n");
