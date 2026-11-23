@@ -47,22 +47,21 @@ hdr() {
 fact() { printf '%s=%s\n' "$1" "$2" >> "$FACTS" 2>/dev/null || true; }
 
 mixer_value() {
-    tinymix 2>/dev/null | awk -v name="$1" '
-        {
-            sub(/\r$/, "", $0)
-            at = index($0, name)
-            if (!at || (at > 1 && substr($0, at - 1, 1) !~ /[ \t]/) ||
-                    substr($0, at + length(name), 1) !~ /[ \t]/)
-                next
-            value = substr($0, at + length(name))
-            gsub(/^[ \t]+|[ \t]+$/, "", value)
-            if (value == "On" || value == "Off")
-                value = (value == "On" ? "1" : "0")
-            if (value ~ /^[0-9]+$/) {
-                print value
-                exit
-            }
-        }'
+    # Query a single control. Android 9 awk can abort on the table parser.
+    _mix_line=$(tinymix "$1" 2>&1) || return 1
+    case "$_mix_line" in
+        "$1: "*) _mix_value=${_mix_line#"$1: "} ;;
+        *) return 1 ;;
+    esac
+    case "$_mix_value" in
+        *' ('*')') _mix_value=${_mix_value%%' ('*} ;;
+    esac
+    case "$_mix_value" in
+        On) printf '1\n' ;;
+        Off) printf '0\n' ;;
+        ''|*[!0-9]*) return 1 ;;
+        *) printf '%s\n' "$_mix_value" ;;
+    esac
 }
 
 mixer_set() {
