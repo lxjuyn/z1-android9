@@ -247,6 +247,20 @@ static void old_kernel_brightness_fallback() {
     CHECK(power(h, HWC2_POWER_MODE_ON) == HWC2_ERROR_NONE);
     CHECK(level == "2\n" && h.powered_on);
 }
+static void gate_reappears_after_legacy_off() {
+    z1_hwc2 h; blank_missing = 1;
+    CHECK(power(h, HWC2_POWER_MODE_OFF) == HWC2_ERROR_NONE);
+    blank_missing = 0;
+    CHECK(power(h, HWC2_POWER_MODE_ON) == HWC2_ERROR_NONE && level == "2\n");
+}
+static void missing_gate_after_gated_off_retries() {
+    z1_hwc2 h;
+    CHECK(power(h, HWC2_POWER_MODE_OFF) == HWC2_ERROR_NONE);
+    blank_missing = 1;
+    CHECK(power(h, HWC2_POWER_MODE_ON) == HWC2_ERROR_NO_RESOURCES && h.wake_pending);
+    blank_missing = 0;
+    CHECK(z1_retry_pending_wake(&h) == HWC2_ERROR_NONE && h.powered_on);
+}
 static void malformed_sysfs_values() {
     for (const char *bad : {"", "-1\n", "abc", "2oops", "99999999999999999999999999999999", "2147483648"}) {
         level = bad; int v = 71;
@@ -271,6 +285,7 @@ int main() {
         CASE(gate_readback_mismatch_keeps_previous_mode),
         CASE(gate_vanished_during_confirmation_is_not_legacy_kernel),
         CASE(interrupted_io_retries), CASE(old_kernel_brightness_fallback),
+        CASE(gate_reappears_after_legacy_off), CASE(missing_gate_after_gated_off_retries),
         CASE(malformed_sysfs_values)};
     int failures = 0;
     for (auto &test : cases) { reset(); try { test.fn(); printf("PASS %s\n", test.name); }

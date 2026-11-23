@@ -5,7 +5,7 @@
 #include <linux/io.h>
 #include <linux/leds.h>
 #include <linux/module.h>
-#include <linux/mutex.h>
+#include <linux/spinlock.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
 
@@ -23,7 +23,7 @@
 struct z1_bl {
 	struct led_classdev led;
 	void __iomem *base;
-	struct mutex lock;
+	spinlock_t lock;
 	u64 factory_data;
 	unsigned int factory_high;
 	unsigned int requested;
@@ -65,16 +65,30 @@ static int apply_locked(struct z1_bl *bl)
 	return !!(readl(bl->base + ENABLE) & CHANNEL) == on ? 0 : -EIO;
 }
 
-static int set_brightness(struct led_classdev *led, enum led_brightness level)
+/* MMIO never sleeps while the probe-held clock is enabled. Apply each
+ * brightness write synchronously so the gate cannot overtake a queued zero.
+ */
+static void set_brightness(struct led_classdev *led, enum led_brightness level)
 {
 	struct z1_bl *bl = container_of(led, struct z1_bl, led);
-	int ret;
+	unsigned long flags;
 
-	mutex_lock(&bl->lock);
-	bl->requested = level;
-	ret = apply_locked(bl);
-	mutex_unlock(&bl->lock);
-	return ret;
+	spin_lock_irqsave(&bl->lock, flags);
+	/* A blanked zero is the lights HAL's OFF notification. A zero while
+	 * unblanked is a real request and remains zero across a gate cycle.
+	 */
+	if (level || !bl->blank)
+		bl->requested = level;
+	if (apply_locked(bl))
+		dev_err_ratelimited(led->dev, "PWM1 enable readback failed\n");
+	spin_unlock_irqrestore(&bl->lock, flags);
+}
+
+static enum led_brightness get_brightness(struct led_classdev *led)
+{
+	struct z1_bl *bl = container_of(led, struct z1_bl, led);
+
+	return READ_ONCE(bl->blank) ? LED_OFF : READ_ONCE(bl->requested);
 }
 
 static struct z1_bl *from_led_dev(struct device *dev)
@@ -96,15 +110,19 @@ static ssize_t display_blank_store(struct device *dev, struct device_attribute *
 				   const char *buf, size_t count)
 {
 	struct z1_bl *bl = from_led_dev(dev);
-	bool blank;
+	bool blank, previous;
+	unsigned long flags;
 	int ret = kstrtobool(buf, &blank);
 
 	if (ret)
 		return ret;
-	mutex_lock(&bl->lock);
+	spin_lock_irqsave(&bl->lock, flags);
+	previous = bl->blank;
 	bl->blank = blank;
 	ret = apply_locked(bl);
-	mutex_unlock(&bl->lock);
+	if (ret)
+		bl->blank = previous;
+	spin_unlock_irqrestore(&bl->lock, flags);
 	return ret ? ret : count;
 }
 static DEVICE_ATTR_RW(display_blank);
@@ -166,12 +184,13 @@ static int z1_probe(struct platform_device *pdev)
 		return dev_err_probe(dev, -ENODEV, "unexpected LK PWM1 FIFO state\n");
 	/* Bits beyond the STOP position are never emitted. */
 	bl->factory_high = hweight64(active);
-	mutex_init(&bl->lock);
+	spin_lock_init(&bl->lock);
 	bl->requested = LEVELS;
 	bl->led.name = "lcd-backlight";
 	bl->led.max_brightness = LEVELS;
 	bl->led.brightness = LEVELS;
-	bl->led.brightness_set_blocking = set_brightness;
+	bl->led.brightness_set = set_brightness;
+	bl->led.brightness_get = get_brightness;
 	bl->led.groups = z1_groups;
 	ret = devm_add_action_or_reset(dev, restore_factory, bl);
 	if (ret)

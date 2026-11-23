@@ -2211,11 +2211,15 @@ static int32_t z1_set_power_mode(hwc2_device_t *d, hwc2_display_t display,
 		 * it on ON, even if this HWC instance did not apply OFF itself.
 		 */
 		error = z1_display_blank_write(0);
-		if (error == -ENOENT) {
+		if (!h->backlight_gate_applied && (!error || error == -ENOENT)) {
 			error = 0;
+			/* A legacy OFF wrote brightness=0. Restore it even if the
+			 * gate appeared between OFF and ON. A gate-only OFF never
+			 * owns the brightness and must not override an explicit zero.
+			 */
 			if (h->backlight_blank_applied) {
-				/* Do not replace a newer brightness chosen by the framework. */
-				if (z1_backlight_read(Z1_BACKLIGHT_PATH, &current) || current == 0)
+				error = z1_backlight_read(Z1_BACKLIGHT_PATH, &current);
+				if (!error && current == 0)
 					error = z1_backlight_write(h->backlight_saved);
 			}
 		}
