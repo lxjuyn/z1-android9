@@ -243,10 +243,10 @@ AUDIO_HAL_LIB/AUDIO_LOADER`、`FB0_NAME/DRI_NODES`、`INPUT_KPD/INPUT_TPD/INPUT_
 | 现象 | 结论 | 下一步 |
 |---|---|---|
 | `BT_STPBT=no` | 没有 BT transport，用户态栈必然起不来（根因在内核） | `grep stp_bt /proc/modules`；`dmesg | grep -i stpbt` |
-| `BT_STPBT=yes` 但 `dumpsys bluetooth_manager` 显示未启用、无 `com.android.bluetooth` | 用户态：libbluetoothdrv / libstdc++ / HIDL 缺 | `07_bluetooth` 的 `vendor/HIDL libraries`；logcat `dlopen failed` |
-| `hciconfig -a` 无 `hci0` | BTIF 没建 controller（patch 没下发/固件缺） | dmesg `btif`，`/system/etc/firmware` 里 BT patch |
+| `/dev/stpbt` 已出现，适配器状态为 OFF | 当前未开启 | 请求开启后按时间顺序查 WMT 上电、HCI 响应和 AdapterState 超时 |
+| `hciconfig -a` 无 `hci0` | 此版 Android HAL 直接使用 `/dev/stpbt` | 从 Android 的 HCI 命令和应答判断控制器状态 |
 | logcat 报 BD_ADDR 全 0 / vendor 拿不到地址 | NVRAM 地址读不到 | `ro.bt.vendor_owns_bdaddr` 是否设了 |
-| 栈起了但连不上任何设备 | 射频/天线/校准 | 需要真机对测，脚本只能证明链路通 |
+| `TRIGGER_RESULT=adapter_on` | 同一次开机，框架两次报告 ON | 分别验证发现、配对和重连 |
 
 ### 5.3 GPS / GNSS
 

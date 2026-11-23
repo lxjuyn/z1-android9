@@ -199,13 +199,17 @@ def check_bt(f, sheet, grep):
                   "根因在内核：grep stp_bt /proc/modules；dmesg | grep -i stpbt。"
                   "此时不用查 HAL，栈必然起不来")
         return
-    if as_int(first(f, "BT_STACK_RUNNING", "TRIGGER_STACK_APPEARED"), 0) > 0:
-        sheet.add(sub, OK, "com.android.bluetooth 进程在跑",
-                  "链路通；再验 hciconfig 有 hci0 与能否配对")
+    result = f.get("TRIGGER_RESULT")
+    if result == "adapter_on" and f.get("TRIGGER_ADAPTER_STATE") == "ON":
+        sheet.add(sub, OK, "Android 两次报告蓝牙适配器 ON", "实测扫描、配对和重连")
+    elif result == "adapter_on_unconfirmed":
+        sheet.add(sub, FAIL, "请求开启后未确认适配器持续 ON（末次状态 %s）" %
+                  f.get("TRIGGER_ADAPTER_STATE", "UNKNOWN"),
+                  "核对本次 WMT 上电、HCI 命令响应和框架超时")
+    elif as_int(first(f, "BT_STACK_RUNNING", "TRIGGER_STACK_APPEARED"), 0) > 0:
+        sheet.add(sub, WARN, "蓝牙进程存在，缺少适配器 ON 的采样", "运行蓝牙开启测试")
     else:
-        sheet.add(sub, FAIL, "/dev/stpbt 在但蓝牙栈没起来",
-                  "查 07_bluetooth.txt 的 libbluetoothdrv/libstdc++/HIDL 是否存在；"
-                  "logcat | grep -i 'dlopen failed'")
+        sheet.add(sub, INFO, "传输节点存在，缺少适配器 ON 的采样", "运行蓝牙开启测试")
 
 
 def check_gps(f, sheet, grep):

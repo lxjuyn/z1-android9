@@ -110,27 +110,31 @@ if [ ! -c /dev/stpbt ]; then
     exit 0
 fi
 
+before_boot=$(cat /proc/sys/kernel/random/boot_id)
 say "enabling Bluetooth"
 cap "$CUR" "enable attempt" \
     "svc bluetooth enable 2>&1 || cmd bluetooth_manager enable 2>&1 || echo 'no svc/cmd bluetooth control available'"
 
-# wait for the stack to come up
-i=0
-seen=
-while [ $i -lt 30 ]; do
-    if [ "$(pcount com.android.bluetooth)" -ge 1 ]; then
-        seen=$i
-        break
+# A process appears during BLE_TURNING_ON even on the R7 failure. Poll the
+# manager header and require two ON samples before ending the observation.
+consecutive_on=0
+state=UNKNOWN
+end_s=$(( $(cut -d. -f1 /proc/uptime) + 30 ))
+while [ "$(cut -d. -f1 /proc/uptime)" -lt "$end_s" ]; do
+    state=$(timeout 4 dumpsys -t 3 bluetooth_manager 2>/dev/null |
+        sed -n 's/^[[:space:]]*state: \([A-Z_]*\)[[:space:]]*$/\1/p' | head -1)
+    state=${state:-UNKNOWN}
+    printf 'uptime=%s adapter_state=%s\n' "$(cut -d' ' -f1 /proc/uptime)" "$state" >> "$CUR"
+    if [ "$state" = ON ]; then
+        consecutive_on=$((consecutive_on + 1))
+        [ "$consecutive_on" -ge 2 ] && break
+    else
+        consecutive_on=0
     fi
-    sleep 1
-    i=$((i + 1))
+    sleep 2
 done
-
-cap "$CUR" "stack process appearance" "echo waited=${i}s found=${seen:-no}"
 fact TRIGGER_STACK_APPEARED "$(pcount com.android.bluetooth)"
-fact TRIGGER_STACK_WAIT_S "${seen:-none}"
-
-sleep 3
+fact TRIGGER_ADAPTER_STATE "$state"
 cap "$CUR" "hciconfig after enable" "hciconfig -a; rfkill list"
 cap "$CUR" "settings after enable" "settings get global bluetooth_on"
 cap "$CUR" "dumpsys bluetooth_manager after enable" "$TO dumpsys bluetooth_manager | head -n 200"
@@ -139,10 +143,11 @@ cap "$CUR" "dmesg during enable" \
 cap "$CUR" "logcat during enable" \
     "logcat -d 2>/dev/null | grep -i -E 'bluetooth|btif|bt_vendor|hci|libbluetoothdrv|bt_read_nvram|nvram_init|WMT turn on BT|STP is ready' | tail -n 400"
 
-if [ -n "$seen" ]; then
-    fact TRIGGER_RESULT stack_started
+if [ "$consecutive_on" -ge 2 ] && [ -n "$before_boot" ] &&
+        [ "$(cat /proc/sys/kernel/random/boot_id)" = "$before_boot" ]; then
+    fact TRIGGER_RESULT adapter_on
 else
-    fact TRIGGER_RESULT stack_did_not_start
+    fact TRIGGER_RESULT adapter_on_unconfirmed
 fi
 
 # ---------------------------------------------------------------------------
