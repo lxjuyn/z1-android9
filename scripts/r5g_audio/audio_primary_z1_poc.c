@@ -90,6 +90,12 @@ struct z1_stream_out {
     struct z1_audio_device *adev;
     int16_t *scaled;
     size_t scaled_bytes;
+    struct mixer *gain_mixer;
+    struct mixer_ctl *playback_gain;
+    struct mixer_ctl *speaker_gain;
+    int saved_playback_gain;
+    bool gain_active;
+    bool restore_pending;
     pthread_mutex_t lock;
     struct pcm     *pcm;
     uint32_t        rate;
@@ -200,14 +206,63 @@ static audio_format_t out_get_format(const struct audio_stream *s)
 static int out_set_format(struct audio_stream *s, audio_format_t f)
 { (void)s; return (f == AUDIO_FORMAT_PCM_16_BIT) ? 0 : -EINVAL; }
 
+/* Only the primary playback PCM can be active on card 0. Hold the stream
+ * mutex across mixer changes, route selection and each PCM write. */
+static int restore_output_gain(struct z1_stream_out *o)
+{
+    if (!o->gain_mixer)
+        return 0;
+    if (o->gain_active) {
+        o->restore_pending = true;
+        int analog = mixer_ctl_set_value(o->speaker_gain, 0, 0);
+        int digital = mixer_ctl_set_value(o->playback_gain, 0, o->saved_playback_gain);
+        if (analog < 0 || digital < 0)
+            return -EIO;
+    }
+    mixer_close(o->gain_mixer);
+    o->gain_mixer = NULL;
+    o->gain_active = false;
+    o->restore_pending = false;
+    return 0;
+}
+
+static int select_output_gain(struct z1_stream_out *o, audio_devices_t device)
+{
+    if (o->restore_pending && restore_output_gain(o))
+        return -EIO;
+    if (device != AUDIO_DEVICE_OUT_SPEAKER)
+        return restore_output_gain(o);
+    if (o->gain_active)
+        return 0;
+    o->gain_mixer = mixer_open(Z1_PCM_CARD);
+    if (!o->gain_mixer)
+        return -ENODEV;
+    o->playback_gain = mixer_get_ctl_by_name(o->gain_mixer, "Playback Volume");
+    o->speaker_gain = mixer_get_ctl_by_name(o->gain_mixer, "Z1 Speaker Gain Switch");
+    if (!o->speaker_gain || !o->playback_gain)
+        goto fail;
+    o->saved_playback_gain = mixer_ctl_get_value(o->playback_gain, 0);
+    if (o->saved_playback_gain < 0)
+        goto fail;
+    o->gain_active = true;
+    if (mixer_ctl_set_value(o->playback_gain, 0, 61440) < 0 ||
+        mixer_ctl_set_value(o->speaker_gain, 0, 1) < 0)
+        goto fail;
+    return 0;
+fail:
+    restore_output_gain(o);
+    return -EIO;
+}
+
 static int out_standby(struct audio_stream *s)
 { struct z1_stream_out *o = (struct z1_stream_out *)s;
   pthread_mutex_lock(&o->lock);
   if (o->pcm) { pcm_close(o->pcm); o->pcm = NULL; }
   o->open_fails = 0;
   o->open_retry_wait = 0;
+  int rc = restore_output_gain(o);
   pthread_mutex_unlock(&o->lock);
-  return 0; }
+  return rc; }
 
 static int out_dump(const struct audio_stream *s, int fd) { (void)s; (void)fd; return 0; }
 
@@ -220,8 +275,11 @@ static audio_devices_t out_get_device(const struct audio_stream *s)
 static int out_set_device(struct audio_stream *s, audio_devices_t device)
 {
     struct z1_stream_out *o = (struct z1_stream_out *)s;
+    pthread_mutex_lock(&o->lock);
     __atomic_store_n(&o->device, device, __ATOMIC_RELAXED);
-    return 0;
+    int rc = o->pcm ? select_output_gain(o, device) : restore_output_gain(o);
+    pthread_mutex_unlock(&o->lock);
+    return rc;
 }
 
 /* Legacy AudioFlinger sends routing in a semicolon-delimited parameter list. */
@@ -252,7 +310,8 @@ static int out_set_parameters(struct audio_stream *s, const char *kv)
         unsigned long device = strtoul(route, &end, 10);
         if (end == route || (*end && *end != ';'))
             return -EINVAL;
-        out_set_device(s, device);
+        int rc = out_set_device(s, device);
+        if (rc) return rc;
     }
     if (parameter(kv, "z1_speaker_high_volume"))
         refresh_speaker_mode(((struct z1_stream_out *)s)->adev);
@@ -315,6 +374,7 @@ static ssize_t out_write(struct audio_stream_out *stream, const void *buffer, si
     int rc;
     pthread_mutex_lock(&o->lock);
     rc = pcm_ensure_open(o);
+    if (!rc) rc = select_output_gain(o, o->device);
     if (rc == 0 && out_get_device(&stream->common) == AUDIO_DEVICE_OUT_SPEAKER &&
         !__atomic_load_n(&o->adev->speaker_high, __ATOMIC_RELAXED)) {
         if (bytes % sizeof(int16_t))
@@ -345,6 +405,7 @@ static ssize_t out_write(struct audio_stream_out *stream, const void *buffer, si
              * still fails, do not keep the potentially stale descriptor. */
             pcm_close(o->pcm);
             o->pcm = NULL;
+            restore_output_gain(o);
             o->open_retry_wait = Z1_OPEN_RETRY_EVERY - 1;
             rc = -EIO;
         } else {
@@ -699,7 +760,10 @@ static void adev_close_output_stream(struct audio_hw_device *dev, struct audio_s
     struct z1_stream_out *o = (struct z1_stream_out *)s;
     (void)dev;
     if (!o) return;
-    out_standby(&o->stream.common);
+    if (out_standby(&o->stream.common) && o->gain_mixer) {
+        ALOGE("could not restore speaker route during close");
+        mixer_close(o->gain_mixer);
+    }
     pthread_mutex_destroy(&o->lock);
     free(o->scaled);
     free(o);

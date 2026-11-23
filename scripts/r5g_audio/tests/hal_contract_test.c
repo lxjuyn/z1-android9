@@ -49,6 +49,25 @@ int __system_property_get(const char *key, char *value)
 
 int *__errno(void) { return &mock_errno; }
 
+struct mixer { int card; };
+struct mixer_ctl { int value; };
+static struct mixer output_mixer;
+static struct mixer_ctl playback_gain = {54321}, speaker_gain = {0};
+struct mixer *mixer_open(unsigned int card) { return &output_mixer; }
+void mixer_close(struct mixer *m) { (void)m; }
+struct mixer_ctl *mixer_get_ctl_by_name(struct mixer *m, const char *name)
+{
+    if (!strcmp(name, "Playback Volume")) return &playback_gain;
+    if (!strcmp(name, "Z1 Speaker Gain Switch")) return &speaker_gain;
+    return NULL;
+}
+int mixer_ctl_get_value(struct mixer_ctl *ctl, unsigned int id) { return ctl->value; }
+int mixer_ctl_set_value(struct mixer_ctl *ctl, unsigned int id, int value)
+{
+    ctl->value = value;
+    return 0;
+}
+
 struct pcm *pcm_open(unsigned int card, unsigned int device,
                      unsigned int flags, struct pcm_config *config)
 {
@@ -259,6 +278,7 @@ static void volume_case(struct audio_hw_device *dev, struct audio_stream_out *ou
     mode_property = "";
     dev->set_parameters(dev, "z1_speaker_high_volume=0");
     out->write(out, original, sizeof(original));
+    CHECK(playback_gain.value == 61440 && speaker_gain.value == 1, "stock speaker mixer gains");
     CHECK(!memcmp(last_data, half, sizeof(half)), "default speaker half amplitude");
     mode_property = "1";
     dev->set_parameters(dev, "z1_speaker_high_volume=1");
@@ -267,6 +287,7 @@ static void volume_case(struct audio_hw_device *dev, struct audio_stream_out *ou
     mode_property = "0";
     out->common.set_parameters(&out->common, "z1_speaker_high_volume=0;routing=8");
     out->write(out, original, sizeof(original));
+    CHECK(playback_gain.value == 54321 && speaker_gain.value == 0, "restore previous gain on headphones");
     CHECK(!memcmp(last_data, original, sizeof(original)), "headphones bypass speaker cap");
     out->common.set_parameters(&out->common, "routing=2");
     out->write(out, original, sizeof(original));
