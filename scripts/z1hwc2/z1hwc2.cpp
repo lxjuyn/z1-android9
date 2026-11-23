@@ -113,7 +113,7 @@ extern "C" int __android_log_write(int prio, const char *tag, const char *text);
 #define LOG_TAG "z1hwc2"
 #include <log/log.h>
 
-#define Z1_HWC_VERSION "2026-11-23-r22-compose"
+#define Z1_HWC_VERSION "2026-11-23-r23-crop"
 #define Z1_BACKLIGHT_PATH "/sys/class/leds/lcd-backlight/brightness"
 #define Z1_BACKLIGHT_MAX_PATH "/sys/class/leds/lcd-backlight/max_brightness"
 #define Z1_DISPLAY_BLANK_PATH "/sys/class/leds/lcd-backlight/display_blank"
@@ -2390,10 +2390,6 @@ static int32_t z1_validate_display(hwc2_device_t *d, hwc2_display_t display,
 		p->frame_r = l->frame.right;
 		p->frame_b = l->frame.bottom;
 		p->have_crop = l->have_crop;
-		p->crop_l = (int)l->crop.left;
-		p->crop_t = (int)l->crop.top;
-		p->crop_r = (int)l->crop.right;
-		p->crop_b = (int)l->crop.bottom;
 		p->display_w = (int)h->width;
 		p->display_h = (int)h->height;
 
@@ -2403,6 +2399,12 @@ static int32_t z1_validate_display(hwc2_device_t *d, hwc2_display_t display,
 			p->buf_w = gh->width;
 			p->buf_h = gh->height;
 		}
+		if (p->have_crop && p->handle_ok)
+			p->unsupported_crop =
+				!z1_policy_crop_edge(l->crop.left, p->buf_w, &p->crop_l) ||
+				!z1_policy_crop_edge(l->crop.right, p->buf_w, &p->crop_r) ||
+				!z1_policy_crop_edge(l->crop.top, p->buf_h, &p->crop_t) ||
+				!z1_policy_crop_edge(l->crop.bottom, p->buf_h, &p->crop_b);
 		p->format_ok = hal_bpp(gh ? gh->format : -1) &&
 			       hal_to_drm(gh ? gh->format : -1);
 

@@ -10,6 +10,8 @@
  * "force client" switch.
  */
 
+#include <limits>
+
 #include "../z1_policy.h"
 
 #include <stdio.h>
@@ -346,6 +348,16 @@ int main(void)
 	    composition[0].type != Z1_POLICY_DEVICE ||
 	    composition[1].type != Z1_POLICY_DEVICE) {
 		fprintf(stderr, "FAIL: opaque stack did not keep both device layers\n");
+		failures++;
+	}
+
+	int crop_edge = -1;
+	if (!z1_policy_crop_edge(480.0, 480, &crop_edge) || crop_edge != 480 ||
+	    z1_policy_crop_edge(1.5, 480, &crop_edge) ||
+	    z1_policy_crop_edge(481.0, 480, &crop_edge) ||
+	    z1_policy_crop_edge(-1.0, 480, &crop_edge) ||
+	    z1_policy_crop_edge(std::numeric_limits<double>::quiet_NaN(), 480, &crop_edge)) {
+		fprintf(stderr, "FAIL: invalid source crop accepted or valid crop lost\n");
 		failures++;
 	}
 

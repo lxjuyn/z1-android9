@@ -68,6 +68,7 @@ struct z1_policy_layer {
 	int transform;		/* hwc_transform_t; 0 == none */
 	int frame_l, frame_t, frame_r, frame_b;
 	int have_crop;
+	int unsupported_crop;
 	int crop_l, crop_t, crop_r, crop_b;
 
 	/* display */
@@ -79,6 +80,19 @@ struct z1_policy_result {
 	int report;		/* 1: must be reported as a composition change */
 	const char *why;	/* human readable reason when CLIENT */
 };
+
+/* Private scanout copies can only represent an integral source rectangle.
+ * Check bounds before the cast so NaN and oversized coordinates are safe. */
+static inline bool z1_policy_crop_edge(double value, int limit, int *edge)
+{
+	if (!(value >= 0 && value <= limit))
+		return false;
+	const int pixel = static_cast<int>(value);
+	if (value != pixel)
+		return false;
+	*edge = pixel;
+	return true;
+}
 
 /* Why a layer cannot be device-composited; NULL when it can. */
 static inline const char *z1_policy_device_block_reason(
@@ -92,6 +106,8 @@ static inline const char *z1_policy_device_block_reason(
 		return "unsupported format";
 	if (!l->importable)
 		return "not importable as contiguous dma-buf";
+	if (l->unsupported_crop)
+		return "fractional or out-of-range source crop";
 	if (l->transform != 0)
 		return "transform";
 	fw = l->frame_r - l->frame_l;
