@@ -184,6 +184,12 @@
     "result_sha256": "433ea84b76ae8c1a53264c9fc7d21115f2ce55011cb54375bcf2c698931ff5d5"
   },
   {
+    "file": "packages/apps/Settings/src/com/android/settings/print/PrintSettingPreferenceController.java",
+    "patch": "packages__apps__Settings__src__com__android__settings__print__PrintSettingPreferenceController.java.patch",
+    "base_sha256": "8a51197d2f06a491f79c568514d5e3a925c939845925aed44148dbbaac2bd5d6",
+    "result_sha256": "95be9c7f87b0513a6f0f7f138cc9aea7c29bb0a282f6e8971de81342137abdfd"
+  },
+  {
     "file": "system/bt/hci/include/hci_packet_parser.h",
     "patch": "system__bt__hci__include__hci_packet_parser.h.patch",
     "base_sha256": "023e866909bef78213d6deeeebd4d7b2602e0c434956380309a29eb33c8c826f",
