@@ -121,7 +121,7 @@ USAGE
 cleanup() {
     local rc=$?
     if [ "$FD_OPEN" = 1 ] && [ "$ECHO_OFF" = 1 ]; then
-        printf '%s\n' 'stty "$Z1_TTY_STATE" || stty echo' >&3 2>/dev/null || true
+        printf '%s\n' 'stty echo -iuclc -istrip -ixon -ixoff icrnl' >&3 2>/dev/null || true
     fi
     if [ "$FD_OPEN" = 1 ]; then exec 3>&- 2>/dev/null || true; fi
     FD_OPEN=0
@@ -208,18 +208,13 @@ wait_end_marker() {
 
 set_remote_echo() {
     [ "$KEEP_ECHO" = 1 ] && return 0
-    local setting=$1 tag off command
+    local setting=$1 tag off
     tag=$(new_tag)
     off=$(log_size)
-    if [ "$setting" = -echo ]; then
-        ECHO_OFF=1
-        command='Z1_TTY_STATE=$(stty -g) && stty -echo -iuclc -istrip -ixon -ixoff icrnl'
-    else
-        command='stty "$Z1_TTY_STATE"'
-    fi
+    [ "$setting" = -echo ] && ECHO_OFF=1
     # Android stty flushes queued input and can enable uppercase folding.
     # Wait for the setting to take effect before sending case-sensitive data.
-    send_line "T=${tag}; ${command} && echo \${T}_END"
+    send_line "T=${tag}; stty ${setting} -iuclc -istrip -ixon -ixoff icrnl && echo \${T}_END"
     wait_end_marker "$tag" 6 "$off" || die "no confirmation for remote stty ${setting}"
     [ "$setting" = echo ] && ECHO_OFF=0
     return 0
