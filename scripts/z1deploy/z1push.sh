@@ -121,7 +121,7 @@ USAGE
 cleanup() {
     local rc=$?
     if [ "$FD_OPEN" = 1 ] && [ "$ECHO_OFF" = 1 ]; then
-        printf 'stty echo\r\n' >&3 2>/dev/null || true
+        printf '%s\n' 'stty "$Z1_TTY_STATE" || stty echo' >&3 2>/dev/null || true
     fi
     if [ "$FD_OPEN" = 1 ]; then exec 3>&- 2>/dev/null || true; fi
     FD_OPEN=0
@@ -134,27 +134,23 @@ trap cleanup EXIT
 trap on_signal INT TERM HUP
 
 new_tag() {
-    # Alphanumeric only: safe inside the shell line, unique per invocation.
-    printf 'z1t%s%s' "$(date +%s)" "$$"
+    # Each command substitution has its own Bash PID, even within one second.
+    printf 'z1t%sp%s' "$(date +%s)" "$BASHPID"
 }
 
 log_size() { local n; n=$(wc -c < "$LOG" 2>/dev/null | tr -d ' '); printf '%s' "${n:-0}"; }
 
 send_line() {
+    local LC_ALL=C line=$1
     [ "$FD_OPEN" = 1 ] || die "internal: serial fd is not open"
-    printf '%s\r\n' "$1" >&3 2>/dev/null || die "write to ${DEV} failed (serial gone?)"
-}
-
-remote_echo_off() {
-    [ "$KEEP_ECHO" = 1 ] && return 0
-    send_line 'stty -echo'
-    ECHO_OFF=1
-}
-
-remote_echo_on() {
-    [ "$KEEP_ECHO" = 1 ] && return 0
-    send_line 'stty echo'
-    ECHO_OFF=0
+    # Leave time for the interactive mksh line editor to consume large writes.
+    while [ "${#line}" -gt 16 ]; do
+        printf '%s' "${line:0:16}" >&3 2>/dev/null || die "write to ${DEV} failed (serial gone?)"
+        line=${line:16}
+        sleep 0.01
+    done
+    printf '%s\n' "$line" >&3 2>/dev/null || die "write to ${DEV} failed (serial gone?)"
+    sleep 0.03
 }
 
 # Extract the text between the unique <tag>_BEGIN / <tag>_END output markers
@@ -210,6 +206,25 @@ wait_end_marker() {
     done
 }
 
+set_remote_echo() {
+    [ "$KEEP_ECHO" = 1 ] && return 0
+    local setting=$1 tag off command
+    tag=$(new_tag)
+    off=$(log_size)
+    if [ "$setting" = -echo ]; then
+        ECHO_OFF=1
+        command='Z1_TTY_STATE=$(stty -g) && stty -echo -iuclc -istrip -ixon -ixoff icrnl'
+    else
+        command='stty "$Z1_TTY_STATE"'
+    fi
+    # Android stty flushes queued input and can enable uppercase folding.
+    # Wait for the setting to take effect before sending case-sensitive data.
+    send_line "T=${tag}; ${command} && echo \${T}_END"
+    wait_end_marker "$tag" 6 "$off" || die "no confirmation for remote stty ${setting}"
+    [ "$setting" = echo ] && ECHO_OFF=0
+    return 0
+}
+
 prepare_device() {
     [ -n "$LOG" ] || die "Z1LOG is not set.
   Z1LOG must be the path of an append-only capture of the board console, e.g.
@@ -232,12 +247,13 @@ prepare_device() {
 #         echo ${T}_END
 # then waits for the end tag and prints the filtered output.
 send_marker_block() {
-    local tag=$1 body=$2 tmo=$3 label=${4:-command} off out
+    local tag=$1 body=$2 tmo=$3 label=${4:-command} off out line
     off=$(log_size)
     send_line "T=${tag}; echo \${T}_BEGIN"
     if [ -n "$body" ]; then
-        printf '%s' "${body//$'\n'/$'\r\n'}" >&3 2>/dev/null || die "write to ${DEV} failed"
-        printf '\r\n' >&3 2>/dev/null || die "write to ${DEV} failed"
+        while IFS= read -r line; do
+            send_line "$line"
+        done <<< "$body"
     fi
     send_line 'echo ${T}_END'
     if ! wait_end_marker "$tag" "$tmo" "$off"; then
@@ -260,10 +276,10 @@ capture_block() {
     return 0
 }
 
-send_lines_file() {  # paced CRLF upload of one line per row
+send_lines_file() {  # paced upload of one line per row
     local n=0 line
     while IFS= read -r line || [ -n "$line" ]; do
-        printf '%s\r\n' "$line" >&3 2>/dev/null || die "write to ${DEV} failed during upload"
+        printf '%s\n' "$line" >&3 2>/dev/null || die "write to ${DEV} failed during upload"
         n=$((n + 1))
         if [ $((n % CHUNK_LINES)) -eq 0 ]; then sleep "$CHUNK_SLEEP"; fi
     done < "$1"
@@ -271,21 +287,24 @@ send_lines_file() {  # paced CRLF upload of one line per row
 
 # upload_heredoc <remote-path> <lines-file> <terminator> <timeout_s> [label]
 upload_heredoc() {
-    local rpath=$1 lines=$2 term=$3 tmo=$4 label=${5:-upload} tag off
+    local rpath=$1 lines=$2 term=$3 tmo=$4 label=${5:-upload} tag off out
     tag=$(new_tag)
     off=$(log_size)
-    {
-        printf 'T=%s; echo ${T}_BEGIN\r\n' "$tag"
-        printf "cat > %s <<'%s'\r\n" "$rpath" "$term"
-    } >&3 2>/dev/null || die "write to ${DEV} failed"
+    # mksh needs a writable directory for its own heredoc temporary file.
+    send_line "export TMPDIR=${STAGE}; T=${tag}; echo \${T}_BEGIN"
+    send_line "cat > ${rpath} <<'${term}'"
     send_lines_file "$lines"
-    printf '%s\r\n' "$term" >&3 2>/dev/null || die "write to ${DEV} failed"
-    printf 'echo ${T}_END\r\n' >&3 2>/dev/null || die "write to ${DEV} failed"
+    send_line "$term"
+    send_line 'rc=$?'
+    send_line 'printf "\n%s_UPLOAD_RC=%s\n" "$T" "$rc"'
+    send_line 'echo ${T}_END'
     if ! wait_end_marker "$tag" "$tmo" "$off"; then
         die "heredoc upload did not finish within ${tmo}s (${label})
   Either the board console stalled or a base64 line was lost.
   Check the tail of ${LOG} for the prompt and for 'Invalid'. "
     fi
+    out=$(tail -c +$(( off + 1 )) "$LOG" 2>/dev/null | extract_stream "$tag" | filter_kernel)
+    [ "$(field_of "$out" "${tag}_UPLOAD_RC")" = 0 ] || die "device could not write ${rpath} (${label})"
 }
 
 # ping_device <timeout_s>
@@ -325,15 +344,15 @@ run_cmd() {
     fi
     prepare_device
     ping_device 6
-    remote_echo_off
+    set_remote_echo -echo
     send_marker_block "$(new_tag)" "$cmd" "$tmo" "cmd"
-    remote_echo_on
+    set_remote_echo echo
 }
 
 # ---------------------------------------------------------------------------
 # --rootcmd
 run_rootcmd() {
-    local body=$1 tmo=$2 tag plan script_tmp
+    local body=$1 tmo=$2 plan script_tmp script_sha
     plan="upload cmd.sh.tmp (heredoc), mv it to cmd.sh, wait for ###DONE, cat out.txt"
     if [ "$DRYRUN" = 1 ]; then
         printf 'Z1 --rootcmd plan (dry run, nothing is sent)\n'
@@ -351,10 +370,12 @@ run_rootcmd() {
     TMPD=${TMPD:-$(mktemp -d "${TMPDIR:-/tmp}/z1push.XXXXXX")}
     script_tmp=$TMPD/rootcmd.sh
     printf '%s\n' "$body" > "$script_tmp" || die "cannot write ${script_tmp}"
+    script_sha=$(sha256sum -- "$script_tmp") || die "cannot hash ${script_tmp}"
+    script_sha=${script_sha%% *}
 
     prepare_device
     ping_device 6
-    remote_echo_off
+    set_remote_echo -echo
 
     # make sure the stage directory exists before the heredoc
     send_marker_block "$(new_tag)" "mkdir -p ${STAGE} && echo MKDIR_OK" 15 "mkdir" >/dev/null
@@ -363,6 +384,8 @@ run_rootcmd() {
     while grep -F -x -q -- "$term" "$script_tmp"; do term="${term}X"; done
     local htimeout=$(( 20 + $(wc -c < "$script_tmp") / 8000 ))
     upload_heredoc "$STAGE/cmd.sh.tmp" "$script_tmp" "$term" "$htimeout" "root script"
+    capture_block "printf '\n'; sha256sum ${STAGE}/cmd.sh.tmp" 15 "verify root script"
+    [ "$(hash_of "$CAPTURED")" = "$script_sha" ] || die "root script checksum mismatch; command was not dispatched"
 
     # Install atomically, then wait on-device for the daemon to finish.
     local wait_loops=$(( tmo + 30 ))
@@ -383,7 +406,7 @@ EOF
     capture_block "$body2" $(( wait_loops + 30 )) "rootcmd"
     printf '%s\n' "$CAPTURED"
 
-    remote_echo_on
+    set_remote_echo echo
 
     case "$CAPTURED" in
         *'###DONE'*) return 0 ;;
@@ -458,7 +481,7 @@ run_push() {
 
     prepare_device
     ping_device 6
-    remote_echo_off
+    set_remote_echo -echo
     send_marker_block "$(new_tag)" "mkdir -p ${STAGE} && echo MKDIR_OK" 15 "mkdir" >/dev/null
 
     local tmo=${Z1PUSH_TIMEOUT:-$(( 20 + b64size / 8000 ))}
@@ -470,8 +493,9 @@ run_push() {
         upload_heredoc "$rb64" "$termfile" "$term" "$tmo" "payload ${name}"
 
         capture_block \
-            "base64 -d ${rb64} > ${rnew}; echo DEC_RC=\$?; sha256sum ${rnew} 2>/dev/null; wc -c < ${rnew} 2>/dev/null" \
-            60 "decode ${name}"
+            "f=${rbase}
+base64 -d \"\$f.b64\" > \"\$f.new\"
+printf '\nDEC_RC=%s\n' \"\$?\"; sha256sum \"\$f.new\"; wc -c < \"\$f.new\"" 60 "decode ${name}"
         out=$CAPTURED
         local dec_rc got_sha got_size
         dec_rc=$(field_of "$out" DEC_RC)
@@ -495,20 +519,21 @@ run_push() {
     done
 
     if [ "$ok" != 1 ]; then
-        remote_echo_on
+        set_remote_echo echo
         die "FAIL: could not transfer ${src} -> ${rbase} after ${max} attempt(s)"
     fi
 
     capture_block \
-        "chmod ${mode} ${rnew}; echo CHMOD_RC=\$?; mv -f ${rnew} ${rbase}; echo MV_RC=\$?; ls -l ${rbase} 2>/dev/null; sha256sum ${rbase} 2>/dev/null; rm -f ${rb64}; echo CLEAN_RC=\$?" \
-        30 "install ${name}"
+        "chmod ${mode} \"\$f.new\" && mv -f \"\$f.new\" \"\$f\"
+printf '\nMV_RC=%s\n' \"\$?\"; sha256sum \"\$f\"
+rm -f \"\$f.b64\"" 30 "install ${name}"
     out=$CAPTURED
 
     local mv_rc fin_sha
     mv_rc=$(field_of "$out" MV_RC)
     fin_sha=$(hash_of "$out")
 
-    remote_echo_on
+    set_remote_echo echo
 
     if [ "${mv_rc:-?}" != 0 ] || [ "$fin_sha" != "$sha" ]; then
         printf '%s\n' "$out" | sed 's/^/  /' >&2
