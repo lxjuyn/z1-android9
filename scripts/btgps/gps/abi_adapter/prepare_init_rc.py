@@ -2,12 +2,15 @@
 """Rewrite only the Z1 mnld service block in an offline init rc copy."""
 
 import argparse
+import re
 from pathlib import Path
 
 SERVICE_START = b"service z1_mnld /vendor/bin/mnld\n"
 SERVICE_ALREADY = b"service mnld /vendor/bin/mnld\n"
-EXPECTED_ON_PROPERTY = (
-    b"on property:sys.z1.radio.modules_ready=1\n"
+AUTO_PREP = re.compile(
+    rb"^(on property:sys\.z1\.radio\.modules_ready=1\n)"
+    rb"    exec_background (?:u:r:init:s0 root root )?-- /system/bin/sh /z1_gps_prep\.sh\n",
+    re.MULTILINE,
 )
 NEW_BLOCK = (
     b"service mnld /vendor/bin/mnld\n"
@@ -49,16 +52,18 @@ def transform(data):
     block = b"".join(lines[start:end])
     if b"/vendor/bin/mnld" not in block or b"socket mnld stream" not in block:
         raise ValueError("mnld service block lacks expected executable or socket")
-    if data.count(EXPECTED_ON_PROPERTY) != 1:
-        raise ValueError("expected one radio modules-ready action")
 
     output = b"".join(lines[:start]) + NEW_BLOCK + b"".join(lines[end:])
     if output.count(b"service mnld /vendor/bin/mnld\n") != 1:
         raise ValueError("output does not contain exactly one mnld service")
     if b"service z1_mnld " in output or b"start z1_mnld" in output:
         raise ValueError("output retains the legacy service name")
-    if EXPECTED_ON_PROPERTY not in output:
-        raise ValueError("output lost the radio modules-ready action")
+    output, removed = AUTO_PREP.subn(rb"\1", output)
+    if removed > 1 or any(
+        not line.lstrip().startswith(b"#") and b"/z1_gps_prep.sh" in line
+        for line in output.splitlines()
+    ):
+        raise ValueError("unexpected automatic GPS prep action")
     return output
 
 

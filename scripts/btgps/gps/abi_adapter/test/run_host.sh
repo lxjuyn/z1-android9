@@ -2,9 +2,8 @@
 set -eu
 
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-ROOT=$(CDPATH= cd -- "$HERE/../../../../../.." && pwd)
-HAL="$ROOT/z1a9_gpt/scripts/hal_stub"
-ANDROID_HAL="$ROOT/z1a9_gpt/scripts/r5g_audio/inc"
+HAL="$HERE/../../../../hal_stub"
+ANDROID_HAL="$HERE/../../../../r5g_audio/inc"
 CC=${CC:-arm-linux-gnueabihf-gcc}
 QEMU=${QEMU:-qemu-arm}
 

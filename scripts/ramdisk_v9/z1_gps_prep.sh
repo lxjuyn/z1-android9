@@ -44,14 +44,10 @@ if [ -e "$CFG" ]; then
     fi
 fi
 
-# Stock HAL polls init.svc.mnld.  Do not forge this property or silently use
-# z1_mnld: renaming the public init service is an external integration step.
+# A disabled Android init service may have no state property before its first
+# start. Request the real service after the transport is ready and verify it
+# below through init's state and the actual socket.
 state=$(getprop init.svc.mnld) || die "cannot read mnld service state"
-if [ -z "$state" ]; then
-    old_state=$(getprop init.svc.z1_mnld) || die "cannot read legacy service state"
-    [ -z "$old_state" ] || die "only z1_mnld exists; stock HAL requires init service mnld"
-    die "init service mnld is not defined"
-fi
 [ -x /vendor/bin/mnld ] || die "missing executable /vendor/bin/mnld"
 if [ -n "$chip" ]; then
     [ -x "/system/xbin/libmnlp_mt$chip" ] || die "configured chip has no matching executable helper"

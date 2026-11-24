@@ -2,11 +2,11 @@
 set -eu
 
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-ROOT=$(CDPATH= cd -- "$HERE/../../../../../.." && pwd)
+ROOT=${Z1_WORKSPACE:-$(CDPATH= cd -- "$HERE/../../../../../.." && pwd)}
 IMAGE=${1:-"$ROOT/out/z1_gps_offline_candidate_20261119/system.img"}
 NDK=${NDK:-"$ROOT/android-ndk-r26d"}
 CC="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi28-clang"
-SHIM="$ROOT/z1a9_gpt/scripts/hal_stub"
+SHIM="$HERE/../../../../hal_stub"
 QEMU=${QEMU:-qemu-arm-static}
 
 [ -f "$IMAGE" ] || {

@@ -25,7 +25,7 @@ OLD = (
 
 
 class PrepareInitRcTest(unittest.TestCase):
-    def test_rewrites_only_service_block(self):
+    def test_rewrites_service_and_disables_automatic_prep(self):
         output = prepare_init_rc.transform(OLD)
         self.assertIn(b"before\n", output)
         self.assertIn(b"after\n", output)
@@ -33,6 +33,7 @@ class PrepareInitRcTest(unittest.TestCase):
         self.assertIn(b"group 1000 1050 1021 3003 9997 1001\n", output)
         self.assertIn(b"socket mnld stream 0660 gps system\n", output)
         self.assertNotIn(b"service z1_mnld ", output)
+        self.assertNotIn(b"exec_background -- /system/bin/sh /z1_gps_prep.sh", output)
         self.assertEqual(
             output.count(b"on property:sys.z1.radio.modules_ready=1\n"), 1
         )
@@ -43,6 +44,13 @@ class PrepareInitRcTest(unittest.TestCase):
         )
         self.assertEqual(output, prepare_init_rc.transform(OLD))
 
+    def test_accepts_r7_without_automatic_prep(self):
+        guarded = OLD.replace(
+            b"on property:sys.z1.radio.modules_ready=1\n"
+            b"    exec_background -- /system/bin/sh /z1_gps_prep.sh\n", b""
+        )
+        self.assertIn(b"service mnld /vendor/bin/mnld", prepare_init_rc.transform(guarded))
+
     def test_rejects_missing_duplicate_and_unsafe_service_blocks(self):
         for data in (
             b"",
@@ -51,8 +59,7 @@ class PrepareInitRcTest(unittest.TestCase):
             OLD.replace(b"socket mnld stream", b"socket other stream"),
             OLD.replace(
                 b"on property:sys.z1.radio.modules_ready=1\n",
-                b"on property:sys.z1.radio.modules_ready=1\n"
-                b"on property:sys.z1.radio.modules_ready=1\n",
+                b"on property:another.trigger=1\n",
             ),
             OLD + b"\0",
         ):

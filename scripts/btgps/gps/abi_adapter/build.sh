@@ -2,11 +2,11 @@
 set -eu
 
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-ROOT=$(CDPATH= cd -- "$HERE/../../../../.." && pwd)
+ROOT=${Z1_WORKSPACE:-$(CDPATH= cd -- "$HERE/../../../../.." && pwd)}
 NDK=${NDK:-"$ROOT/android-ndk-r26d"}
 CC=${CC:-"$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi28-clang"}
 OUT=${1:?usage: build.sh <outdir>}
-SHIM="$ROOT/z1a9_gpt/scripts/hal_stub"
+SHIM="$HERE/../../../hal_stub"
 
 [ -x "$CC" ] || {
     echo "ERROR: Android ARM compiler not found: $CC" >&2

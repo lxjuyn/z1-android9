@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
 """Build the host-verified Z1 offline GPS candidate pair.
 
-The candidate preserves the R5 kernel and system baseline, replaces the GNSS
+The candidate preserves the selected boot/system baseline, replaces the GNSS
 placeholder with the ABI adapter, and installs the untouched factory HAL under
 a distinct SONAME. It also rewrites the boot ramdisk mnld service so the
 factory HAL's init.svc.mnld contract and socket DAC permissions are satisfied.
+The defaults select R5; later rounds can select a pinned newer pair explicitly.
 No device access or flashing is performed.
 """
 
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import shutil
@@ -19,8 +21,9 @@ import sys
 import tempfile
 
 HERE = Path(__file__).resolve().parent
-WORKSPACE = HERE.parents[4]
-SCRIPTS = WORKSPACE / "z1a9_gpt" / "scripts"
+SCRIPTS = HERE.parents[2]
+WORKSPACE = next((path for path in SCRIPTS.parents if (path / "CLAUDE.md").is_file()),
+                 SCRIPTS.parent.parent)
 sys.path.insert(0, str(SCRIPTS))
 sys.path.insert(0, str(HERE))
 
@@ -41,14 +44,22 @@ STOCK_HAL = (
 )
 STOCK_HAL_SHA = "515f239b2dab4344ce0d1ca9a5af02582b66e9f8b0088477ffb21e3f4937808a"
 GPSDRV = (
-    WORKSPACE
-    / "z1a9_gpt/scripts/btgps/gps/z1_gpsdrv/z1_gpsdrv.ko"
+    HERE.parent / "z1_gpsdrv/z1_gpsdrv.ko"
 )
 GPSDRV_SHA = "5cab8a98e9bad3fc7cfa369af2b850dc9c271cd81678150b77279d22667de717"
 PREP = HERE.parent / "z1_gps_prep.sh.patched"
-PREP_SHA = "2b71808f78b54eef7a930c92e33b1a2a3262bb66178587e6ffc1302fc4971571"
+PREP_SHA = "bb06dc708ee73ff906dbc3fbd643d38d7b18fef6c0ac0904d29235837590ff34"
 ORIGINAL_PREP_SHA = "4042b0557905bca6b98fcc4f45f236e97aa8c6090034917aa42aed97a4d782cd"
 ORIGINAL_RC_SHA = "3d032bec6427b90459af8d1134632cb81eafc795ff33300a0d95d3ea76bd9854"
+KNOWN_RC_INPUT_SHAS = {
+    ORIGINAL_RC_SHA,
+    "4fb1059bf212a4846d1da0009348c7925f527320bb3ce07cd029a96285ba2aa6",
+    "91d3ff884469c41a82c70d2e5c04d4cc8f46c78c6c6b30802ab460eaed1a2d16",
+}
+KNOWN_PREP_INPUT_SHAS = {
+    ORIGINAL_PREP_SHA,
+    "2b71808f78b54eef7a930c92e33b1a2a3262bb66178587e6ffc1302fc4971571",
+}
 DEFAULT_OUTPUT = WORKSPACE / "out/z1_gps_offline_candidate_20261119"
 
 
@@ -71,6 +82,7 @@ def run(command, *, cwd=None, stdout=True):
         [str(item) for item in command],
         cwd=cwd,
         check=False,
+        env={**os.environ, "Z1_WORKSPACE": str(WORKSPACE)},
         capture_output=not stdout,
         text=True,
     )
@@ -116,7 +128,7 @@ Status: `HOST_VERIFIED_NOT_DEVICE_TESTED`
 | `artifacts/gps.default.so` | {adapter['bytes']:,} | `{adapter['sha256']}` |
 | `artifacts/gps.z1stock.so` | {stock['bytes']:,} | `{stock['installed_sha256']}` |
 
-This pair keeps the R5 kernel, DTB, system baseline, and HSQ control bootargs.
+This pair keeps the selected input kernel, DTB, system baseline, and bootargs.
 It replaces the no-fix GNSS placeholder with an Android 9 ABI adapter around
 the factory MTK HAL. The factory HAL remains the real data path through
 `mnld -> libmnlp_mt6572 -> /dev/stpgps -> WMT GPS`; the adapter only fixes the
@@ -152,30 +164,34 @@ e2fsck -fn
 
 ## Board gates
 
-Flash boot and system as a pair. After boot, require all of these before
-calling offline GPS working:
+This package is an offline artifact only. It leaves the input system's GNSS
+service, feature declarations, VINTF and passthrough policy in place, and
+removes automatic GPS prep from the ramdisk. On R7 stability systems the
+framework remains gated. A live GNSS input can call the stock HAL at startup
+and is unsuitable for a board run until the setCallback watchdog is understood.
 
-```sh
-getprop init.svc.mnld
-ls -l /dev/socket/mnld /dev/stpgps
-ls /sys/class/gpsdrv/gps
-dmesg | grep -E '\\[z1gps\\]|mt3326|GPS'
-```
+The qemu checks validate callback ordering with a mock and factory HAL
+dependency loading without calling its real init. A later isolated test must
+measure the real registration call independently of system_server before a
+framework run. Require a real standalone fix, satellite status and NMEA, and
+valid location callbacks with Wi-Fi off and no RIL or CCCI.
 
-Then enable location with Wi-Fi off. Confirm `ro.radio.noril=yes`, no running
-RIL process, and no `/dev/ccci*` node. Wait outdoors for a cold standalone fix,
-and verify the framework receives satellite status, NMEA data, and a nonzero
-location callback. A running service, loaded module, or discovered satellite
-is not by itself a completed location fix.
-
-Rollback pair: R5 control boot
-`{report['base_boot']['sha256']}` and R5 system
-`{report['base_system']['sha256']}`.
+Rollback pair: selected control boot `{report['base_boot']['sha256']}`
+and matching system `{report['base_system']['sha256']}`.
 """
 
 
-def build(output):
+def build(
+    output,
+    *,
+    base_boot=BASE_BOOT,
+    base_boot_sha=BASE_BOOT_SHA,
+    base_system=BASE_SYSTEM,
+    base_system_sha=BASE_SYSTEM_SHA,
+):
     output = output.absolute()
+    base_boot = Path(base_boot).absolute()
+    base_system = Path(base_system).absolute()
     require(not output.exists(), f"output already exists: {output}")
     require(output.parent.is_dir(), "output parent does not exist")
     print(f"[gps] building adapter in {output}")
@@ -186,8 +202,8 @@ def build(output):
     sources.mkdir()
 
     for path, expected in (
-        (BASE_BOOT, BASE_BOOT_SHA),
-        (BASE_SYSTEM, BASE_SYSTEM_SHA),
+        (base_boot, base_boot_sha),
+        (base_system, base_system_sha),
         (STOCK_HAL, STOCK_HAL_SHA),
         (GPSDRV, GPSDRV_SHA),
         (PREP, PREP_SHA),
@@ -215,22 +231,23 @@ def build(output):
     adapter_symbols = run(["readelf", "-Ws", adapter], stdout=False)
     require(" GLOBAL " in adapter_symbols and " HMI\n" in adapter_symbols,
             "adapter does not export HMI")
-    run([HERE / "test/run_arm_qemu.sh", BASE_SYSTEM], stdout=False)
+    run([HERE / "test/run_arm_qemu.sh", base_system], stdout=False)
 
     print("[gps] rebuilding boot ramdisk")
     boot_pkg = output / "boot_pkg"
     boot_manifest = output / "boot_inputs.json"
-    base_boot = BASE_BOOT.read_bytes()
-    _, _, zimage, dtb, rootfs = boot_format.split_boot(base_boot)
-    require(sha_bytes(base_boot) == BASE_BOOT_SHA, "boot changed while reading")
+    base_boot_bytes = base_boot.read_bytes()
+    _, _, zimage, dtb, rootfs = boot_format.split_boot(base_boot_bytes)
+    require(sha_bytes(base_boot_bytes) == base_boot_sha,
+            "boot changed while reading")
     body, records = boot_format.cpio(rootfs)
     contents = boot_format.contents(body, records)
-    for name, expected in (
-        ("init.z1.network.rc", ORIGINAL_RC_SHA),
-        ("z1_gps_prep.sh", ORIGINAL_PREP_SHA),
+    for name, known in (
+        ("init.z1.network.rc", KNOWN_RC_INPUT_SHAS),
+        ("z1_gps_prep.sh", KNOWN_PREP_INPUT_SHAS),
     ):
         require(name in contents, f"boot ramdisk lacks {name}")
-        require(sha_bytes(contents[name]) == expected,
+        require(sha_bytes(contents[name]) in known,
                 f"unexpected base ramdisk identity: {name}")
 
     old_rc = sources / "init.z1.network.rc.original"
@@ -243,12 +260,14 @@ def build(output):
     new_prep.write_bytes(PREP.read_bytes())
     zimage_path.write_bytes(zimage)
     dtb_path.write_bytes(dtb)
+    old_rc_sha = sha_bytes(contents["init.z1.network.rc"])
+    old_prep_sha = sha_bytes(contents["z1_gps_prep.sh"])
 
     boot_manifest.write_text(
         json.dumps(
             {
                 "version": 1,
-                "base": {"path": str(BASE_BOOT), "sha256": BASE_BOOT_SHA},
+                "base": {"path": str(base_boot), "sha256": base_boot_sha},
                 "zimage": {"path": str(zimage_path), "sha256": sha_file(zimage_path)},
                 "dtb": {"path": str(dtb_path), "sha256": sha_file(dtb_path)},
                 "replacements": [
@@ -258,7 +277,7 @@ def build(output):
                             "path": str(new_rc),
                             "sha256": sha_file(new_rc),
                         },
-                        "original_sha256": ORIGINAL_RC_SHA,
+                        "original_sha256": old_rc_sha,
                     },
                     {
                         "name": "z1_gps_prep.sh",
@@ -266,7 +285,7 @@ def build(output):
                             "path": str(new_prep),
                             "sha256": sha_file(new_prep),
                         },
-                        "original_sha256": ORIGINAL_PREP_SHA,
+                        "original_sha256": old_prep_sha,
                     },
                 ],
             },
@@ -290,7 +309,7 @@ def build(output):
     run(
         [
             SCRIPTS / "z1_make_system_image.sh",
-            BASE_SYSTEM,
+            base_system,
             system,
             *system_specs,
         ]
@@ -328,8 +347,8 @@ def build(output):
 
     report = {
         "status": "HOST_VERIFIED_NOT_DEVICE_TESTED",
-        "base_boot": {"path": str(BASE_BOOT), "sha256": BASE_BOOT_SHA},
-        "base_system": {"path": str(BASE_SYSTEM), "sha256": BASE_SYSTEM_SHA},
+        "base_boot": {"path": str(base_boot), "sha256": base_boot_sha},
+        "base_system": {"path": str(base_system), "sha256": base_system_sha},
         "boot": {
             "path": str(boot),
             "bytes": boot.stat().st_size,
@@ -379,6 +398,7 @@ def build(output):
         },
         "remaining_device_gates": [
             "factory HAL dlopen succeeds in the vendor namespace",
+            "real HAL initialization and IGnss setCallback return during an isolated test",
             "mnld remains running beyond the 8s stabilization window",
             "/dev/stpgps carries real STP traffic",
             "framework receives satellite status and NMEA",
@@ -406,8 +426,35 @@ def build(output):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
+    parser.add_argument("--base-boot", type=Path, default=BASE_BOOT)
+    parser.add_argument("--base-boot-sha256")
+    parser.add_argument("--base-system", type=Path, default=BASE_SYSTEM)
+    parser.add_argument("--base-system-sha256")
     args = parser.parse_args()
-    print(json.dumps(build(args.output), indent=2))
+    base_boot = args.base_boot.resolve()
+    base_system = args.base_system.resolve()
+    base_boot_sha = args.base_boot_sha256
+    base_system_sha = args.base_system_sha256
+    if base_boot_sha is None and base_boot == BASE_BOOT.resolve():
+        base_boot_sha = BASE_BOOT_SHA
+    if base_system_sha is None and base_system == BASE_SYSTEM.resolve():
+        base_system_sha = BASE_SYSTEM_SHA
+    if base_boot_sha is None:
+        parser.error("--base-boot-sha256 is required for a custom boot image")
+    if base_system_sha is None:
+        parser.error("--base-system-sha256 is required for a custom system image")
+    print(
+        json.dumps(
+            build(
+                args.output,
+                base_boot=base_boot,
+                base_boot_sha=base_boot_sha,
+                base_system=base_system,
+                base_system_sha=base_system_sha,
+            ),
+            indent=2,
+        )
+    )
 
 
 if __name__ == "__main__":

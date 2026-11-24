@@ -88,6 +88,8 @@ def mock(command, args):
         print(state.get('props', {}).get(args[0], ''))
     elif command == 'start':
         assert args == ['mnld']
+        if state.get('missing_mnld_service'):
+            return int(state.get('ctl_start_rejected', False))
         if not state.get('never_running'):
             state['props']['init.svc.mnld'] = 'running'
             state['service_started'] = True
@@ -276,6 +278,27 @@ class GPSRegression(unittest.TestCase):
         self.each([(repr(p), case(p)) for p in
                    (None, b'', b'0x6572', b'0x6572\x00', b'0x6572\x00XYZ')])
 
+    def test_first_start_without_init_state_property(self):
+        def check(f):
+            f.patch_state(props={})
+            self.success(f)
+            self.assertEqual(f.calls('start'), [['mnld']])
+        self.each([('disabled service before first start', check)])
+
+    def test_missing_service_never_becomes_ready(self):
+        def check(rejected):
+            def scenario(f):
+                f.patch_state(props={'init.svc.z1_mnld': 'running'},
+                              missing_mnld_service=True, ctl_start_rejected=rejected)
+                self.failure(f)
+                self.assertEqual(f.calls('start'), [['mnld']])
+                self.assertFalse((f.root / 'dev/socket/mnld').exists())
+                self.assertEqual(len(f.calls('sleep')), 0 if rejected else 5)
+                self.assertFalse(f.calls('setprop'))
+            return scenario
+        self.each([('init rejects ctl.start', check(True)),
+                   ('request accepted, service absent', check(False))])
+
     def test_known_bad_seed_archived_once(self):
         def check(f):
             p = f.root / 'data/misc/GPS_CHIP.cfg'
@@ -324,8 +347,6 @@ class GPSRegression(unittest.TestCase):
                 self.assertFalse(f.calls('insmod'))
             return check
         self.each([
-            ('missing service', case(lambda f: f.patch_state(props={}))),
-            ('only z1_mnld', case(lambda f: f.patch_state(props={'init.svc.z1_mnld': 'running'}))),
             ('getprop fails', case(lambda f: f.patch_state(fail=['getprop']))),
             ('missing mnld', case(lambda f: (f.root / 'vendor/bin/mnld').unlink())),
             ('helper mismatch', case(lambda f: (f.root / 'data/misc/GPS_CHIP.cfg').write_bytes(b'0x6620'))),
