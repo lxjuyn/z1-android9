@@ -1,0 +1,240 @@
+--- a/frameworks/opt/net/wifi/libwifi_hal/Android.mk
++++ b/frameworks/opt/net/wifi/libwifi_hal/Android.mk
+@@ -58,6 +58,10 @@
+ endif
+ ifdef WIFI_DRIVER_STATE_OFF
+ wifi_hal_cflags += -DWIFI_DRIVER_STATE_OFF=\"$(WIFI_DRIVER_STATE_OFF)\"
++endif
++
++ifeq ($(Z1_WMT_WIFI),true)
++wifi_hal_cflags += -DZ1_WMT_WIFI
+ endif
+ 
+ # Common code shared between the HALs.
+--- a/frameworks/opt/net/wifi/libwifi_hal/wifi_hal_common.cpp
++++ b/frameworks/opt/net/wifi/libwifi_hal/wifi_hal_common.cpp
+@@ -17,6 +17,12 @@
+ #include "hardware_legacy/wifi.h"
+ 
+ #include <fcntl.h>
++#ifdef Z1_WMT_WIFI
++#include <mutex>
++#include <net/if.h>
++#include <sys/stat.h>
++#include <sys/sysmacros.h>
++#endif
+ #include <stdlib.h>
+ #include <unistd.h>
+ 
+@@ -110,7 +116,75 @@
+ }
+ #endif
+ 
++#ifdef Z1_WMT_WIFI
++namespace {
++constexpr char kWmtWifi[] = "/dev/wmtWifi";
++constexpr char kInterface[] = "wlan0";
++std::mutex wmt_lock;
++bool wmt_powered = false;
++
++bool wmt_set_power(char state) {
++  int fd = TEMP_FAILURE_RETRY(open(kWmtWifi, O_WRONLY | O_CLOEXEC | O_NOFOLLOW));
++  if (fd < 0) {
++    PLOG(ERROR) << "Failed to open WMT Wi-Fi control";
++    return false;
++  }
++  struct stat st;
++  bool success = false;
++  if (fstat(fd, &st) != 0 || !S_ISCHR(st.st_mode) ||
++      major(st.st_rdev) != 155 || minor(st.st_rdev) != 0) {
++    LOG(ERROR) << "Unexpected WMT Wi-Fi control node";
++  } else if (TEMP_FAILURE_RETRY(write(fd, &state, 1)) == 1) {
++    success = true;
++  } else {
++    PLOG(ERROR) << "Failed to switch WMT Wi-Fi power to " << state;
++  }
++  close(fd);
++  return success;
++}
++
++bool wmt_is_ready() {
++  char value[PROPERTY_VALUE_MAX];
++  return property_get("sys.z1.radio.wifi_modules_ready", value, "") &&
++         strcmp(value, "1") == 0 &&
++         property_get("init.svc.z1_6620", value, "") && strcmp(value, "running") == 0;
++}
++
++bool wmt_wait_until(bool (*ready)()) {
++  for (int retry = 0; retry < 50; ++retry) {
++    if (ready()) {
++      return true;
++    }
++    usleep(100000);
++  }
++  return ready();
++}
++
++bool wmt_has_interface() {
++  return if_nametoindex(kInterface) != 0;
++}
++bool wmt_interface_removed() {
++  return !wmt_has_interface();
++}
++
++bool wmt_power_off() {
++  if (wmt_powered || wmt_has_interface()) {
++    if (!wmt_set_power('0') || !wmt_wait_until(wmt_interface_removed)) {
++      LOG(ERROR) << "Wi-Fi did not reach powered-off state";
++      return false;
++    }
++  }
++  wmt_powered = false;
++  return property_set(DRIVER_PROP_NAME, "unloaded") == 0;
++}
++}  // namespace
++#endif
++
+ int is_wifi_driver_loaded() {
++#ifdef Z1_WMT_WIFI
++  std::lock_guard<std::mutex> lock(wmt_lock);
++  return wmt_has_interface();
++#else
+   char driver_status[PROPERTY_VALUE_MAX];
+ #ifdef WIFI_DRIVER_MODULE_PATH
+   FILE *proc;
+@@ -145,9 +219,28 @@
+ #else
+   return 1;
+ #endif
++#endif  // Z1_WMT_WIFI
+ }
+ 
+ int wifi_load_driver() {
++#ifdef Z1_WMT_WIFI
++  std::lock_guard<std::mutex> lock(wmt_lock);
++  if (!wmt_wait_until(wmt_is_ready)) {
++    LOG(ERROR) << "Wi-Fi radio modules or launcher unavailable";
++    return -1;
++  }
++  if (!wmt_set_power('1')) {
++    if (wmt_has_interface()) wmt_power_off();
++    return -1;
++  }
++  wmt_powered = true;
++  if (!wmt_wait_until(wmt_has_interface) || property_set(DRIVER_PROP_NAME, "ok") != 0) {
++    LOG(ERROR) << "Wi-Fi activation did not reach driver readiness";
++    wmt_power_off();
++    return -1;
++  }
++  return 0;
++#else
+ #ifdef WIFI_DRIVER_MODULE_PATH
+   if (is_wifi_driver_loaded()) {
+     return 0;
+@@ -165,9 +258,14 @@
+ #endif
+   property_set(DRIVER_PROP_NAME, "ok");
+   return 0;
++#endif  // Z1_WMT_WIFI
+ }
+ 
+ int wifi_unload_driver() {
++#ifdef Z1_WMT_WIFI
++  std::lock_guard<std::mutex> lock(wmt_lock);
++  return wmt_power_off() ? 0 : -1;
++#else
+   if (!is_wifi_driver_loaded()) {
+     return 0;
+   }
+@@ -195,6 +293,7 @@
+   property_set(DRIVER_PROP_NAME, "unloaded");
+   return 0;
+ #endif
++#endif  // Z1_WMT_WIFI
+ }
+ 
+ const char *wifi_get_fw_path(int fw_type) {
+--- a/frameworks/opt/net/wifi/libwifi_hal/driver_tool.cpp
++++ b/frameworks/opt/net/wifi/libwifi_hal/driver_tool.cpp
+@@ -53,7 +53,7 @@
+ }
+ 
+ bool DriverTool::IsDriverLoaded() {
+-  return ::wifi_unload_driver() != 0;
++  return ::is_wifi_driver_loaded() != 0;
+ }
+ 
+ bool DriverTool::IsFirmwareModeChangeNeeded(int mode) {
+--- a/frameworks/opt/net/wifi/service/java/com/android/server/wifi/WifiNative.java
++++ b/frameworks/opt/net/wifi/service/java/com/android/server/wifi/WifiNative.java
+@@ -855,11 +855,15 @@
+             if (!startSupplicant()) {
+                 Log.e(TAG, "Failed to start supplicant");
+                 mWifiMetrics.incrementNumSetupClientInterfaceFailureDueToSupplicant();
++                stopSupplicantIfNecessary();
++                stopHalAndWificondIfNecessary();
+                 return null;
+             }
+             Iface iface = mIfaceMgr.allocateIface(Iface.IFACE_TYPE_STA);
+             if (iface == null) {
+                 Log.e(TAG, "Failed to allocate new STA iface");
++                stopSupplicantIfNecessary();
++                stopHalAndWificondIfNecessary();
+                 return null;
+             }
+             iface.externalListener = interfaceCallback;
+@@ -868,6 +872,8 @@
+                 Log.e(TAG, "Failed to create STA iface in vendor HAL");
+                 mIfaceMgr.removeIface(iface.id);
+                 mWifiMetrics.incrementNumSetupClientInterfaceFailureDueToHal();
++                stopSupplicantIfNecessary();
++                stopHalAndWificondIfNecessary();
+                 return null;
+             }
+             if (mWificondControl.setupInterfaceForClientMode(iface.name) == null) {
+@@ -917,6 +923,7 @@
+             Iface iface = mIfaceMgr.allocateIface(Iface.IFACE_TYPE_AP);
+             if (iface == null) {
+                 Log.e(TAG, "Failed to allocate new AP iface");
++                stopHalAndWificondIfNecessary();
+                 return null;
+             }
+             iface.externalListener = interfaceCallback;
+@@ -925,6 +932,7 @@
+                 Log.e(TAG, "Failed to create AP iface in vendor HAL");
+                 mIfaceMgr.removeIface(iface.id);
+                 mWifiMetrics.incrementNumSetupSoftApInterfaceFailureDueToHal();
++                stopHalAndWificondIfNecessary();
+                 return null;
+             }
+             if (mWificondControl.setupInterfaceForSoftApMode(iface.name) == null) {
+--- a/hardware/interfaces/wifi/1.2/default/wifi.cpp
++++ b/hardware/interfaces/wifi/1.2/default/wifi.cpp
+@@ -127,6 +127,9 @@
+ WifiStatus Wifi::stopInternal(
+     /* NONNULL */ std::unique_lock<std::recursive_mutex>* lock) {
+     if (run_state_ == RunState::STOPPED) {
++        if (!mode_controller_->deinitialize()) {
++            return createWifiStatus(WifiStatusCode::ERROR_UNKNOWN);
++        }
+         return createWifiStatus(WifiStatusCode::SUCCESS);
+     } else if (run_state_ == RunState::STOPPING) {
+         return createWifiStatus(WifiStatusCode::ERROR_NOT_AVAILABLE,
+@@ -184,6 +187,9 @@
+     if (legacy_status != legacy_hal::WIFI_SUCCESS) {
+         LOG(ERROR) << "Failed to initialize legacy HAL: "
+                    << legacyErrorToString(legacy_status);
++        if (!mode_controller_->deinitialize()) {
++            LOG(ERROR) << "Failed to release Wi-Fi power after HAL initialization error";
++        }
+         return createWifiStatusFromLegacyError(legacy_status);
+     }
+     return createWifiStatus(WifiStatusCode::SUCCESS);
+--- a/hardware/interfaces/wifi/1.2/default/android.hardware.wifi@1.0-service.rc
++++ b/hardware/interfaces/wifi/1.2/default/android.hardware.wifi@1.0-service.rc
+@@ -2,4 +2,4 @@
+     class hal
+     capabilities NET_ADMIN NET_RAW SYS_MODULE
+     user wifi
+-    group wifi gps
++    group wifi gps system
