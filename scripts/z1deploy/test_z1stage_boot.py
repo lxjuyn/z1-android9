@@ -36,7 +36,8 @@ if name=='mount':
         mode='rw' if args[1]=='remount,rw' else 'ro'
         p.write_text('\n'.join((f'/dev/system /system ext4 {mode} 0 0' if l.split()[1]=='/system' else l) for l in p.read_text().splitlines())+'\n')
     else:
-        with p.open('a') as f: f.write(f'{args[-2]} {args[-1]} ext4 rw 0 0\n')
+        opts=os.environ.get('DATA_MOUNT_OPTS','rw')
+        with p.open('a') as f: f.write(f'{args[-2]} {args[-1]} ext4 {opts} 0 0\n')
     sys.exit(0)
 if name=='cp':
     shutil.copyfile(args[0],args[1])
@@ -114,6 +115,18 @@ sb_state() { printf '%s\n' "$SB"; }
     def test_readonly_clean_mount_blocks(self):
         self.mounts.write_text('/dev/data /data ext4 ro 0 0\n');self.env['SB']='61267 1'
         rc,t=self.run_shell('prepare_fs /data /dev/data');self.assertNotEqual(rc,0);self.assertNotIn('mount -o ',t)
+    def test_emergency_readonly_cannot_satisfy_storage_gate(self):
+        self.mounts.write_text('/dev/data /data ext4 rw,noatime,emergency_ro 0 0\n')
+        self.env['SB']='61267 1'
+        rc,t=self.run_shell('prepare_fs /data /dev/data')
+        self.assertNotEqual(rc,0)
+        self.assertNotIn('verified RW mount',t)
+    def test_emergency_readonly_after_repair_blocks(self):
+        self.env['DATA_MOUNT_OPTS']='rw,noatime,emergency_ro'
+        rc,t=self.run_shell('prepare_fs /data /dev/data')
+        self.assertNotEqual(rc,0)
+        self.assertIn('e2fsck ',t)
+        self.assertNotIn('verified RW mount',t)
     def test_mount_failure_blocks(self):
         self.env['FAIL']='mount';rc,t=self.run_shell('prepare_fs /data /dev/data');self.assertNotEqual(rc,0)
     def install(self, same=False, extra=''):
@@ -168,12 +181,12 @@ sb_state() { printf '%s\n' "$SB"; }
                 '/system/vendor/lib/libaudio.primary.default.so'):
             self.assertIn('INSTALL z1_audio.primary.mt6572.so '+destination,t)
 
-    def full_storage_run(self, bad_cache=False, mode='--storage-only'):
+    def full_storage_run(self, bad_cache=False, mode='--storage-only', data_opts='rw'):
         data=self.p/'data-dev';cache=self.p/'cache-dev'
         for dev in (data,cache):
             body=bytearray(1084);struct.pack_into('<HH',body,1080,61267,1);dev.write_bytes(body)
         if bad_cache:cache.write_bytes(b'')
-        self.mounts.write_text(f'{data} /data ext4 rw 0 0\n{cache} /cache ext4 rw 0 0\n/dev/system /system ext4 ro 0 0\n')
+        self.mounts.write_text(f'{data} /data ext4 {data_opts} 0 0\n{cache} /cache ext4 rw 0 0\n/dev/system /system ext4 ro 0 0\n')
         script=SOURCE.replace('PROC_MOUNTS=/proc/mounts',f'PROC_MOUNTS={self.mounts}')
         script=script.replace('STAGE=/data/local/tmp/z1stage',f'STAGE={self.p}/stage')
         script=script.replace('/dev/block/mmcblk0p6',str(data)).replace('/dev/block/mmcblk0p5',str(cache))
@@ -194,6 +207,12 @@ sb_state() { printf '%s\n' "$SB"; }
     def test_skip_storage_requires_early_gate(self):
         rc,t=self.full_storage_run(mode='--skip-storage');self.assertNotEqual(rc,0)
         self.assertNotIn('mkdir ',t);self.assertNotIn('e2fsck ',t)
+    def test_skip_storage_rejects_new_emergency_readonly(self):
+        self.env['READY']='1'
+        rc,t=self.full_storage_run(mode='--skip-storage', data_opts='rw,emergency_ro')
+        self.assertNotEqual(rc,0)
+        self.assertIn('mount changed after early storage gate',t)
+        self.assertNotIn('mkdir ',t)
     def test_kill_switch_removes_only_override(self):
         stage=self.p/'stage';(stage/'active').mkdir(parents=True);(stage/'.disable_hwcomposer').touch()
         vendor=self.p/'vendor';vendor.mkdir();dst=vendor/'hwcomposer.z1.so';dst.write_bytes(b'old')

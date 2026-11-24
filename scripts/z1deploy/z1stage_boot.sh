@@ -172,6 +172,12 @@ device_unmounted() (   # <blockdev>; reject aliases mounted at any path
     exit 0
 )
 
+mount_is_writable() {
+    case ",$1," in *,ro,*|*,emergency_ro,*) return 1 ;; esac
+    case ",$1," in *,rw,*) return 0 ;; esac
+    return 1
+}
+
 fs_needs_repair() (   # 0=repair, 1=clean, 2=unknown/unreadable
     _fn_dev=$1
     _fn_name=${1##*/}
@@ -229,7 +235,10 @@ repair_fs() (   # <mountpoint> <blockdev> <mounted|absent>
     _rf_actual=$($READLINK -f "$1" 2>/dev/null) || exit 1
     _rf_expected=$($READLINK -f "$_rf_dev" 2>/dev/null) || exit 1
     [ "$_rf_actual" = "$_rf_expected" ] || exit 1
-    case ",$2," in *,rw,*) log "repair $_rf_point: verified RW mount"; exit 0 ;; esac
+    if mount_is_writable "$2"; then
+        log "repair $_rf_point: verified RW mount"
+        exit 0
+    fi
     log "repair $_rf_point: mount did not become RW -> BLOCKED"
     exit 1
 )
@@ -261,7 +270,7 @@ prepare_fs() (   # <mountpoint> <blockdev>
             if [ "$_pf_mounted" = absent ]; then
                 repair_fs "$_pf_point" "$_pf_dev" absent; exit $?
             fi
-            case ",$_pf_opts," in *,rw,*) exit 0 ;; esac
+            mount_is_writable "$_pf_opts" && exit 0
             log "$_pf_point: unexpectedly read-only -> BLOCKED"; exit 1 ;;
         *) log "$_pf_point: filesystem health unknown -> BLOCKED"; exit 1 ;;
     esac
@@ -303,8 +312,8 @@ case "${1:-}" in
             _fs_opts=${_fs_record#* }
             _fs_actual=$($READLINK -f "$_fs_source" 2>/dev/null)
             _fs_expected=$($READLINK -f "${_fs_pair#*:}" 2>/dev/null)
-            case ",$_fs_opts," in *,rw,*) _fs_rw=yes ;; *) _fs_rw=no ;; esac
-            if [ -z "$_fs_actual" ] || [ "$_fs_actual" != "$_fs_expected" ] || [ "$_fs_rw" != yes ]; then
+            if [ -z "$_fs_actual" ] || [ "$_fs_actual" != "$_fs_expected" ] ||
+                ! mount_is_writable "$_fs_opts"; then
                 set_prop z1stage.status blocked-filesystem
                 log "BLOCKED: mount changed after early storage gate ($_fs_pair)"
                 exit 1
