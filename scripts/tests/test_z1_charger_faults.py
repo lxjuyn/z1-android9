@@ -90,7 +90,7 @@ def main():
             "static int z1_charger_feed_wdt(",
             "static enum z1_temp_gate z1_charger_temp_check(",
             "static void z1_charger_apply(",
-            "static void z1_charger_update(",
+            "static bool z1_charger_update(",
             "static void z1_charger_stop(",
             "static void z1_charger_remove(",
             "static void z1_charger_shutdown(",
@@ -890,14 +890,14 @@ static void test_update_faults(void)
 	reset_charger(&chg);
 	chg.stopping = true;
 	chg.online = true;
-	z1_charger_update(&chg);
+	CHECK(!z1_charger_update(&chg));
 	CHECK(map.operation_count == 0);
 	CHECK(chg.online);
 
 	reset_charger(&chg);
 	chg.online = true;
 	map.fault_at = 0;
-	z1_charger_update(&chg);
+	CHECK(!z1_charger_update(&chg));
 	CHECK(chg.online);
 	CHECK(map.operation_count == 1);
 	CHECK(power_supply_changes == 0);
@@ -909,7 +909,7 @@ static void test_update_faults(void)
 	map.regs[MT6323_CHR_CON0] =
 		Z1_CHR_CON0_CHR_EN | Z1_CHR_CON0_CSDAC_EN;
 	map.fault_at = 0;
-	z1_charger_update(&chg);
+	CHECK(!z1_charger_update(&chg));
 	CHECK(!chg.charging);
 	CHECK(!chg.disable_pending);
 	CHECK(map.operation_count == 6);
@@ -918,7 +918,7 @@ static void test_update_faults(void)
 	reset_charger(&chg);
 	map.regs[MT6323_CHR_CON0] =
 		BIT(Z1_CHR_CON0_RGS_CHRDET_SHIFT);
-	z1_charger_update(&chg);
+	CHECK(!z1_charger_update(&chg));
 	CHECK(chg.online);
 	CHECK(power_supply_changes == 1);
 	CHECK(map.operation_count >= 1);
@@ -927,10 +927,48 @@ static void test_update_faults(void)
 	chg.online = true;
 	map.regs[MT6323_CHR_CON0] =
 		BIT(Z1_CHR_CON0_RGS_CHRDET_SHIFT);
-	z1_charger_update(&chg);
+	CHECK(!z1_charger_update(&chg));
 	CHECK(chg.online);
 	CHECK(power_supply_changes == 0);
 	puts("PASS detection-read-failure-and-cache-recovery");
+}
+
+static void test_unplug_edge(void)
+{
+	struct z1_charger chg;
+
+	reset_charger(&chg);
+	chg.online = true;
+	chg.charging = true;
+	map.regs[MT6323_CHR_CON0] =
+		Z1_CHR_CON0_CHR_EN | Z1_CHR_CON0_CSDAC_EN;
+	map.regs[MT6323_CHR_CON13] = Z1_CHR_CON13_CHRWDT_EN;
+	CHECK(z1_charger_update(&chg));
+	CHECK(!chg.online);
+	CHECK(!chg.charging);
+	CHECK(!chg.disable_pending);
+	CHECK(!map.regs[MT6323_CHR_CON0]);
+	CHECK(!(map.regs[MT6323_CHR_CON13] & Z1_CHR_CON13_CHRWDT_EN));
+	CHECK(power_supply_changes == 1);
+	CHECK(!z1_charger_update(&chg));
+	CHECK(power_supply_changes == 1);
+
+	reset_charger(&chg);
+	chg.online = true;
+	chg.charging = true;
+	map.regs[MT6323_CHR_CON0] =
+		Z1_CHR_CON0_CHR_EN | Z1_CHR_CON0_CSDAC_EN;
+	map.regs[MT6323_CHR_CON13] = Z1_CHR_CON13_CHRWDT_EN;
+	map.drop_master_updates = 1;
+	CHECK(z1_charger_update(&chg));
+	CHECK(!chg.online);
+	CHECK(chg.charging);
+	CHECK(chg.disable_pending);
+	CHECK(map.regs[MT6323_CHR_CON13] & Z1_CHR_CON13_CHRWDT_EN);
+	CHECK(power_supply_changes == 1);
+	CHECK(!z1_charger_update(&chg));
+	CHECK(power_supply_changes == 1);
+	puts("PASS unplug-edge-once-with-safe-disable-and-retry");
 }
 
 int main(void)
@@ -949,6 +987,7 @@ int main(void)
 	test_existing_charge_heartbeat_faults();
 	test_unreadable_temperature_stops_charge();
 	test_update_faults();
+	test_unplug_edge();
 	return 0;
 }
 '''
