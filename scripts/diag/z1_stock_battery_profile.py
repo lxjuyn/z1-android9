@@ -87,6 +87,40 @@ def verify_soc_path(data):
         0xC036D988: 0xE2844E32,  # 25–50 °C branch base is 800 mAh.
         # This getter reads the n-percent checkpoint used by UI tracking.
         0xC036FB90: 0xE5930200,
+        # Boot reads RTC FG, considers a delta of at most 39 and checks low SOC.
+        0xC036E6B0: 0xEB00AF86,
+        0xC036E6C4: 0x0A000018,
+        0xC036E6D8: 0xE3510027,
+        0xC036E6E0: 0xE3530005,
+        0xC036E6F0: 0xEB00104C,
+        # BATSNS uses five samples. Charger presence subtracts 200 mV from ADC8.
+        0xC036E980: 0xE3A05005,
+        0xC036E9C0: 0xEB000F98,
+        0xC036E9CC: 0x024000C8,
+        0xC036EB94: 0xE352001E,
+        # RTC getter/setter share "FG". The setter rejects values above 100.
+        0xC039A4F0: 0xE30B0E2C,
+        0xC039A4F4: 0xE34C008C,
+        0xC039A520: 0xE3500064,
+        0xC039A564: 0xC08CBE2C,
+        0xC08CBE2C: 0x00004746,
+        # RTC_AL_HOU 0x801c carries the FG value in bits 15:8.
+        0xC052D054: 0xE308001C,
+        0xC052D05C: 0xE7EF0450,
+        0xC052D124: 0xE308001C,
+        0xC052D130: 0xE200301F,
+        0xC052D138: 0xE1835405,
+        0xC052D144: 0xEBFFFF88,
+        0xC052CF78: 0xE308003C,  # Commit through WRTGR 0x803c.
+        # Store UI_SOC, with a minimum stored value of 1.
+        0xC0373094: 0xE3510001,
+        0xC03730A0: 0xEB009D1B,
+        0xC0373348: 0xE3A00001,
+        0xC037334C: 0xEB009C70,
+        # Live BATSNS ADC0 and latched PCHR wake-up ADC8.
+        0xC04D6F1C: 0xE3000714,
+        0xC04D735C: 0xE3000724,
+        0xC04D9958: 0xEBFFF674,
     })
 
 
@@ -94,6 +128,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("kernel", type=Path, help="Decompressed Z1 stock ARM kernel")
     parser.add_argument("--resistance", action="store_true", help="Print the validated resistance curve")
+    parser.add_argument("--anchors-only", action="store_true", help="Verify stock gauge instruction anchors without printing tables")
     args = parser.parse_args()
     data = args.kernel.read_bytes()
     if hashlib.sha256(data).hexdigest() != STOCK_SHA256:
@@ -101,6 +136,9 @@ def main():
 
     try:
         verify_soc_path(data)
+        if args.anchors_only:
+            print("stock gauge anchors verified")
+            return
         profiles = [
             read_profile(data, vma, PROFILE_SHA256) for _, vma in PROFILE_TABLES
         ]
