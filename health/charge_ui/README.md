@@ -1,4 +1,4 @@
-# Z1 off-mode charging percentage preview
+# Z1 off-mode charger and percentage preview
 
 The ARM executable reads `/sys/class/power_supply/battery/capacity`
 with the same parser as the Android Z1 Health HAL. It draws the reported
@@ -16,14 +16,24 @@ owns it. The process polls every two seconds and redraws when the value
 changes. Stop it with Ctrl-C. It does not change brightness, blanking,
 input handling, boot mode or charger state.
 
-The exact R7 boot `09b2c74d…` includes the stock Pie `on charger`
-class trigger and a `/charger -> /sbin/charger` symlink, but no
-`/sbin/charger` or service definition. System `10decdbb…` includes
-the Z1 Health HAL and omits the Pie charger program and resources.
-The legacy Android 4.4 recovery assets and healthd have a separate
-startup contract. The preview is standalone and is not registered
-with init. Automatic off-mode display needs a board-verified LK mode
-handoff and charger lifecycle.
+For boot integration, store the static executable as `/sbin/z1_charge_ui`
+in the boot ramdisk and select it with `rdinit=/sbin/z1_charge_ui` in
+the appended DT bootargs. Keep the Android init ELF at `/init`. The
+standalone build produces only the executable. Automatic startup needs
+an image with that ramdisk entry, bootarg and LK boot-mode handoff.
+As PID 1, the executable reads the live
+`/chosen/mediatek,boot-mode` device-tree property through sysfs.
+Only the exact big-endian u32 value 8 selects the off-mode charger.
+For other, missing or malformed values it executes Android `/init`.
+
+The charging path uses procfs, sysfs and devtmpfs from the kernel.
+It starts the display when the framebuffer node appears and monitors
+`/sys/class/power_supply/usb/online` once per second. An observed
+attachment followed by three consecutive valid offline samples
+requests kernel power-off. An unreadable or invalid sample breaks
+the offline sequence. Physical shutdown requires the built-in
+MT6323 power-off handler. Charger mode leaves the Android partitions
+unmounted and does not implement a power-key transition to Android.
 
 Build and run the host and ARM QEMU fixtures with Android NDK r26d.
 
@@ -31,8 +41,9 @@ Build and run the host and ARM QEMU fixtures with Android NDK r26d.
 z1a9_gpt/health/charge_ui/build.sh /path/to/new-output-directory
 ```
 
-Tests cover absent and malformed capacity, legitimate 0%, 100%, and
-a padded framebuffer with a nonzero viewport offset. Live board
-validation still needs to confirm that fbdev drawing appears on the
-panel and that the observed percentage agrees with the kernel and
-Android Health HAL.
+Tests cover unavailable capacity, 0%, 100%, a padded framebuffer with
+a nonzero viewport offset, exact and malformed boot mode properties,
+and transient and stable USB removal. Live board validation needs to
+confirm LK mode handoff, unaffected normal boot, visible fbdev drawing,
+agreement with kernel and Android Health HAL percentage, and physical
+shutdown when the cable is removed.

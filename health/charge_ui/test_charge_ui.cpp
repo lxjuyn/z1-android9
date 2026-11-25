@@ -31,6 +31,50 @@ int main(int argc, char** argv) {
     assert(close(fd) == 0 && unlink(argv[1]) == 0);
     assert(read_capacity(argv[1]) == kUnknown);
 
+    const unsigned char kpoc[] = {0, 0, 0, 8, 0};
+    const unsigned char normal[] = {0, 0, 0, 0};
+    const unsigned char reversed[] = {8, 0, 0, 0};
+    const unsigned char lpoc[] = {0, 0, 0, 9};
+    assert(!read_kpoc_mode(argv[1]));
+    fd = open(argv[1], O_CREAT | O_EXCL | O_RDWR, 0600);
+    assert(fd >= 0);
+    const auto check_mode = [&](const unsigned char* property, size_t size, bool charger) {
+        assert(ftruncate(fd, 0) == 0);
+        assert(pwrite(fd, property, size, 0) == static_cast<ssize_t>(size));
+        assert(read_kpoc_mode(argv[1]) == charger);
+    };
+    check_mode(kpoc, 4, true);
+    check_mode(kpoc, 5, false);
+    check_mode(kpoc, 3, false);
+    check_mode(kpoc, 0, false);
+    check_mode(normal, sizeof(normal), false);
+    check_mode(reversed, sizeof(reversed), false);
+    check_mode(lpoc, sizeof(lpoc), false);
+    const auto check_usb = [&](const char* sample, int expected) {
+        const size_t length = std::strlen(sample);
+        assert(ftruncate(fd, 0) == 0);
+        assert(pwrite(fd, sample, length, 0) == static_cast<ssize_t>(length));
+        assert(read_usb_online(argv[1]) == expected);
+    };
+    check_usb("1\n", 1);
+    check_usb("0\n", 0);
+    check_usb("2\n", kUnknown);
+    check_usb("+0\n", kUnknown);
+    check_usb("0", kUnknown);
+    check_usb("", kUnknown);
+    assert(close(fd) == 0 && unlink(argv[1]) == 0);
+    assert(read_usb_online(argv[1]) == kUnknown);
+
+    UsbRemoval removal;
+    for (int sample : {0, 0, 0, 1, 0, 0, kUnknown, 0, 0, 1, 0, 0})
+        assert(!removal.update(sample));
+    assert(removal.update(0));
+    assert(!removal.update(0));
+    assert(!removal.update(1));
+    assert(!removal.update(0));
+    assert(!removal.update(0));
+    assert(removal.update(0));
+
     fb_var_screeninfo view{};
     view.xres = 240;
     view.yres = 320;
@@ -75,5 +119,5 @@ int main(int argc, char** argv) {
     info.line_length = 0;
     assert(!valid_framebuffer(view, info));
 
-    std::puts("charge capacity, unavailable vs. valid zero, and framebuffer bounds passed");
+    std::puts("charge capacity, framebuffer bounds, LK boot mode and USB removal passed");
 }
