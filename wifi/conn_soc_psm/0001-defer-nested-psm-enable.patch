@@ -1,0 +1,123 @@
+--- a/conn_soc/core/include/wmt_core.h
++++ b/conn_soc/core/include/wmt_core.h
+@@ -253,7 +253,7 @@
+ 	WMT_CO_CLOCK_MAX
+ } WMT_CO_CLOCK, *P_WMT_CO_CLOCK;
+ 
+-typedef INT32(*SW_INIT) (P_WMT_HIF_CONF pWmtHifConf);
++typedef INT32(*SW_INIT) (P_WMT_HIF_CONF pWmtHifConf, bool defer_psm);
+ typedef INT32(*SW_DEINIT) (P_WMT_HIF_CONF pWmtHifConf);
+ typedef INT32(*IC_PIN_CTRL) (WMT_IC_PIN_ID id, WMT_IC_PIN_STATE state, UINT32 flag);
+ typedef INT32(*IC_VER_CHECK) (VOID);
+--- a/conn_soc/core/wmt_core.c
++++ b/conn_soc/core/wmt_core.c
+@@ -133,7 +133,7 @@
+ static INT32 opfunc_ant_ram_stat_get(P_WMT_OP pWmtOp);
+ #endif
+ static VOID wmt_core_dump_func_state(PINT8 pSource);
+-static INT32 wmt_core_stp_init(VOID);
++static INT32 wmt_core_stp_init(bool defer_psm);
+ static INT32 wmt_core_stp_deinit(VOID);
+ static INT32 wmt_core_hw_check(VOID);
+ 
+@@ -639,7 +639,7 @@
+ 	return (i == count) ? 0 : -1;
+ }
+ 
+-static INT32 wmt_core_stp_init(VOID)
++static INT32 wmt_core_stp_init(bool defer_psm)
+ {
+ 	INT32 iRet = -1;
+ 	unsigned long ctrlPa1;
+@@ -702,7 +702,7 @@
+ 	}
+ 	osal_assert(NULL != pctx->p_ic_ops->sw_init);
+ 	if (NULL != pctx->p_ic_ops->sw_init) {
+-		iRet = (*(pctx->p_ic_ops->sw_init)) (&pctx->wmtHifConf);
++		iRet = (*(pctx->p_ic_ops->sw_init)) (&pctx->wmtHifConf, defer_psm);
+ 	} else {
+ 		WMT_ERR_FUNC("gMtkWmtCtx.p_ic_ops->sw_init is NULL\n");
+ 		return -5;
+@@ -885,7 +885,7 @@
+ 
+ }
+ 
+-static INT32 opfunc_pwr_on(P_WMT_OP pWmtOp)
++static INT32 wmt_core_pwr_on(P_WMT_OP pWmtOp, bool defer_psm)
+ {
+ 
+ 	INT32 iRet;
+@@ -919,7 +919,7 @@
+ 	gMtkWmtCtx.eDrvStatus[WMTDRV_TYPE_WMT] = DRV_STS_POWER_ON;
+ 
+ 	/* init stp */
+-	iRet = wmt_core_stp_init();
++	iRet = wmt_core_stp_init(defer_psm);
+ 	if (iRet) {
+ 		WMT_ERR_FUNC("WMT-CORE: wmt_core_stp_init fail (%d)\n", iRet);
+ 		osal_assert(0);
+@@ -948,6 +948,11 @@
+ 	 */
+ 	return iRet;
+ 
++}
++
++static INT32 opfunc_pwr_on(P_WMT_OP pWmtOp)
++{
++	return wmt_core_pwr_on(pWmtOp, false);
+ }
+ 
+ static INT32 opfunc_pwr_off(P_WMT_OP pWmtOp)
+@@ -1025,7 +1030,8 @@
+ 	mtk_wcn_set_connsys_power_off_flag(MTK_WCN_BOOL_TRUE);
+ 	/* check if chip power on is needed */
+ 	if (DRV_STS_FUNC_ON != gMtkWmtCtx.eDrvStatus[WMTDRV_TYPE_WMT]) {
+-		iRet = opfunc_pwr_on(pWmtOp);
++		/* The function-control caller resumes PSM after the reply. */
++		iRet = wmt_core_pwr_on(pWmtOp, true);
+ 
+ 		if (iRet) {
+ 			WMT_ERR_FUNC("func(%d) pwr_on fail(%d)\n", drvType, iRet);
+@@ -1848,7 +1854,7 @@
+ {
+ 	INT32 iRet = 0;
+ 
+-	iRet = wmt_core_stp_init();
++	iRet = wmt_core_stp_init(false);
+ 	if (!iRet)
+ 		gMtkWmtCtx.eDrvStatus[WMTDRV_TYPE_WMT] = DRV_STS_FUNC_ON;
+ 	return iRet;
+--- a/conn_soc/core/wmt_ic_soc.c
++++ b/conn_soc/core/wmt_ic_soc.c
+@@ -916,7 +916,7 @@
+ ********************************************************************************
+ */
+ 
+-static INT32 mtk_wcn_soc_sw_init(P_WMT_HIF_CONF pWmtHifConf);
++static INT32 mtk_wcn_soc_sw_init(P_WMT_HIF_CONF pWmtHifConf, bool defer_psm);
+ 
+ static INT32 mtk_wcn_soc_sw_deinit(P_WMT_HIF_CONF pWmtHifConf);
+ 
+@@ -977,7 +977,7 @@
+ ********************************************************************************
+ */
+ 
+-static INT32 mtk_wcn_soc_sw_init(P_WMT_HIF_CONF pWmtHifConf)
++static INT32 mtk_wcn_soc_sw_init(P_WMT_HIF_CONF pWmtHifConf, bool defer_psm)
+ {
+ 	INT32 iRet = -1;
+ 	unsigned long ctrlPa1;
+@@ -1359,10 +1359,10 @@
+ #if CFG_WMT_PS_SUPPORT
+ 	osal_assert(NULL != gp_soc_info);
+ 	if (NULL != gp_soc_info) {
+-		if (MTK_WCN_BOOL_FALSE != gp_soc_info->bPsmSupport)
++		if (MTK_WCN_BOOL_FALSE == gp_soc_info->bPsmSupport)
++			wmt_lib_ps_disable();
++		else if (!defer_psm)
+ 			wmt_lib_ps_enable();
+-		else
+-			wmt_lib_ps_disable();
+ 	}
+ #endif
+ 
