@@ -181,5 +181,40 @@ int main(int argc, char** argv) {
     info.line_length = 0;
     assert(!valid_framebuffer(view, info));
 
+    view.xoffset = view.yoffset = 0;
+    view.xres_virtual = view.xres + 2;
+    view.yres_virtual = view.yres * 2;
+    info.line_length = 512;
+    info.smem_len = view.yres_virtual * info.line_length;
+    info.ypanstep = 1;
+    assert(double_buffered(view, info));
+    view.yoffset = 1;
+    assert(!double_buffered(view, info));
+    view.yoffset = 0;
+    info.ypanstep = 3;
+    assert(!double_buffered(view, info));
+    info.ypanstep = 1;
+    --info.smem_len;
+    assert(!double_buffered(view, info));
+    ++info.smem_len;
+
+    fb_fix_screeninfo stage_info = info;
+    const unsigned width_bytes = view.xres * 2;
+    stage_info.line_length = width_bytes;
+    std::vector<uint8_t> staging(view.yres * width_bytes, 0);
+    const Surface staged{staging.data(), view, stage_info};
+    std::vector<uint8_t> scanout(info.smem_len, 0x55);
+    staged.draw(50, 4);
+    copy_frame(scanout.data(), view.yres, staged, view, info);
+    for (unsigned row = 0; row < view.yres; ++row) {
+        const auto front = scanout.data() + row * info.line_length;
+        const auto back = front + view.yres * info.line_length;
+        assert(std::memcmp(back, staging.data() + row * width_bytes, width_bytes) == 0);
+        for (unsigned byte = width_bytes; byte < info.line_length; ++byte)
+            assert(back[byte] == 0x55);
+        for (unsigned byte = 0; byte < info.line_length; ++byte)
+            assert(front[byte] == 0x55);
+    }
+
     std::puts("charge screen, LK boot modes, USB removal and power-key policy passed");
 }

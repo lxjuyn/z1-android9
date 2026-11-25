@@ -87,13 +87,15 @@ int64_t monotonic_ms() {
     return static_cast<int64_t>(ts.tv_sec) * 1000 + ts.tv_nsec / 1000000;
 }
 
-void set_screen_blank(bool blank) {
+bool set_screen_blank(bool blank) {
     const int fd = open(kPwmBlank, O_WRONLY | O_CLOEXEC);
     if (fd < 0)
-        return;
-    if (write(fd, blank ? "1\n" : "0\n", 2) != 2)
+        return false;
+    const bool changed = write(fd, blank ? "1\n" : "0\n", 2) == 2;
+    if (!changed)
         std::perror("[z1-charge] set PWM blank");
     close(fd);
+    return changed;
 }
 
 void load_backlight() {
@@ -228,6 +230,26 @@ bool valid_framebuffer(const fb_var_screeninfo& view, const fb_fix_screeninfo& i
            row <= info.line_length && bottom <= info.smem_len / info.line_length;
 }
 
+bool double_buffered(const fb_var_screeninfo& view, const fb_fix_screeninfo& info) {
+    if (!info.ypanstep || view.yres % info.ypanstep ||
+        (view.yoffset != 0 && view.yoffset != view.yres))
+        return false;
+
+    fb_var_screeninfo second = view;
+    second.yoffset = view.yres;
+    return valid_framebuffer(second, info);
+}
+
+void copy_frame(uint8_t* pixels, unsigned yoffset, const Surface& source,
+                const fb_var_screeninfo& view, const fb_fix_screeninfo& info) {
+    const size_t row_bytes = static_cast<size_t>(view.xres) * (view.bits_per_pixel / 8);
+    const size_t left = static_cast<size_t>(view.xoffset) * (view.bits_per_pixel / 8);
+    for (unsigned row = 0; row < view.yres; ++row) {
+        const size_t position = static_cast<size_t>(row + yoffset) * info.line_length + left;
+        std::memcpy(pixels + position, source.pixels + row * row_bytes, row_bytes);
+    }
+}
+
 int open_framebuffer() {
     const int fd = open(kFramebuffer, O_RDWR | O_CLOEXEC);
     return fd >= 0 ? fd : open(kFallbackFramebuffer, O_RDWR | O_CLOEXEC);
@@ -255,9 +277,44 @@ int run_display(bool charger = false) {
         return 1;
     }
 
+    fb_var_screeninfo staging_view = view;
+    staging_view.xoffset = staging_view.yoffset = 0;
+    fb_fix_screeninfo staging_info = info;
+    staging_info.line_length = view.xres * (view.bits_per_pixel / 8);
+    const size_t frame_bytes = static_cast<size_t>(staging_info.line_length) * view.yres;
+    void* backing = mmap(nullptr, frame_bytes, PROT_READ | PROT_WRITE,
+                         MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (backing == MAP_FAILED) {
+        std::perror("allocate framebuffer staging");
+        munmap(address, info.smem_len);
+        close(fd);
+        return 1;
+    }
+
     std::signal(SIGINT, stop);
     std::signal(SIGTERM, stop);
-    const Surface surface{static_cast<uint8_t*>(address), view, info};
+    auto* scanout = static_cast<uint8_t*>(address);
+    const Surface frame_surface{static_cast<uint8_t*>(backing), staging_view, staging_info};
+    const unsigned starting_yoffset = view.yoffset;
+    bool pan = charger && double_buffered(view, info);
+    std::fprintf(stderr, "[z1-charge] framebuffer %.16s %ux%u/%u stride=%u presentation=%s\n",
+                 info.id, view.xres, view.yres, view.yres_virtual, info.line_length,
+                 pan ? "two-pages" : "single-copy");
+    const auto present = [&] {
+        if (pan) {
+            fb_var_screeninfo next = view;
+            next.yoffset = view.yoffset ? 0 : view.yres;
+            next.activate = FB_ACTIVATE_VBL;
+            copy_frame(scanout, next.yoffset, frame_surface, view, info);
+            if (ioctl(fd, FBIOPAN_DISPLAY, &next) == 0) {
+                view.yoffset = next.yoffset;
+                return;
+            }
+            std::perror("[z1-charge] pan display, falling back to a single copy");
+            pan = false;
+        }
+        copy_frame(scanout, view.yoffset, frame_surface, view, info);
+    };
     int previous = kUnknown - 1;
     int capacity = kUnknown;
     unsigned sample = 0;
@@ -274,8 +331,10 @@ int run_display(bool charger = false) {
         }
         if (charger && now >= blank_at) {
             if (blank_at) {
-                set_screen_blank(true);
-                surface.clear();
+                if (!set_screen_blank(true)) {
+                    frame_surface.clear();
+                    present();
+                }
                 blank_at = 0;
             }
             usleep(kFrameUs);
@@ -284,7 +343,8 @@ int run_display(bool charger = false) {
         if (sample == 0)
             capacity = read_capacity();
         if (capacity != previous || (capacity >= 0 && capacity <= 90)) {
-            surface.draw(capacity, frame);
+            frame_surface.draw(capacity, frame);
+            present();
             previous = capacity;
         }
         if (reveal)
@@ -293,6 +353,12 @@ int run_display(bool charger = false) {
         sample = (sample + 1) % kAnimationFrames;
         usleep(kFrameUs);
     }
+    if (view.yoffset != starting_yoffset) {
+        view.yoffset = starting_yoffset;
+        view.activate = FB_ACTIVATE_NOW;
+        ioctl(fd, FBIOPAN_DISPLAY, &view);
+    }
+    munmap(backing, frame_bytes);
     munmap(address, info.smem_len);
     close(fd);
     return 0;
