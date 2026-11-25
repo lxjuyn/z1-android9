@@ -11,13 +11,16 @@ from z1_prepare_recovery_boot import (
 )
 
 BASE_SHA = '09b2c74d7c0de0c944ba32f041a5fd92a054df3df4debe40ae8434cfe38030d4'
+CHARGER_BASE_SHA = '9321434e21e29c1b5c0dbbca503ccdbb55ee5d8b28ed7131d8b0c5330c967c4f'
+CHARGER_HWC_BASE_SHA = 'e4f017cdfae3367471f2e628cb436b251b98c9415a68b900bfa201a872f5d536'
 SYSTEM_SHA = '10decdbb68998ff6abf333a9df42d7339d5a6f219d9959ffee28011f53f320d0'
 RC = 'init.z1.rc'
 PROBE = b'    exec_background u:r:init:s0 root root -- /system/bin/sh /z1_wifi_probe.sh\n'
 
 
 def build(base):
-    require(sha(base) == BASE_SHA, 'expected the installed core-wake boot')
+    require(sha(base) in (BASE_SHA, CHARGER_BASE_SHA, CHARGER_HWC_BASE_SHA),
+            'expected a pinned R7 core-wake or charger boot')
     header, kernel_header, kernel, original_dtb, rootfs = split_boot(base)
     entries = contents(*cpio(rootfs))
     require(entries[RC].count(PROBE) == 1 and 'z1_wifi_probe.sh' in entries,
