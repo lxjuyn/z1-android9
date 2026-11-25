@@ -87,7 +87,6 @@ static const uint32_t z1_input_rates[] = { 8000, 16000, 32000, 48000 };
 
 struct z1_stream_out {
     struct audio_stream_out stream;
-    struct z1_audio_device *adev;
     int16_t *scaled;
     size_t scaled_bytes;
     struct mixer *gain_mixer;
@@ -126,7 +125,6 @@ struct z1_audio_device {
     pthread_mutex_t        lock;
     int                    in_call;
     bool                   mic_mute;
-    bool                   speaker_high;
 };
 
 /* ---- ABI 断言: A9 (SDK28) 布局, 本轮用 arm-linux-gnueabihf-gcc 探针实算
@@ -295,11 +293,11 @@ static const char *parameter(const char *kv, const char *key)
     return NULL;
 }
 
-static void refresh_speaker_mode(struct z1_audio_device *dev)
+static bool speaker_high_enabled(void)
 {
     char value[92] = {0}; /* Bionic PROP_VALUE_MAX */
     __system_property_get("persist.sys.z1.spk_high", value);
-    __atomic_store_n(&dev->speaker_high, !strcmp(value, "1"), __ATOMIC_RELAXED);
+    return !strcmp(value, "1");
 }
 
 static int out_set_parameters(struct audio_stream *s, const char *kv)
@@ -313,8 +311,6 @@ static int out_set_parameters(struct audio_stream *s, const char *kv)
         int rc = out_set_device(s, device);
         if (rc) return rc;
     }
-    if (parameter(kv, "z1_speaker_high_volume"))
-        refresh_speaker_mode(((struct z1_stream_out *)s)->adev);
     return 0;
 }
 
@@ -375,8 +371,9 @@ static ssize_t out_write(struct audio_stream_out *stream, const void *buffer, si
     pthread_mutex_lock(&o->lock);
     rc = pcm_ensure_open(o);
     if (!rc) rc = select_output_gain(o, o->device);
-    if (rc == 0 && out_get_device(&stream->common) == AUDIO_DEVICE_OUT_SPEAKER &&
-        !__atomic_load_n(&o->adev->speaker_high, __ATOMIC_RELAXED)) {
+    /* The persisted mode also applies when Android omits the vendor callback. */
+    if (rc == 0 && o->device == AUDIO_DEVICE_OUT_SPEAKER &&
+        !speaker_high_enabled()) {
         if (bytes % sizeof(int16_t))
             rc = -EINVAL;
         else if (bytes > o->scaled_bytes) {
@@ -683,11 +680,7 @@ static int adev_get_mic_mute(const struct audio_hw_device *dev, bool *s)
 }
 
 static int adev_set_parameters(struct audio_hw_device *dev, const char *kv)
-{
-    if (parameter(kv, "z1_speaker_high_volume"))
-        refresh_speaker_mode((struct z1_audio_device *)dev);
-    return 0;
-}
+{ (void)dev; (void)kv; return 0; }
 static char *adev_get_parameters(const struct audio_hw_device *dev, const char *keys)
 { (void)dev; (void)keys; return strdup(""); }
 
@@ -719,8 +712,6 @@ static int adev_open_output_stream(struct audio_hw_device *dev,
     o->channels = (popcount_mask(config->channel_mask) == 1) ? 1 : Z1_DEFAULT_CHANNELS;
     o->frame_bytes = o->channels * sizeof(int16_t);
     o->device   = devices;
-    o->adev = (struct z1_audio_device *)dev;
-    refresh_speaker_mode(o->adev);
     config->format       = AUDIO_FORMAT_PCM_16_BIT;
     config->sample_rate  = o->rate;
     config->channel_mask = (o->channels == 1) ? AUDIO_CHANNEL_OUT_MONO : AUDIO_CHANNEL_OUT_STEREO;

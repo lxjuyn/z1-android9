@@ -285,6 +285,14 @@ static void volume_case(struct audio_hw_device *dev, struct audio_stream_out *ou
     out->write(out, original, sizeof(original));
     CHECK(!memcmp(last_data, original, sizeof(original)), "hot full-scale speaker");
     mode_property = "0";
+    out->write(out, original, sizeof(original));
+    CHECK(!memcmp(last_data, half, sizeof(half)),
+          "active speaker follows persisted normal mode without a HAL callback");
+    mode_property = "1";
+    out->write(out, original, sizeof(original));
+    CHECK(!memcmp(last_data, original, sizeof(original)),
+          "active speaker follows persisted high mode without a HAL callback");
+    mode_property = "0";
     out->common.set_parameters(&out->common, "z1_speaker_high_volume=0;routing=8");
     out->write(out, original, sizeof(original));
     CHECK(playback_gain.value == 54321 && speaker_gain.value == 0, "restore previous gain on headphones");
