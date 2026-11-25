@@ -83,6 +83,9 @@ int main(int argc, char** argv) {
     view.xoffset = 1;
     view.yoffset = 1;
     view.bits_per_pixel = 16;
+    view.red = {11, 5, 0};
+    view.green = {5, 6, 0};
+    view.blue = {0, 5, 0};
 
     fb_fix_screeninfo info{};
     info.type = FB_TYPE_PACKED_PIXELS;
@@ -96,12 +99,32 @@ int main(int argc, char** argv) {
     surface.draw(kUnknown);
     const auto unavailable = buffer;
     surface.draw(0);
-    assert(buffer != unavailable);
+    const auto low = buffer;
+    surface.draw(0, 4);
+    assert(low != unavailable && low != buffer);
+    surface.draw(50);
+    const auto half = buffer;
+    surface.draw(50, 4);
+    assert(half != low && half != buffer);
+    surface.draw(91);
+    const auto high = buffer;
+    surface.draw(91, 4);
+    assert(buffer == high);
     surface.draw(100);
     assert(buffer != unavailable);
+    const auto full = buffer;
+    surface.draw(100, 4);
+    assert(buffer == full);
+    const auto pixel_at = [&](unsigned x, unsigned y) {
+        uint16_t color;
+        const auto offset = (y + view.yoffset) * info.line_length + (x + view.xoffset) * 2;
+        std::memcpy(&color, buffer.data() + offset, sizeof(color));
+        return color;
+    };
+    assert(pixel_at(120, 130) == 0x1af3);
     surface.draw(kUnknown);
     assert(buffer == unavailable);
-    const auto y = (view.yres - kGlyphHeight) / 2 + 3 * kGlyphSize;
+    const auto y = 53 + 3 * kGlyphSize;
     const auto x = (view.xres - (3 * kGlyphWidth + 2 * kSpacing)) / 2;
     const auto glyph = (y + view.yoffset) * info.line_length + (x + view.xoffset) * 2;
     assert(buffer[glyph] == 0xff && buffer[glyph + 1] == 0xff);
@@ -110,10 +133,15 @@ int main(int argc, char** argv) {
         for (unsigned byte = 0; byte < info.line_length; ++byte) {
             const bool visible = row >= view.yoffset && row < view.yoffset + view.yres &&
                                  byte >= 2 && byte < 2 * (view.xres + view.xoffset);
-            const auto pixel = buffer[row * info.line_length + byte];
-            assert(visible ? (pixel == 0 || pixel == 0xff) : pixel == 0x55);
+            if (!visible)
+                assert(buffer[row * info.line_length + byte] == 0x55);
         }
     }
+    surface.clear();
+    assert(pixel_at(120, 130) == 0 && pixel_at(x, y) == 0);
+    view.blue.offset = 11;
+    assert(!valid_framebuffer(view, info));
+    view.blue.offset = 0;
     info.smem_len = 100;
     assert(!valid_framebuffer(view, info));
     info.line_length = 0;

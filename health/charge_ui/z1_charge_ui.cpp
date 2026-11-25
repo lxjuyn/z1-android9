@@ -43,11 +43,12 @@ constexpr Glyph kGlyphs[] = {
     {'%', {25, 25, 2, 4, 8, 19, 19}},
 };
 
-constexpr unsigned kGlyphSize = 5;
+constexpr unsigned kGlyphSize = 3;
 constexpr unsigned kGlyphWidth = 5 * kGlyphSize;
-constexpr unsigned kGlyphHeight = 7 * kGlyphSize;
 constexpr unsigned kSpacing = kGlyphSize;
-constexpr unsigned kMaxTextWidth = 4 * kGlyphWidth + 3 * kSpacing;
+constexpr unsigned kArtWidth = 240;
+constexpr unsigned kArtHeight = 320;
+constexpr unsigned kAnimationFrames = 10;
 
 void format_capacity(int capacity, char (&label)[5]) {
     if (capacity < 0 || capacity > 100)
@@ -70,23 +71,77 @@ struct Surface {
     const fb_var_screeninfo& view;
     const fb_fix_screeninfo& info;
 
-    void rectangle(unsigned x, unsigned y, unsigned width, unsigned height, bool lit) const {
+    uint32_t color(uint32_t rgb) const {
+        const auto channel = [](uint32_t value, const fb_bitfield& field) {
+            return (value >> (8 - field.length)) << field.offset;
+        };
+        const uint32_t opacity = view.transp.length ?
+                ((1U << view.transp.length) - 1) << view.transp.offset : 0;
+        return opacity | channel(rgb >> 16, view.red) |
+               channel((rgb >> 8) & 0xff, view.green) | channel(rgb & 0xff, view.blue);
+    }
+
+    void rectangle(unsigned x, unsigned y, unsigned width, unsigned height, uint32_t rgb) const {
+        const unsigned left = uint64_t{x} * view.xres / kArtWidth;
+        const unsigned right = uint64_t{x + width} * view.xres / kArtWidth;
+        const unsigned top = uint64_t{y} * view.yres / kArtHeight;
+        const unsigned bottom = uint64_t{y + height} * view.yres / kArtHeight;
         const unsigned bytes = view.bits_per_pixel / 8;
-        const uint8_t value = lit ? 0xff : 0;
-        for (unsigned row = y; row < y + height; ++row) {
+        const uint32_t pixel = color(rgb);
+        for (unsigned row = top; row < bottom; ++row) {
             const auto offset = static_cast<size_t>(row + view.yoffset) * info.line_length +
-                                static_cast<size_t>(x + view.xoffset) * bytes;
-            std::memset(pixels + offset, value, width * bytes);
+                                static_cast<size_t>(left + view.xoffset) * bytes;
+            auto* destination = pixels + offset;
+            if (pixel == 0) {
+                std::memset(destination, 0, (right - left) * bytes);
+                continue;
+            }
+            for (unsigned column = left; column < right; ++column) {
+                std::memcpy(destination, &pixel, bytes);
+                destination += bytes;
+            }
         }
     }
 
-    void draw(int capacity) const {
+    void clear() const {
+        rectangle(0, 0, kArtWidth, kArtHeight, 0);
+    }
+
+    void draw(int capacity, unsigned frame = 0) const {
+        clear();
+        // Upright battery and centered percentage in the stock panel layout.
+        rectangle(105, 106, 30, 8, 0x747c89);
+        rectangle(106, 106, 12, 5, 0xbcc3cb);
+        rectangle(81, 114, 78, 150, 0x9ba5b2);
+        rectangle(76, 120, 88, 138, 0x59616c);
+        rectangle(81, 122, 78, 134, 0x151a22);
+        rectangle(85, 122, 5, 134, 0x303844);
+        rectangle(154, 122, 5, 134, 0x252c36);
+        rectangle(82, 258, 76, 5, 0x656d7a);
+        rectangle(88, 268, 64, 3, 0x171d24);
+
+        constexpr unsigned fillBottom = 255;
+        constexpr unsigned fillHeight = 132;
+        if (capacity >= 0) {
+            const bool low = capacity < 10;
+            const unsigned phase = frame % kAnimationFrames;
+            const unsigned pulse = phase < 5 ? phase : kAnimationFrames - 1 - phase;
+            const unsigned base = fillHeight * static_cast<unsigned>(capacity) / 100;
+            const unsigned level = low ? 4 + pulse * 2 : base;
+            const uint32_t fill = low ? 0xa31822 : 0x185c99;
+            const uint32_t shine = low ? 0xf27278 : 0x5fb7ec;
+            const unsigned top = fillBottom - level;
+            rectangle(86, top, 68, level, fill);
+            rectangle(89, top, 5, level, shine);
+            if (capacity <= 90)
+                rectangle(86, top - 1 - pulse, 68, 1 + pulse, shine);
+        }
+
         char label[5];
         format_capacity(capacity, label);
         const unsigned width = std::strlen(label) * (kGlyphWidth + kSpacing) - kSpacing;
-        unsigned x = (view.xres - width) / 2;
-        const unsigned y = (view.yres - kGlyphHeight) / 2;
-        rectangle(0, 0, view.xres, view.yres, false);
+        unsigned x = (kArtWidth - width) / 2;
+        constexpr unsigned y = 53;
         for (const char* character = label; *character; ++character) {
             for (const Glyph& glyph : kGlyphs) {
                 if (glyph.character != *character) continue;
@@ -94,7 +149,7 @@ struct Surface {
                     for (unsigned column = 0; column < 5; ++column) {
                         if (glyph.rows[row] & (1 << (4 - column))) {
                             rectangle(x + column * kGlyphSize, y + row * kGlyphSize,
-                                      kGlyphSize, kGlyphSize, true);
+                                      kGlyphSize, kGlyphSize, 0xffffff);
                         }
                     }
                 }
@@ -110,8 +165,20 @@ bool valid_framebuffer(const fb_var_screeninfo& view, const fb_fix_screeninfo& i
         (info.visual != FB_VISUAL_TRUECOLOR && info.visual != FB_VISUAL_DIRECTCOLOR) ||
         (view.bits_per_pixel != 16 && view.bits_per_pixel != 24 && view.bits_per_pixel != 32) ||
         view.nonstd != 0 || view.grayscale != 0 ||
-        view.xres < kMaxTextWidth || view.yres < kGlyphHeight) {
+        view.xres < kArtWidth / kGlyphSize || view.yres < kArtHeight / kGlyphSize) {
         return false;
+    }
+    uint32_t used_bits = 0;
+    for (const fb_bitfield* field : {&view.red, &view.green, &view.blue, &view.transp}) {
+        if (field->length == 0 && field == &view.transp)
+            continue;
+        if (field->length < 1 || field->length > 8 || field->msb_right ||
+            field->offset > view.bits_per_pixel - field->length)
+            return false;
+        const uint32_t bits = ((1U << field->length) - 1) << field->offset;
+        if (used_bits & bits)
+            return false;
+        used_bits |= bits;
     }
     const uint64_t right = uint64_t{view.xoffset} + view.xres;
     const uint64_t bottom = uint64_t{view.yoffset} + view.yres;
@@ -151,13 +218,19 @@ int run_display() {
     std::signal(SIGTERM, stop);
     const Surface surface{static_cast<uint8_t*>(address), view, info};
     int previous = kUnknown - 1;
+    int capacity = kUnknown;
+    unsigned sample = 0;
+    unsigned frame = 0;
     while (!stopping) {
-        const int capacity = read_capacity();
-        if (capacity != previous) {
-            surface.draw(capacity);
+        if (sample == 0)
+            capacity = read_capacity();
+        if (capacity != previous || (capacity >= 0 && capacity <= 90)) {
+            surface.draw(capacity, frame);
             previous = capacity;
         }
-        sleep(2);
+        frame = (frame + 1) % kAnimationFrames;
+        sample = (sample + 1) % kAnimationFrames;
+        usleep(200000);
     }
     munmap(address, info.smem_len);
     close(fd);
