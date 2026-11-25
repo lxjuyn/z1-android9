@@ -292,6 +292,14 @@ static void volume_case(struct audio_hw_device *dev, struct audio_stream_out *ou
     out->common.set_parameters(&out->common, "routing=2");
     out->write(out, original, sizeof(original));
     CHECK(!memcmp(last_data, half, sizeof(half)), "route switch restores cap");
+    CHECK(out->common.standby(&out->common) == 0, "active speaker enters standby");
+    CHECK(playback_gain.value == 54321 && speaker_gain.value == 0,
+          "standby restores previous playback gain and clears speaker PGA");
+    CHECK(out->write(out, original, sizeof(original)) == (ssize_t)sizeof(original),
+          "speaker resumes after standby");
+    CHECK(playback_gain.value == 61440 && speaker_gain.value == 1 &&
+          !memcmp(last_data, half, sizeof(half)),
+          "speaker reapplies stock hardware gains and half-amplitude PCM");
     printf("volume callbacks checked at 0.0, 0.4, and 1.0; failures=%d\n", failures);
 }
 static void write_error_case(struct audio_stream_out *out)

@@ -78,3 +78,58 @@ The operator must record whether the tone was audible. Interpretation:
 
 Do not change the audio driver until this differential reports the first
 missing stage.
+
+## R7 Sound Settings and speaker gain
+
+The core-wake system `10decdbb…` contains HAL `4bc207d5…` at both
+`/vendor/lib/hw/audio.primary.{mt6572,default}.so` paths and Settings
+`85ea8215…`. Both boot `09b2c74d…` and its Bluetooth cold-start derivative
+`9386a4ac…` contain the same HAL and stage codec `254ce8f8…` over the
+system image's `10f0d2a8…` codec. The November 24 serial log
+`mainline_recon/z1_boot_mainline_20261124_234757.log:95` records the resulting
+gain switch in the off state, playback gain 8251, and the staged codec hash.
+The saved playback gain can differ by board state.
+
+Factory code uses the MT6323 headphone PGA and GPIO140 external amplifier
+for the speaker. Codec commit `a47e89755` changes `AUDTOP_CON5 & 0x7700` to
+`0x5500` when the Z1 speaker gain switch is active. The Android HAL sets
+playback gain 61440 and enables that switch on exclusive speaker playback
+in both modes. Normal mode halves each PCM16 sample. High mode passes the
+samples through. Comparing the mixer values alone cannot distinguish these
+two modes. The factory ROM volume-table default is known, while the
+original board's userdata volume-table record is unavailable.
+
+Use `z1_diag_audio.sh snapshot PHASE` over the root serial dispatcher while
+operating the UI. The snapshots read mixer controls, PCM, DAPM, GPIO140,
+process IDs, and the mapped primary HAL. They leave the Android route and
+playback under framework control.
+
+1. With media stopped, headphones unplugged and Bluetooth off, take an
+   `idle` snapshot. Record the saved playback gain and file identities.
+2. Start a steady tone in an Android media app at low media volume. Set the
+   Sound Settings high-volume switch off and capture `speaker-normal`. Then
+   turn it on during the same playback and capture `speaker-high`. Both
+   snapshots should show progressing PCM, the gain switch on and playback
+   gain 61440. The high snapshot should show `speaker_high=1`. Record actual
+   speaker audibility and compare amplitude at a fixed microphone position
+   and capture gain with no clipping or AGC. An approximately 6 dB change
+   is expected in the linear range. Record the PID identities across the
+   switch operation.
+3. Insert a wired headset while media is playing and capture `wired`.
+   Confirm audio at the headset and silence at the speaker, speaker gain
+   off, and playback gain back at its idle value. Unplug and confirm speaker
+   playback resumes. Pause until output standby and capture `standby`.
+   Require PCM stopped, speaker gain off, and the saved playback gain
+   restored. Return the switch to its original setting.
+4. To investigate a Settings restart, take `settings-before` after opening
+   Settings, then take `settings-after` immediately after the UI operation.
+   The latter prints recent crash records. Match new records to timestamp
+   and PID. A change in boot ID indicates a device restart. A change in
+   system server and audio PIDs can indicate a framework restart.
+
+The crash captured November 24 at `23:55:42` names
+`PrintSettingPreferenceController.onStart` as a null `PrintManager` exception
+(log lines 316–317). The November 25 capture `000913` shows Android's
+watchdog issuing SysRq, zygote dying at line 176, and init then killing
+audioserver at line 180. The active Sound Settings path still requires a
+same-boot playback and crash capture.

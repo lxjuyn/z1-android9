@@ -9,6 +9,7 @@
 # Usage:
 #   sh z1_diag_audio.sh           # passive only (mixer dump + state)
 #   sh z1_diag_audio.sh trigger   # also try a real playback + capture
+#   sh z1_diag_audio.sh snapshot PHASE  # observe Android playback from serial
 #
 # The trigger records independent direct PCM playback, capture, and Android
 # audio service state:
@@ -74,6 +75,61 @@ mixer_set() {
     fact "MIXER_${_label}_RC" "$_rc"
     [ "$_rc" -eq 0 ] || TRIGGER_FAIL=1
 }
+
+if [ "$MODE" = snapshot ]; then
+    case "${2:-}" in
+        idle|speaker-normal|speaker-high|wired|standby|settings-before|settings-after) ;;
+        *)
+            echo "usage: $0 snapshot {idle|speaker-normal|speaker-high|wired|standby|settings-before|settings-after}" >&2
+            exit 2 ;;
+    esac
+    printf 'Z1_AUDIO_BEGIN phase=%s boot_id=%s uptime=%s\n' "$2" \
+        "$(cat /proc/sys/kernel/random/boot_id)" "$(cut -d' ' -f1 /proc/uptime)"
+    printf 'speaker_high=%s boot_completed=%s\n' \
+        "$(getprop persist.sys.z1.spk_high)" "$(getprop sys.boot_completed)"
+    for proc in system_server com.android.settings audioserver android.hardware.audio@2.0-service; do
+        printf 'pid %s=%s\n' "$proc" "$(pidof "$proc")"
+    done
+    for control in "Z1 Speaker Gain Switch" "Playback Volume" "Headphone Volume" \
+            "Speaker Route Switch" "Speaker Switch" "Headphone Switch"; do
+        tinymix "$control" 2>&1 || printf 'control unavailable: %s\n' "$control"
+    done
+    pcm_status=/proc/asound/card0/pcm0p/sub0/status
+    printf '%s\n' 'PCM playback:'
+    cat "$pcm_status"
+    case "$2" in
+        speaker-normal|speaker-high|wired)
+            sleep 1
+            printf '%s\n' 'PCM playback one second later:'
+            cat "$pcm_status"
+            ;;
+    esac
+    for widget in Speaker "Speaker Driver" Headphone; do
+        for node in /sys/kernel/debug/asoc/*/dapm/"$widget" /sys/kernel/debug/asoc/*/*/dapm/"$widget"; do
+            [ -r "$node" ] && head -n 1 "$node"
+        done
+    done
+    grep -E 'gpio-140([^0-9]|$)' /sys/kernel/debug/gpio 2>/dev/null ||
+        printf '%s\n' 'GPIO140 state unavailable'
+    for pid in $(pidof android.hardware.audio@2.0-service); do
+        awk '$6 ~ /\/audio\.primary[^/]*\.so$/ {print $6, $7}' "/proc/$pid/maps" | sort -u |
+            while read -r path state; do
+                if [ "$state" = "(deleted)" ]; then
+                    printf 'stale HAL mapping: %s\n' "$path"
+                else
+                    sha256sum "$path"
+                fi
+            done
+    done
+    if [ "$2" = idle ]; then
+        sha256sum /system/lib/modules/snd-soc-mt6323.ko /system/priv-app/Settings/Settings.apk
+    fi
+    if [ "$2" = settings-after ]; then
+        logcat -b crash -d -t 100
+    fi
+    printf 'Z1_AUDIO_END phase=%s\n' "$2"
+    exit 0
+fi
 
 mkdir -p "$OUT" 2>/dev/null || { echo "cannot create $OUT"; exit 1; }
 FACTS=$OUT/facts.txt
