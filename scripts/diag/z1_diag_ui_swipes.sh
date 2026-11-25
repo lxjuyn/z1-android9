@@ -59,6 +59,29 @@ snapshot() {
     awk '$3 == "mmcblk0" { print "Z1_UI_DISKSTAT " $0 }' /proc/diskstats
 }
 
+# These are lifetime HWC counters. Only subtract snapshots from the same
+# instance, and preserve a successful app sample if the HAL is busy or older.
+hwc_snapshot() {
+    dump_state SurfaceFlinger | awk '
+        $1 == "z1hwc2_metrics" { line=$0; count++ }
+        END {
+            if (count == 1) print line
+            else if (count == 0) print "z1hwc2_metrics unavailable=missing"
+            else print "z1hwc2_metrics unavailable=ambiguous"
+        }
+    '
+}
+
+hwc_instance() {
+    printf '%s\n' "$1" | awk '{
+        for (i=2; i<=NF; i++) {
+            if ($i ~ /^version=.+$/) version=$i
+            if ($i ~ /^opened_ms=[0-9]+$/) opened=$i
+        }
+        if (version && opened) print version, opened
+    }'
+}
+
 # Pie --latency reports desired-present, actual-present and frame-ready in ns.
 # Subtract the pre-swipe ring by desired timestamp, including pending rows.
 layer_rows() {
@@ -117,6 +140,8 @@ done
 printf 'hwcomposer=%s\n' "$(getprop z1stage.hwcomposer.sha)"
 dump_state gfxinfo "$pkg" reset >/dev/null || fail 'cannot reset app frame counters'
 snapshot before
+hwc_before=$(hwc_snapshot)
+printf 'Z1_UI_HWC phase=before uptime=%s %s\n' "$(clock)" "$hwc_before"
 i=0
 while [ "$i" -lt 15 ]; do
     if [ -n "$layer" ]; then
@@ -142,6 +167,8 @@ done
 if [ -n "$layer" ]; then
     [ "$layer_total" -gt 0 ] || fail 'no new completed frames on selected layer'
 fi
+hwc_after=$(hwc_snapshot)
+printf 'Z1_UI_HWC phase=after uptime=%s %s\n' "$(clock)" "$hwc_after"
 snapshot after
 check_input
 [ "$(boot_identity)" = "$boot" ] || fail 'boot changed during run'
@@ -173,4 +200,13 @@ samples=$(printf '%s\n' "$stats" | awk -F, '
 [ "$(boot_identity)" = "$boot" ] && [ "$(proc_identity system_server)" = "$server" ] &&
     [ "$(proc_identity "$pkg")" = "$app" ] && [ "$(proc_identity surfaceflinger)" = "$composer" ] ||
     fail 'runtime changed during frame dump'
+hwc_before_instance=$(hwc_instance "$hwc_before")
+hwc_after_instance=$(hwc_instance "$hwc_after")
+if [ -z "$hwc_before_instance" ] || [ -z "$hwc_after_instance" ]; then
+    printf 'Z1_UI_HWC_PAIR valid=0 reason=snapshot_unavailable\n'
+elif [ "$hwc_before_instance" != "$hwc_after_instance" ]; then
+    printf 'Z1_UI_HWC_PAIR valid=0 reason=instance_changed\n'
+else
+    printf 'Z1_UI_HWC_PAIR valid=1\n'
+fi
 printf 'Z1_UI_END valid=1 frames=%s timestamp_samples=%s boot=%s\n' "$frames" "$samples" "$boot"
