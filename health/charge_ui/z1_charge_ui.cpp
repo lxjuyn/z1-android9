@@ -5,23 +5,34 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <dirent.h>
 #include <linux/fb.h>
+#include <linux/input.h>
+#include <linux/reboot.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/mount.h>
 #include <sys/reboot.h>
+#include <sys/syscall.h>
 #include <sys/wait.h>
+#include <time.h>
 
 extern char** environ;
 
 namespace {
 constexpr char kCapacity[] = "/sys/class/power_supply/battery/capacity";
+constexpr char kBatteryVoltage[] = "/sys/class/power_supply/battery/voltage_now";
 constexpr char kFramebuffer[] = "/dev/graphics/fb0";
 constexpr char kFallbackFramebuffer[] = "/dev/fb0";
 constexpr char kBootMode[] = "/sys/firmware/devicetree/base/chosen/mediatek,boot-mode";
 constexpr char kUsbOnline[] = "/sys/class/power_supply/usb/online";
+constexpr char kPwmModule[] = "/z1_pwm1_backlight.ko";
+constexpr char kPwmBlank[] = "/sys/class/leds/lcd-backlight/display_blank";
 constexpr int kUnknown = -1;
+constexpr unsigned kFrameUs = 200000;
+constexpr unsigned kScreenMs = 6000;
 volatile std::sig_atomic_t stopping;
+volatile std::sig_atomic_t wake_screen = 1;
 
 struct Glyph {
     char character;
@@ -64,6 +75,36 @@ int read_capacity(const char* path = kCapacity) {
 
 void stop(int) {
     stopping = 1;
+}
+
+void wake(int) {
+    wake_screen = 1;
+}
+
+int64_t monotonic_ms() {
+    timespec ts{};
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return static_cast<int64_t>(ts.tv_sec) * 1000 + ts.tv_nsec / 1000000;
+}
+
+void set_screen_blank(bool blank) {
+    const int fd = open(kPwmBlank, O_WRONLY | O_CLOEXEC);
+    if (fd < 0)
+        return;
+    if (write(fd, blank ? "1\n" : "0\n", 2) != 2)
+        std::perror("[z1-charge] set PWM blank");
+    close(fd);
+}
+
+void load_backlight() {
+    const int fd = open(kPwmModule, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) {
+        std::perror("[z1-charge] open PWM module");
+        return;
+    }
+    if (syscall(SYS_finit_module, fd, "", 0) < 0 && errno != EEXIST)
+        std::perror("[z1-charge] load PWM module");
+    close(fd);
 }
 
 struct Surface {
@@ -191,7 +232,7 @@ int open_framebuffer() {
     const int fd = open(kFramebuffer, O_RDWR | O_CLOEXEC);
     return fd >= 0 ? fd : open(kFallbackFramebuffer, O_RDWR | O_CLOEXEC);
 }
-int run_display() {
+int run_display(bool charger = false) {
     const int fd = open_framebuffer();
     if (fd < 0) {
         std::perror("open framebuffer");
@@ -221,16 +262,36 @@ int run_display() {
     int capacity = kUnknown;
     unsigned sample = 0;
     unsigned frame = 0;
+    int64_t blank_at = 0;
     while (!stopping) {
+        const bool reveal = charger && wake_screen;
+        const int64_t now = monotonic_ms();
+        if (reveal) {
+            wake_screen = 0;
+            blank_at = now + kScreenMs;
+            previous = kUnknown - 1;
+            sample = 0;
+        }
+        if (charger && now >= blank_at) {
+            if (blank_at) {
+                set_screen_blank(true);
+                surface.clear();
+                blank_at = 0;
+            }
+            usleep(kFrameUs);
+            continue;
+        }
         if (sample == 0)
             capacity = read_capacity();
         if (capacity != previous || (capacity >= 0 && capacity <= 90)) {
             surface.draw(capacity, frame);
             previous = capacity;
         }
+        if (reveal)
+            set_screen_blank(false);
         frame = (frame + 1) % kAnimationFrames;
         sample = (sample + 1) % kAnimationFrames;
-        usleep(200000);
+        usleep(kFrameUs);
     }
     munmap(address, info.smem_len);
     close(fd);
@@ -258,12 +319,81 @@ size_t read_attribute(const char* path, uint8_t* bytes, size_t capacity) {
     return length;
 }
 
-bool read_kpoc_mode(const char* path) {
+int read_kpoc_mode(const char* path) {
     // Read an extra byte so that a malformed property with a valid prefix fails.
     std::array<uint8_t, 5> bytes{};
     const size_t length = read_attribute(path, bytes.data(), bytes.size());
-    return length == 4 && bytes == std::array<uint8_t, 5>{0, 0, 0, 8, 0};
+    if (length == 4 && bytes[0] == 0 && bytes[1] == 0 && bytes[2] == 0 &&
+        (bytes[3] == 8 || bytes[3] == 9))
+        return bytes[3];
+    return kUnknown;
 }
+
+bool can_boot_on_battery(const char* path = kBatteryVoltage) {
+    uint8_t bytes[9];
+    if (read_attribute(path, bytes, sizeof(bytes)) != 8 || bytes[7] != '\n')
+        return false;
+    int uv = 0;
+    for (unsigned i = 0; i < 7; ++i) {
+        if (bytes[i] < '0' || bytes[i] > '9')
+            return false;
+        uv = uv * 10 + bytes[i] - '0';
+    }
+    return uv > 3450000 && uv <= 5000000;
+}
+
+int open_power_key() {
+    DIR* devices = opendir("/dev/input");
+    if (!devices)
+        return -1;
+    int result = -1;
+    while (const dirent* de = readdir(devices)) {
+        if (std::strncmp(de->d_name, "event", 5) != 0)
+            continue;
+        const int fd = openat(dirfd(devices), de->d_name, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+        if (fd < 0)
+            continue;
+        char name[64]{};
+        int clock = CLOCK_MONOTONIC;
+        if (ioctl(fd, EVIOCGNAME(sizeof(name)), name) > 0 &&
+            std::strncmp(name, "mtk-pmic-keys", sizeof(name)) == 0 &&
+            ioctl(fd, EVIOCSCLOCKID, &clock) == 0) {
+            result = fd;
+            break;
+        }
+        close(fd);
+    }
+    closedir(devices);
+    return result;
+}
+
+enum class PowerKeyAction { none, wake, boot };
+
+class PowerKey {
+  public:
+    PowerKeyAction update(const input_event& event) {
+        if (event.type == EV_SYN && event.code == SYN_DROPPED) {
+            down_us_ = -1;
+            return PowerKeyAction::none;
+        }
+        if (event.type != EV_KEY || event.code != KEY_POWER)
+            return PowerKeyAction::none;
+        const int64_t now = static_cast<int64_t>(event.input_event_sec) * 1000000 +
+                            event.input_event_usec;
+        if (event.value == 1) {
+            down_us_ = now;
+            return PowerKeyAction::wake;
+        }
+        if (event.value != 0 || down_us_ < 0)
+            return PowerKeyAction::none;
+        const int64_t held = now - down_us_;
+        down_us_ = -1;
+        return held >= 500000 ? PowerKeyAction::boot : PowerKeyAction::wake;
+    }
+
+  private:
+    int64_t down_us_ = -1;
+};
 
 int read_usb_online(const char* path) {
     uint8_t bytes[3];
@@ -301,18 +431,38 @@ void run_charger() {
     if (mount("devtmpfs", "/dev", "devtmpfs", MS_NOSUID, nullptr) < 0 &&
         errno != EBUSY)
         std::perror("[z1-charge] mount devtmpfs");
+    load_backlight();
+    std::signal(SIGUSR1, wake);
 
     pid_t display = -1;
     bool attempted_display = false;
+    int input = -1;
+    PowerKey power_key;
     UsbRemoval removal;
-    int last_online = -2;
+    int online = -2;
+    int64_t sample_usb_at = 0;
     for (;;) {
-        if (!attempted_display &&
+        const int64_t now = monotonic_ms();
+        if (now >= sample_usb_at) {
+            sample_usb_at = now + 1000;
+            const int sample = read_usb_online(kUsbOnline);
+            if (sample != online) {
+                std::fprintf(stderr, "[z1-charge] usb/online=%d\n", sample);
+                online = sample;
+            }
+            if (removal.update(online)) {
+                std::fprintf(stderr, "[z1-charge] stable USB removal, requesting power off\n");
+                reboot(RB_POWER_OFF);
+                std::perror("[z1-charge] power off");
+            }
+        }
+
+        if (online == 1 && !attempted_display &&
             (access(kFramebuffer, F_OK) == 0 || access(kFallbackFramebuffer, F_OK) == 0)) {
             display = fork();
             if (display == 0) {
                 std::fprintf(stderr, "[z1-charge] starting framebuffer preview\n");
-                _exit(run_display());
+                _exit(run_display(true));
             }
             if (display < 0)
                 std::perror("[z1-charge] fork framebuffer preview");
@@ -321,25 +471,38 @@ void run_charger() {
         if (display > 0 && waitpid(display, nullptr, WNOHANG) == display)
             display = -1;
 
-        const int online = read_usb_online(kUsbOnline);
-        if (online != last_online) {
-            std::fprintf(stderr, "[z1-charge] usb/online=%d\n", online);
-            last_online = online;
+        if (input < 0)
+            input = open_power_key();
+        if (input >= 0) {
+            input_event event{};
+            while (read(input, &event, sizeof(event)) == sizeof(event)) {
+                const auto action = power_key.update(event);
+                if (action == PowerKeyAction::none)
+                    continue;
+                if (display > 0)
+                    kill(display, SIGUSR1);
+                if (action == PowerKeyAction::boot && online == 1) {
+                    if (can_boot_on_battery()) {
+                        std::fprintf(stderr, "[z1-charge] power key held, restarting into normal boot\n");
+                        syscall(SYS_reboot, LINUX_REBOOT_MAGIC1, LINUX_REBOOT_MAGIC2,
+                                LINUX_REBOOT_CMD_RESTART2, "z1-charger-normal");
+                        std::perror("[z1-charge] restart");
+                    } else {
+                        std::fprintf(stderr, "[z1-charge] startup battery voltage unavailable or low\n");
+                    }
+                }
+            }
         }
-        if (removal.update(online)) {
-            std::fprintf(stderr, "[z1-charge] stable USB removal, requesting power off\n");
-            reboot(RB_POWER_OFF);
-            std::perror("[z1-charge] power off");
-        }
-        sleep(1);
+        usleep(kFrameUs);
     }
 }
 
 int dispatch_boot() {
     const bool mounted_sysfs =
             mount("sysfs", "/sys", "sysfs", MS_NOSUID | MS_NODEV | MS_NOEXEC, nullptr) == 0;
-    if (read_kpoc_mode(kBootMode)) {
-        std::fprintf(stderr, "[z1-charge] LK boot-mode=8, starting charger PID 1\n");
+    const int mode = read_kpoc_mode(kBootMode);
+    if (mode != kUnknown) {
+        std::fprintf(stderr, "[z1-charge] LK boot-mode=%d, starting charger PID 1\n", mode);
         run_charger();
     }
 
