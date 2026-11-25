@@ -920,9 +920,16 @@ static int copy_into_dumb(z1_hwc2 *h, z1_dumb *d, buffer_handle_t handle)
 		munmap(src, (size_t)gh->size);
 		return err;
 	}
-	for (int y = 0; y < gh->height; y++)
-		memcpy((uint8_t *)d->map + (size_t)y * d->pitch,
-		       src + (size_t)gh->offset + (size_t)y * pitch, bytes);
+	auto dst = static_cast<uint8_t *>(d->map);
+	const uint8_t *pixels = src + gh->offset;
+
+	if (pitch == bytes && d->pitch == bytes) {
+		memcpy(dst, pixels, bytes * gh->height);
+	} else {
+		for (int y = 0; y < gh->height; y++)
+			memcpy(dst + (size_t)y * d->pitch,
+			       pixels + (size_t)y * pitch, bytes);
+	}
 	__sync_synchronize();
 	int ret = 0;
 	if (synced == 0) {

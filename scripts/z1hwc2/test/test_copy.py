@@ -113,6 +113,17 @@ static void exact_last_row_and_padding() {
                                              DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ}));
     CHECK(unmaps == 1); check_pixels(h, d);
 }
+static void tight_pitch_with_offset() {
+    z1_hwc2 hw; z1_dumb d{}; auto h = valid();
+    h.width = h.stride = 64;
+    h.height = 3;
+    h.size = h.offset + h.width * h.height * 4;
+    CHECK(copy_into_dumb(&hw, &d, &h) == 0);
+    CHECK(d.pitch == unsigned(h.width * 4));
+    CHECK(sync_flags == (std::vector<uint64_t>{DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ,
+                                             DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ}));
+    CHECK(unmaps == 1); check_pixels(h, d);
+}
 static void ashmem_without_dma_ioctl() {
     z1_hwc2 hw; z1_dumb d{}; auto h = valid(); sync_errors = {ENOTTY};
     CHECK(copy_into_dumb(&hw, &d, &h) == 0); CHECK(sync_flags.size() == 1); check_pixels(h, d);
@@ -148,7 +159,7 @@ static void invalid_destination() {
 int main() {
     struct Test { const char *name; void (*fn)(); };
 #define CASE(x) {#x, x}
-    Test tests[] = {CASE(invalid_handles), CASE(exact_last_row_and_padding),
+    Test tests[] = {CASE(invalid_handles), CASE(exact_last_row_and_padding), CASE(tight_pitch_with_offset),
         CASE(ashmem_without_dma_ioctl), CASE(dma_start_failure), CASE(dma_end_failure),
         CASE(dma_interrupts_retry), CASE(allocate_failure), CASE(mapping_failure), CASE(invalid_destination)};
     int failures = 0;
